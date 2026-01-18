@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tinyfold"
+version = "0.1.0"
+description = "AlphaFold3-style binary PPI predictor"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "gemmi>=0.6",
+    "pyarrow>=14.0",
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "tqdm",
+    "requests",
+    "matplotlib>=3.5",
+    "py3Dmol>=2.0",
+    "jinja2>=3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-timeout",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tinyfold"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
