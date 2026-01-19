@@ -42,6 +42,64 @@ class CosineSchedule:
         return self
 
 
+class LinearSchedule:
+    """Linear alpha_bar schedule. Directly interpolates alpha_bar from 1 to 0."""
+
+    def __init__(self, T: int = 50):
+        self.T = T
+
+        # Direct linear interpolation of alpha_bar
+        t = torch.arange(T + 1, dtype=torch.float32)
+        alpha_bar = 1 - t / T
+        alpha_bar = alpha_bar.clamp(min=1e-6)  # Avoid exactly 0
+
+        self.alpha_bar = alpha_bar
+        self.sqrt_alpha_bar = torch.sqrt(alpha_bar)
+        self.sqrt_one_minus_alpha_bar = torch.sqrt(1 - alpha_bar)
+        # Derive alphas and betas from alpha_bar
+        self.alphas = torch.cat([torch.ones(1), alpha_bar[1:] / alpha_bar[:-1].clamp(min=1e-6)])
+        self.betas = 1 - self.alphas
+
+    def to(self, device):
+        for attr in ['alpha_bar', 'sqrt_alpha_bar', 'sqrt_one_minus_alpha_bar', 'alphas', 'betas']:
+            setattr(self, attr, getattr(self, attr).to(device))
+        return self
+
+
+# =============================================================================
+# Timestep Curriculum - start easy, increase difficulty
+# =============================================================================
+
+class TimestepCurriculum:
+    """Curriculum for diffusion timesteps - start with easy denoising, increase difficulty."""
+
+    def __init__(self, T: int, warmup_steps: int, schedule: str = "linear"):
+        """
+        Args:
+            T: Maximum timestep (from noiser)
+            warmup_steps: Training steps to reach full T
+            schedule: "linear" or "cosine" progression
+        """
+        self.T = T
+        self.warmup_steps = warmup_steps
+        self.schedule = schedule
+
+    def get_max_t(self, step: int) -> int:
+        """Get maximum timestep for current training step."""
+        if step >= self.warmup_steps:
+            return self.T
+        progress = step / self.warmup_steps
+        if self.schedule == "cosine":
+            progress = 0.5 * (1 - math.cos(math.pi * progress))
+        # At least t_max=1 to avoid empty range
+        return max(1, int(progress * self.T))
+
+    def sample(self, batch_size: int, step: int, device) -> torch.Tensor:
+        """Sample timesteps with curriculum constraint."""
+        t_max = self.get_max_t(step)
+        return torch.randint(0, t_max, (batch_size,), device=device)
+
+
 # =============================================================================
 # Noise types - define what "fully noised" looks like
 # =============================================================================
@@ -179,6 +237,173 @@ class LinearChainNoise:
 
         return x_t, x_linear
 
+    def reverse_step(
+        self,
+        x_t: Tensor,
+        x0_pred: Tensor,
+        t: int,
+        x_linear: Tensor,
+    ) -> Tensor:
+        """Reverse diffusion step for linear chain noise.
+
+        Instead of DDPM's Gaussian noise addition, we interpolate between
+        predicted x0 and the extended chain.
+
+        Args:
+            x_t: Current noisy state [B, N, 3]
+            x0_pred: Model's prediction of x0 [B, N, 3]
+            t: Current timestep (scalar)
+            x_linear: Extended chain coordinates [B, N, 3]
+
+        Returns:
+            x_{t-1}: Previous state [B, N, 3]
+        """
+        if t == 0:
+            return x0_pred
+
+        # x_{t-1} = sqrt(ab_{t-1}) * x0_pred + sqrt(1-ab_{t-1}) * x_linear
+        sqrt_ab_prev = self.schedule.sqrt_alpha_bar[t - 1]
+        sqrt_one_minus_ab_prev = self.schedule.sqrt_one_minus_alpha_bar[t - 1]
+
+        x_prev = sqrt_ab_prev * x0_pred + sqrt_one_minus_ab_prev * x_linear
+
+        # Add small noise for stochasticity (matching forward process)
+        if self.noise_scale > 0:
+            x_prev = x_prev + torch.randn_like(x_prev) * self.noise_scale
+
+        return x_prev
+
+
+class LinearChainFlow:
+    """Progressive flow from extended chain to structure.
+
+    Instead of predicting x0 directly, this models the flow as discrete steps:
+    - x_T = x_linear (extended chain)
+    - x_0 = x0 (target structure)
+    - x_t = linear interpolation between x0 and x_linear
+
+    Model predicts the velocity v = (x0 - x_linear), which is constant along path.
+    Sampling steps progressively from x_linear toward x0.
+
+    Key difference from LinearChainNoise:
+    - Constant noise level (not schedule-dependent)
+    - Model predicts velocity/direction, not absolute x0
+    - Sampling is additive stepping along the flow
+    """
+
+    def __init__(self, schedule: CosineSchedule, noise_scale: float = 0.1):
+        """
+        Args:
+            schedule: Used only for T (number of steps)
+            noise_scale: Constant Gaussian noise added at each step
+        """
+        self.schedule = schedule
+        self.noise_scale = noise_scale
+
+    @property
+    def T(self):
+        return self.schedule.T
+
+    @property
+    def alpha_bar(self):
+        return self.schedule.alpha_bar
+
+    @property
+    def alphas(self):
+        return self.schedule.alphas
+
+    @property
+    def betas(self):
+        return self.schedule.betas
+
+    def to(self, device):
+        self.schedule = self.schedule.to(device)
+        return self
+
+    def add_noise(
+        self,
+        x0: Tensor,
+        t: Tensor,
+        atom_to_res: Tensor,
+        atom_type: Tensor,
+        chain_ids: Tensor,
+        **kwargs,
+    ) -> tuple[Tensor, Tensor]:
+        """Create noisy sample at step t via linear interpolation.
+
+        Args:
+            x0: Clean coordinates [B, N, 3]
+            t: Timesteps [B] (0 = clean, T = fully linear)
+            atom_to_res: Residue indices [B, N]
+            atom_type: Atom types [B, N]
+            chain_ids: Chain IDs [B, N]
+
+        Returns:
+            x_t: Interpolated coordinates + noise [B, N, 3]
+            velocity: Target velocity v = x0 - x_linear [B, N, 3]
+        """
+        B, N, _ = x0.shape
+        device = x0.device
+
+        # Generate extended chain for each sample
+        x_linear = torch.zeros_like(x0)
+        for b in range(B):
+            x_linear[b] = generate_extended_chain(
+                N, atom_to_res[b], atom_type[b], chain_ids[b], device
+            )
+
+        # Normalize extended chain
+        x_linear = x_linear - x_linear.mean(dim=1, keepdim=True)
+        x_linear_std = x_linear.std(dim=(1, 2), keepdim=True).clamp(min=1e-6)
+        x_linear = x_linear / x_linear_std
+
+        # Linear interpolation: x_t = (1 - t/T) * x0 + (t/T) * x_linear
+        # At t=0: x_t = x0, at t=T: x_t = x_linear
+        alpha = (t.float() / self.T).view(-1, 1, 1)  # [B, 1, 1]
+        x_t = (1 - alpha) * x0 + alpha * x_linear
+
+        # Add constant noise
+        if self.noise_scale > 0:
+            x_t = x_t + torch.randn_like(x_t) * self.noise_scale
+
+        # Target: velocity from x_linear to x0 (constant along path)
+        velocity = x0 - x_linear
+
+        return x_t, velocity
+
+    def reverse_step(
+        self,
+        x_t: Tensor,
+        velocity_pred: Tensor,
+        t: int,
+        x_linear: Tensor,  # Not used, but kept for API compatibility
+    ) -> Tensor:
+        """Take one step from x_t toward x_0 using predicted velocity.
+
+        Args:
+            x_t: Current state [B, N, 3]
+            velocity_pred: Predicted velocity v = x0 - x_linear [B, N, 3]
+            t: Current timestep
+            x_linear: Not used (API compatibility)
+
+        Returns:
+            x_{t-1}: Next state closer to x0
+        """
+        if t == 0:
+            # At t=0, we're already at x0
+            return x_t
+
+        # Step size: we need to move 1/T of the total distance per step
+        # x_{t-1} = x_t + velocity_pred / T
+        step_size = 1.0 / self.T
+        x_prev = x_t + velocity_pred * step_size
+
+        # Add small noise for stochasticity
+        if self.noise_scale > 0:
+            x_prev = x_prev + torch.randn_like(x_prev) * self.noise_scale * 0.5
+
+        return x_prev
+
 
 # =============================================================================
 # Helper functions
@@ -270,11 +495,13 @@ def random_rotation_matrix(device: torch.device) -> Tensor:
 
 _SCHEDULES = {
     "cosine": CosineSchedule,
+    "linear": LinearSchedule,
 }
 
 _NOISE_TYPES = {
     "gaussian": GaussianNoise,
     "linear_chain": LinearChainNoise,
+    "linear_flow": LinearChainFlow,
 }
 
 

@@ -401,3 +401,80 @@ else:
 | > 0.8 | Excellent |
 | 0.5-0.8 | Good |
 | < 0.5 | Poor |
+
+## Publication-Ready Visualization (scripts/visualize_structure.py)
+
+Generate high-quality protein structure figures for publications with secondary structure (cartoon/ribbon) rendering.
+
+### Features
+
+- **Secondary structure rendering**: Arrows for β-sheets, ribbons for α-helices, tubes for loops
+- **Multiple output formats**: PNG (print), SVG (vector), HTML (interactive)
+- **Customizable views**: Front, side, top, or custom camera angles
+- **Multi-panel figures**: Side-by-side comparisons
+- **Interface highlighting**: Color residues at protein-protein interface
+
+### Usage
+
+```bash
+# Single structure
+python scripts/visualize_structure.py --sample_id 1a2k_A_B --output outputs/viz/
+
+# Multiple samples in grid
+python scripts/visualize_structure.py --sample_ids 1a2k_A_B,3hfm_H_Y --grid
+
+# Custom view angle
+python scripts/visualize_structure.py --sample_id 1a2k_A_B --view front --zoom 1.2
+
+# High-resolution for print
+python scripts/visualize_structure.py --sample_id 1a2k_A_B --dpi 600 --format png,svg
+```
+
+### Output Files
+
+```
+outputs/viz/1a2k_A_B/
+├── structure.png          # Publication-ready PNG (300 DPI default)
+├── structure.svg          # Vector format for editing
+├── structure.html         # Interactive 3D viewer
+└── structure.pdb          # PDB file for external viewers
+```
+
+### py3Dmol Cartoon Rendering
+
+The script uses py3Dmol's built-in cartoon mode which auto-detects secondary structure:
+
+```javascript
+viewer.setStyle({chain: 'A'}, {cartoon: {color: '#3B82F6'}});  // Blue
+viewer.setStyle({chain: 'B'}, {cartoon: {color: '#F97316'}});  // Orange
+```
+
+Secondary structure is inferred from backbone geometry:
+- **α-helix**: ~3.6 residues/turn, i→i+4 hydrogen bonds
+- **β-sheet**: Extended conformation, inter-strand H-bonds
+- **Coil/loop**: Everything else
+
+### Color Schemes
+
+| Scheme | Description |
+|--------|-------------|
+| `chain` | Chain A=blue, B=orange (default) |
+| `interface` | Interface residues highlighted in green |
+| `ss` | Color by secondary structure type |
+| `bfactor` | Color by B-factor/pLDDT (if available) |
+
+### Static Rendering with PyMOL
+
+For highest quality print figures, export PDB and render with PyMOL:
+
+```python
+# After running visualize_structure.py
+# In PyMOL:
+load structure.pdb
+bg_color white
+set cartoon_fancy_helices, 1
+set cartoon_smooth_loops, 1
+set ray_shadows, 0
+ray 2400, 2400
+png structure_pymol.png, dpi=300
+```

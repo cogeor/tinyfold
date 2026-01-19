@@ -16,10 +16,13 @@ from .base import BaseDecoder, sinusoidal_pos_enc
 from .attention_v2 import AttentionDiffusionV2
 from .hierarchical import HierarchicalDecoder
 from .pairformer_decoder import PairformerDecoder
+from .af3_style import AF3StyleDecoder
 from .diffusion import (
     CosineSchedule,
     GaussianNoise,
     LinearChainNoise,
+    LinearChainFlow,
+    TimestepCurriculum,
     create_schedule,
     create_noiser,
     list_schedules,
@@ -33,6 +36,7 @@ _MODELS = {
     "attention_v2": AttentionDiffusionV2,
     "hierarchical": HierarchicalDecoder,
     "pairformer": PairformerDecoder,
+    "af3_style": AF3StyleDecoder,
 }
 
 
@@ -76,6 +80,7 @@ __all__ = [
     "AttentionDiffusionV2",
     "HierarchicalDecoder",
     "PairformerDecoder",
+    "AF3StyleDecoder",
     "create_model",
     "list_models",
     "get_model_class",
@@ -87,7 +92,10 @@ __all__ = [
     # Diffusion - noise types
     "GaussianNoise",
     "LinearChainNoise",
+    "LinearChainFlow",
     "create_noiser",
     "list_noise_types",
     "generate_extended_chain",
+    # Diffusion - curriculum
+    "TimestepCurriculum",
 ]

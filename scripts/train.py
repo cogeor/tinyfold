@@ -27,7 +27,9 @@ import matplotlib.pyplot as plt
 from models import (
     create_model, list_models,
     create_schedule, create_noiser, list_noise_types,
+    TimestepCurriculum,
 )
+from data_split import DataSplitConfig, get_train_test_indices, get_split_info
 
 
 # =============================================================================
@@ -55,31 +57,63 @@ class Logger:
 # =============================================================================
 
 @torch.no_grad()
-def ddpm_sample(model, atom_types, atom_to_res, aa_seq, chain_ids, noiser, mask=None, clamp_val=3.0):
-    """DDPM sampling loop."""
+def ddpm_sample(model, atom_types, atom_to_res, aa_seq, chain_ids, noiser, mask=None,
+                clamp_val=3.0, x_linear=None):
+    """Diffusion sampling loop.
+
+    For Gaussian noise: starts from random noise, uses DDPM reverse.
+    For linear_chain: starts from extended chain, uses interpolation reverse.
+
+    Args:
+        x_linear: Extended chain coordinates [B, N, 3] for linear_chain noise.
+                  If None and noiser has reverse_step, will be generated.
+    """
     device = atom_types.device
     B, N = atom_types.shape
-    x = torch.randn(B, N, 3, device=device)
+
+    # Check if this is linear_chain noise (has reverse_step method)
+    use_linear_chain = hasattr(noiser, 'reverse_step')
+
+    if use_linear_chain:
+        # Start from extended chain
+        if x_linear is None:
+            from models.diffusion import generate_extended_chain
+            x_linear = torch.zeros(B, N, 3, device=device)
+            for b in range(B):
+                x_linear[b] = generate_extended_chain(
+                    N, atom_to_res[b], atom_types[b], chain_ids[b], device
+                )
+            x_linear = x_linear - x_linear.mean(dim=1, keepdim=True)
+            x_linear = x_linear / x_linear.std(dim=(1, 2), keepdim=True).clamp(min=1e-6)
+        x = x_linear.clone()
+    else:
+        # Start from random noise
+        x = torch.randn(B, N, 3, device=device)
 
     for t in reversed(range(noiser.T)):
         t_batch = torch.full((B,), t, device=device, dtype=torch.long)
         x0_pred = model(x, atom_types, atom_to_res, aa_seq, chain_ids, t_batch, mask)
         x0_pred = torch.clamp(x0_pred, -clamp_val, clamp_val)
 
-        if t > 0:
-            ab_t = noiser.alpha_bar[t]
-            ab_prev = noiser.alpha_bar[t - 1]
-            beta = noiser.betas[t]
-            alpha = noiser.alphas[t]
-
-            coef1 = torch.sqrt(ab_prev) * beta / (1 - ab_t)
-            coef2 = torch.sqrt(alpha) * (1 - ab_prev) / (1 - ab_t)
-            mean = coef1 * x0_pred + coef2 * x
-
-            var = beta * (1 - ab_prev) / (1 - ab_t)
-            x = mean + torch.sqrt(var) * torch.randn_like(x)
+        if use_linear_chain:
+            # Linear chain reverse: interpolate between x0_pred and x_linear
+            x = noiser.reverse_step(x, x0_pred, t, x_linear)
         else:
-            x = x0_pred
+            # DDPM reverse
+            if t > 0:
+                ab_t = noiser.alpha_bar[t]
+                ab_prev = noiser.alpha_bar[t - 1]
+                beta = noiser.betas[t]
+                alpha = noiser.alphas[t]
+
+                coef1 = torch.sqrt(ab_prev) * beta / (1 - ab_t)
+                coef2 = torch.sqrt(alpha) * (1 - ab_prev) / (1 - ab_t)
+                mean = coef1 * x0_pred + coef2 * x
+
+                var = beta * (1 - ab_prev) / (1 - ab_t)
+                x = mean + torch.sqrt(var) * torch.randn_like(x)
+            else:
+                x = x0_pred
 
     return x
 
@@ -266,13 +300,18 @@ def parse_args():
     parser = argparse.ArgumentParser(description="TinyFold training")
 
     # Data
-    parser.add_argument("--n_samples", type=int, default=100)
+    parser.add_argument("--n_train", type=int, default=80, help="Number of training samples")
+    parser.add_argument("--n_test", type=int, default=14, help="Number of test samples")
+    parser.add_argument("--n_eval_train", type=int, default=200, help="Number of train samples to eval (0=all)")
+    parser.add_argument("--min_atoms", type=int, default=200, help="Min atoms per sample")
+    parser.add_argument("--max_atoms", type=int, default=400, help="Max atoms per sample")
     parser.add_argument("--batch_size", type=int, default=128)
 
     # Training
     parser.add_argument("--n_steps", type=int, default=10000)
     parser.add_argument("--eval_every", type=int, default=1000)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--grad_accum", type=int, default=1, help="Gradient accumulation steps")
 
     # Model
     parser.add_argument("--model", type=str, default="attention_v2", choices=list_models())
@@ -280,12 +319,18 @@ def parse_args():
     parser.add_argument("--n_layers", type=int, default=6)
 
     # Diffusion
-    parser.add_argument("--schedule", type=str, default="cosine", help="Alpha-bar schedule")
+    parser.add_argument("--schedule", type=str, default="linear", help="Alpha-bar schedule")
     parser.add_argument("--noise_type", type=str, default="gaussian", choices=list_noise_types(),
                         help="Noise type: gaussian or linear_chain")
     parser.add_argument("--noise_scale", type=float, default=0.1,
                         help="Gaussian noise scale for linear_chain")
     parser.add_argument("--T", type=int, default=50, help="Diffusion timesteps")
+
+    # Curriculum
+    parser.add_argument("--curriculum", action="store_true", help="Enable timestep curriculum")
+    parser.add_argument("--curriculum_warmup", type=int, default=5000, help="Steps to reach full T")
+    parser.add_argument("--curriculum_schedule", type=str, default="linear",
+                        choices=["linear", "cosine"], help="Curriculum progression schedule")
 
     # Output
     parser.add_argument("--output_dir", type=str, default="outputs/train")
@@ -317,8 +362,11 @@ def main():
     # Log config
     logger.log("Configuration:")
     logger.log(f"  output_dir:  {args.output_dir}")
-    logger.log(f"  n_samples:   {args.n_samples}")
+    logger.log(f"  n_train:     {args.n_train}")
+    logger.log(f"  n_test:      {args.n_test}")
     logger.log(f"  batch_size:  {args.batch_size}")
+    logger.log(f"  grad_accum:  {args.grad_accum}")
+    logger.log(f"  eff_batch:   {args.batch_size * args.grad_accum}")
     logger.log(f"  n_steps:     {args.n_steps}")
     logger.log(f"  eval_every:  {args.eval_every}")
     logger.log(f"  lr:          {args.lr}")
@@ -329,6 +377,8 @@ def main():
     logger.log(f"  noise_type:  {args.noise_type}")
     logger.log(f"  noise_scale: {args.noise_scale}")
     logger.log(f"  T:           {args.T}")
+    if args.curriculum:
+        logger.log(f"  curriculum:  enabled (warmup={args.curriculum_warmup}, schedule={args.curriculum_schedule})")
     logger.log("")
 
     # Device
@@ -338,32 +388,58 @@ def main():
         logger.log(f"  GPU: {torch.cuda.get_device_name(0)}")
     logger.log("")
 
-    # Load data
+    # Load data with deterministic train/test split
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
     data_path = os.path.join(project_root, "data/processed/samples.parquet")
     table = pq.read_table(data_path)
 
-    medium_indices = find_medium_samples(table, 200, 400)
-    logger.log(f"Found {len(medium_indices)} samples with 200-400 atoms")
+    # Deterministic split (same n_train always gives same samples)
+    split_config = DataSplitConfig(
+        n_train=args.n_train,
+        n_test=args.n_test,
+        min_atoms=args.min_atoms,
+        max_atoms=args.max_atoms,
+        seed=42,
+    )
+    train_indices, test_indices = get_train_test_indices(table, split_config)
+    split_info = get_split_info(table, split_config)
 
-    train_indices = medium_indices[:args.n_samples]
-    logger.log(f"Training on {len(train_indices)} samples")
+    logger.log(f"Data split (seed={split_config.seed}):")
+    logger.log(f"  Eligible samples ({args.min_atoms}-{args.max_atoms} atoms): {split_info['eligible_samples']}")
+    logger.log(f"  Training: {len(train_indices)} samples")
+    logger.log(f"  Test: {len(test_indices)} samples (held out, never seen during training)")
+    logger.log(f"  Train IDs: {split_info['train_ids'][:3]}...")
+    logger.log(f"  Test IDs:  {split_info['test_ids'][:3]}...")
     logger.log("")
 
-    # Preload
+    # Preload train and test samples SEPARATELY
     logger.log("Preloading samples...")
-    all_samples = {idx: load_sample_raw(table, idx) for idx in train_indices}
+    train_samples = {idx: load_sample_raw(table, idx) for idx in train_indices}
+    test_samples = {idx: load_sample_raw(table, idx) for idx in test_indices}
+    logger.log(f"  Loaded {len(train_samples)} train, {len(test_samples)} test samples")
 
     # Create model
-    model = create_model(
-        args.model,
-        h_dim=args.h_dim,
-        n_heads=8,
-        n_layers=args.n_layers,
-        n_timesteps=args.T,
-        dropout=0.0,
-    ).to(device)
+    if args.model == "af3_style":
+        # AF3-style uses different kwargs
+        model = create_model(
+            args.model,
+            c_token=args.h_dim * 2,  # 256 for h_dim=128
+            c_atom=args.h_dim,
+            trunk_layers=args.n_layers + 3,  # 9 for n_layers=6
+            denoiser_blocks=args.n_layers + 1,  # 7 for n_layers=6
+            n_timesteps=args.T,
+            dropout=0.0,
+        ).to(device)
+    else:
+        model = create_model(
+            args.model,
+            h_dim=args.h_dim,
+            n_heads=8,
+            n_layers=args.n_layers,
+            n_timesteps=args.T,
+            dropout=0.0,
+        ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters())
     logger.log(f"Model: {args.model}")
@@ -383,6 +459,12 @@ def main():
     logger.log(f"  Noise type: {args.noise_type}")
     if args.noise_type == "linear_chain":
         logger.log(f"  Noise scale: {args.noise_scale}")
+
+    # Create curriculum if enabled
+    curriculum = None
+    if args.curriculum:
+        curriculum = TimestepCurriculum(noiser.T, args.curriculum_warmup, args.curriculum_schedule)
+        logger.log(f"  Curriculum: warmup={args.curriculum_warmup}, schedule={args.curriculum_schedule}")
     logger.log("")
 
     # Optimizer
@@ -398,53 +480,91 @@ def main():
 
     model.train()
     for step in range(1, args.n_steps + 1):
-        batch_indices = random.choices(train_indices, k=args.batch_size)
-        batch_samples = [all_samples[idx] for idx in batch_indices]
-        batch = collate_batch(batch_samples, device)
-
-        t = torch.randint(0, noiser.T, (args.batch_size,), device=device)
-
-        # Add noise (unified API)
-        x_t, _ = noiser.add_noise(
-            batch['coords'], t,
-            atom_to_res=batch['atom_to_res'],
-            atom_type=batch['atom_types'],
-            chain_ids=batch['chain_ids'],
-        )
-
-        x0_pred = model(x_t, batch['atom_types'], batch['atom_to_res'],
-                        batch['aa_seq'], batch['chain_ids'], t, batch['mask'])
-        loss = compute_loss(x0_pred, batch['coords'], batch['mask'])
-
+        # Gradient accumulation loop
         optimizer.zero_grad()
-        loss.backward()
+        accum_loss = 0.0
+
+        for accum_step in range(args.grad_accum):
+            # TRAINING ONLY uses train_samples (no data leakage)
+            batch_indices = random.choices(train_indices, k=args.batch_size)
+            batch_samples = [train_samples[idx] for idx in batch_indices]
+            batch = collate_batch(batch_samples, device)
+
+            if curriculum:
+                t = curriculum.sample(args.batch_size, step, device)
+            else:
+                t = torch.randint(0, noiser.T, (args.batch_size,), device=device)
+
+            # Add noise (unified API)
+            # For linear_flow: target is velocity, for others: target is x_linear (unused)
+            x_t, target = noiser.add_noise(
+                batch['coords'], t,
+                atom_to_res=batch['atom_to_res'],
+                atom_type=batch['atom_types'],
+                chain_ids=batch['chain_ids'],
+            )
+
+            pred = model(x_t, batch['atom_types'], batch['atom_to_res'],
+                         batch['aa_seq'], batch['chain_ids'], t, batch['mask'])
+
+            # Different loss for linear_flow (velocity prediction) vs others (x0 prediction)
+            if args.noise_type == "linear_flow":
+                # Direct MSE on velocity (no Kabsch - velocity is in same frame)
+                sq_diff = ((pred - target) ** 2).sum(dim=-1)
+                loss = (sq_diff * batch['mask'].float()).sum() / batch['mask'].float().sum().clamp(min=1)
+            else:
+                loss = compute_loss(pred, batch['coords'], batch['mask'])
+
+            # Scale loss for accumulation
+            loss = loss / args.grad_accum
+            loss.backward()
+            accum_loss += loss.item()
+
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         scheduler.step()
+        loss = accum_loss  # For logging
 
         if step % 100 == 0:
             elapsed = time.time() - start_time
-            logger.log(f"Step {step:5d} | loss: {loss.item():.6f} | lr: {scheduler.get_last_lr()[0]:.2e} | {elapsed:.0f}s")
+            if curriculum:
+                t_max = curriculum.get_max_t(step)
+                logger.log(f"Step {step:5d} | loss: {loss:.6f} | t_max: {t_max:2d} | lr: {scheduler.get_last_lr()[0]:.2e} | {elapsed:.0f}s")
+            else:
+                logger.log(f"Step {step:5d} | loss: {loss:.6f} | lr: {scheduler.get_last_lr()[0]:.2e} | {elapsed:.0f}s")
 
         if step % args.eval_every == 0:
             model.eval()
             with torch.no_grad():
-                # Evaluate on subset
-                eval_indices = train_indices[:min(20, len(train_indices))]
+                # Evaluate on TRAIN set (random subset for speed)
+                n_eval = args.n_eval_train if args.n_eval_train > 0 else len(train_indices)
+                n_eval = min(n_eval, len(train_indices))
+                eval_train_indices = random.sample(train_indices, n_eval)
                 train_rmses = []
-                for idx in eval_indices:
-                    s = all_samples[idx]
+                for idx in eval_train_indices:
+                    s = train_samples[idx]
                     batch = collate_batch([s], device)
                     x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
                                          batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'])
                     rmse = compute_rmse(x_pred, batch['coords'], batch['mask']).item() * s['std']
                     train_rmses.append(rmse)
-
                 train_avg = sum(train_rmses) / len(train_rmses)
-                logger.log(f"         >>> Eval RMSE (first 20): {train_avg:.4f} A")
 
-                # Plot first sample
-                s = all_samples[train_indices[0]]
+                # Evaluate on TEST set (full set - never seen during training)
+                test_rmses = []
+                for idx in test_indices:
+                    s = test_samples[idx]
+                    batch = collate_batch([s], device)
+                    x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
+                                         batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'])
+                    rmse = compute_rmse(x_pred, batch['coords'], batch['mask']).item() * s['std']
+                    test_rmses.append(rmse)
+                test_avg = sum(test_rmses) / len(test_rmses)
+
+                logger.log(f"         >>> Train RMSE ({n_eval}): {train_avg:.4f} A | Test RMSE ({len(test_indices)}): {test_avg:.4f} A")
+
+                # Plot first train sample
+                s = train_samples[train_indices[0]]
                 batch = collate_batch([s], device)
                 x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
                                      batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'])
@@ -453,22 +573,24 @@ def main():
                 pred = x_pred[0, :n] * s['std']
                 target = batch['coords'][0, :n] * s['std']
                 pred_aligned, target_c = kabsch_align(pred.unsqueeze(0), target.unsqueeze(0))
-                rmse_viz = compute_rmse(pred.unsqueeze(0), target.unsqueeze(0)).item() * s['std']
+                rmse_viz = compute_rmse(pred.unsqueeze(0), target.unsqueeze(0)).item()  # Already in Angstroms
 
                 plot_path = os.path.join(plots_dir, f'step_{step:06d}.png')
                 plot_prediction(pred_aligned[0], target_c[0], s['chain_ids'],
                                s['sample_id'], rmse_viz, plot_path)
                 logger.log(f"         >>> Saved plot: {plot_path}")
 
-                if train_avg < best_rmse:
-                    best_rmse = train_avg
+                # Save best model based on TEST RMSE (generalization)
+                if test_avg < best_rmse:
+                    best_rmse = test_avg
                     torch.save({
                         'step': step,
                         'model_state_dict': model.state_dict(),
-                        'rmse': train_avg,
+                        'train_rmse': train_avg,
+                        'test_rmse': test_avg,
                         'args': vars(args),
                     }, os.path.join(args.output_dir, 'best_model.pt'))
-                    logger.log(f"         >>> New best! Saved.")
+                    logger.log(f"         >>> New best test RMSE! Saved.")
 
             model.train()
 
@@ -477,19 +599,23 @@ def main():
     logger.log("=" * 70)
     logger.log(f"Training complete")
     logger.log(f"  Total time: {total_time:.0f}s ({total_time/60:.1f} min)")
-    logger.log(f"  Best RMSE: {best_rmse:.4f} A")
+    logger.log(f"  Best test RMSE: {best_rmse:.4f} A")
 
-    # Final eval
+    # Final eval with best model
     checkpoint = torch.load(os.path.join(args.output_dir, 'best_model.pt'))
     model.load_state_dict(checkpoint['model_state_dict'])
 
     logger.log("")
-    logger.log("Final evaluation (3 samples each, first 30):")
+    logger.log("=" * 70)
+    logger.log("Final evaluation (3 samples each)")
+    logger.log("=" * 70)
     model.eval()
     with torch.no_grad():
-        all_rmses = []
-        for idx in train_indices[:30]:
-            s = all_samples[idx]
+        # Evaluate TRAIN set
+        logger.log(f"\nTRAIN SET ({len(train_indices)} samples):")
+        train_final_rmses = []
+        for idx in train_indices:
+            s = train_samples[idx]
             batch = collate_batch([s], device)
             rmses = []
             for _ in range(3):
@@ -498,11 +624,36 @@ def main():
                 rmse = compute_rmse(x_pred, batch['coords'], batch['mask']).item() * s['std']
                 rmses.append(rmse)
             mean_rmse = sum(rmses) / len(rmses)
-            all_rmses.append(mean_rmse)
+            train_final_rmses.append(mean_rmse)
             logger.log(f"  {s['sample_id']}: {mean_rmse:.2f} A")
+        train_overall = sum(train_final_rmses) / len(train_final_rmses)
+        logger.log(f"  --- Train mean: {train_overall:.2f} A")
 
-        overall = sum(all_rmses) / len(all_rmses)
-        logger.log(f"\nOverall mean: {overall:.2f} A")
+        # Evaluate TEST set (never seen during training)
+        logger.log(f"\nTEST SET ({len(test_indices)} samples) - NEVER SEEN DURING TRAINING:")
+        test_final_rmses = []
+        for idx in test_indices:
+            s = test_samples[idx]
+            batch = collate_batch([s], device)
+            rmses = []
+            for _ in range(3):
+                x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
+                                     batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'])
+                rmse = compute_rmse(x_pred, batch['coords'], batch['mask']).item() * s['std']
+                rmses.append(rmse)
+            mean_rmse = sum(rmses) / len(rmses)
+            test_final_rmses.append(mean_rmse)
+            logger.log(f"  {s['sample_id']}: {mean_rmse:.2f} A")
+        test_overall = sum(test_final_rmses) / len(test_final_rmses)
+        logger.log(f"  --- Test mean: {test_overall:.2f} A")
+
+        logger.log("")
+        logger.log("=" * 70)
+        logger.log(f"FINAL RESULTS:")
+        logger.log(f"  Train RMSE: {train_overall:.2f} A")
+        logger.log(f"  Test RMSE:  {test_overall:.2f} A")
+        logger.log(f"  Gap:        {test_overall - train_overall:.2f} A")
+        logger.log("=" * 70)
 
     logger.log("")
     logger.log(f"Finished: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
