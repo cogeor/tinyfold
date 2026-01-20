@@ -275,27 +275,30 @@ class LinearChainNoise:
 
 
 class LinearChainFlow:
-    """Progressive flow from extended chain to structure.
+    """Iterative refinement flow from extended chain to folded structure.
 
-    Instead of predicting x0 directly, this models the flow as discrete steps:
-    - x_T = x_linear (extended chain)
-    - x_0 = x0 (target structure)
-    - x_t = linear interpolation between x0 and x_linear
+    Simple approach:
+    - t=0: x_linear (fully extended)
+    - t=T: x0 (fully folded)
+    - x_t = (t/T) * x0 + (1 - t/T) * x_linear (linear interpolation)
 
-    Model predicts the velocity v = (x0 - x_linear), which is constant along path.
-    Sampling steps progressively from x_linear toward x0.
+    Training:
+    - Sample t from 1 to T
+    - Input: x_{t-1} (less folded)
+    - Target: x_t (more folded)
+    - Model learns to take one refinement step
 
-    Key difference from LinearChainNoise:
-    - Constant noise level (not schedule-dependent)
-    - Model predicts velocity/direction, not absolute x0
-    - Sampling is additive stepping along the flow
+    Inference:
+    - Start from x_linear
+    - Run T steps: x_t = model(x_{t-1}, t)
+    - Final output is the folded structure
     """
 
     def __init__(self, schedule: CosineSchedule, noise_scale: float = 0.1):
         """
         Args:
             schedule: Used only for T (number of steps)
-            noise_scale: Constant Gaussian noise added at each step
+            noise_scale: Small noise added to input during training
         """
         self.schedule = schedule
         self.noise_scale = noise_scale
@@ -329,18 +332,21 @@ class LinearChainFlow:
         chain_ids: Tensor,
         **kwargs,
     ) -> tuple[Tensor, Tensor]:
-        """Create noisy sample at step t via linear interpolation.
+        """Create noisy input at timestep t for x0 prediction.
+
+        Like gaussian diffusion but interpolates with extended chain instead of noise.
+        Model always predicts x0 from x_t.
 
         Args:
-            x0: Clean coordinates [B, N, 3]
-            t: Timesteps [B] (0 = clean, T = fully linear)
+            x0: Clean/folded coordinates [B, N, 3]
+            t: Timesteps [B] (0 to T-1)
             atom_to_res: Residue indices [B, N]
             atom_type: Atom types [B, N]
             chain_ids: Chain IDs [B, N]
 
         Returns:
-            x_t: Interpolated coordinates + noise [B, N, 3]
-            velocity: Target velocity v = x0 - x_linear [B, N, 3]
+            x_t: Noisy coordinates at timestep t [B, N, 3]
+            x0: Target (clean coordinates) [B, N, 3]
         """
         B, N, _ = x0.shape
         device = x0.device
@@ -352,24 +358,27 @@ class LinearChainFlow:
                 N, atom_to_res[b], atom_type[b], chain_ids[b], device
             )
 
-        # Normalize extended chain
+        # Normalize extended chain (same scale as x0)
         x_linear = x_linear - x_linear.mean(dim=1, keepdim=True)
         x_linear_std = x_linear.std(dim=(1, 2), keepdim=True).clamp(min=1e-6)
         x_linear = x_linear / x_linear_std
 
-        # Linear interpolation: x_t = (1 - t/T) * x0 + (t/T) * x_linear
-        # At t=0: x_t = x0, at t=T: x_t = x_linear
-        alpha = (t.float() / self.T).view(-1, 1, 1)  # [B, 1, 1]
-        x_t = (1 - alpha) * x0 + alpha * x_linear
+        # Store x_linear for inference (accessed via last call)
+        self._last_x_linear = x_linear
 
-        # Add constant noise
+        # Interpolation: t=0 is x_linear, t=T is x0
+        # Use same alpha_bar as gaussian for consistency
+        alpha = self.schedule.sqrt_alpha_bar[t].view(-1, 1, 1)  # [B, 1, 1]
+        one_minus_alpha = self.schedule.sqrt_one_minus_alpha_bar[t].view(-1, 1, 1)
+
+        # x_t = alpha * x0 + (1-alpha) * x_linear
+        x_t = alpha * x0 + one_minus_alpha * x_linear
+
+        # Add small noise for robustness
         if self.noise_scale > 0:
             x_t = x_t + torch.randn_like(x_t) * self.noise_scale
 
-        # Target: velocity from x_linear to x0 (constant along path)
-        velocity = x0 - x_linear
-
-        return x_t, velocity
+        return x_t, x0  # Return x0 as target (model predicts x0)
 
     def reverse_step(
         self,

@@ -703,6 +703,56 @@ class AF3StyleDecoder(BaseDecoder):
 
         return x0_pred
 
+    def forward_flow(
+        self,
+        x_t: Tensor,
+        atom_types: Tensor,
+        atom_to_res: Tensor,
+        aa_seq: Tensor,
+        chain_ids: Tensor,
+        t: Tensor,
+        mask: Tensor = None,
+    ) -> Tensor:
+        """Forward for linear_flow - directly predicts x_t (no residual/scaling).
+
+        The model directly outputs the next step coordinates.
+        This is simpler and avoids gradient issues from small step scales.
+        """
+        B, N_atoms, _ = x_t.shape
+        N_res = N_atoms // 4
+        device = x_t.device
+
+        # Reshape to residue structure: [B, L, 4, 3]
+        x_res = x_t.view(B, N_res, 4, 3)
+        atom_types_res = atom_types.view(B, N_res, 4)
+
+        # Extract residue-level info (from CA atoms)
+        aa_res = aa_seq.view(B, N_res, 4)[:, :, 1]
+        chain_res = chain_ids.view(B, N_res, 4)[:, :, 1]
+        res_idx = atom_to_res.view(B, N_res, 4)[:, :, 1]
+
+        # Masks
+        if mask is not None:
+            mask_res = mask.view(B, N_res, 4)
+            mask_token = mask_res[:, :, 1]
+        else:
+            mask_res = torch.ones(B, N_res, 4, dtype=torch.bool, device=device)
+            mask_token = torch.ones(B, N_res, dtype=torch.bool, device=device)
+
+        # === TRUNK (once) ===
+        trunk_tokens = self.trunk(x_res, aa_res, chain_res, res_idx, mask_token)
+
+        # === DENOISER ===
+        time_cond = self.time_embed(t).unsqueeze(1).expand(-1, N_res, -1)
+        tokens, skip_states = self.atom_encoder(x_res, atom_types_res, trunk_tokens, mask_res)
+        tokens = self.diff_transformer(tokens, time_cond, mask_token)
+        coord_updates = self.atom_decoder(tokens, skip_states, atom_types_res, mask_res)
+
+        # Direct prediction of x_t (next step) - no residual, no scaling
+        x_next = coord_updates.view(B, N_atoms, 3)
+
+        return x_next
+
     def count_parameters(self) -> dict:
         """Count parameters in trunk vs denoiser for verification."""
         trunk_params = sum(p.numel() for p in self.trunk.parameters())

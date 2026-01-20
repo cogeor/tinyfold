@@ -58,36 +58,66 @@ class Logger:
 
 @torch.no_grad()
 def ddpm_sample(model, atom_types, atom_to_res, aa_seq, chain_ids, noiser, mask=None,
-                clamp_val=3.0, x_linear=None):
+                clamp_val=3.0, x_linear=None, noise_type="gaussian"):
     """Diffusion sampling loop.
 
     For Gaussian noise: starts from random noise, uses DDPM reverse.
     For linear_chain: starts from extended chain, uses interpolation reverse.
+    For linear_flow: iterative refinement from extended chain.
 
     Args:
-        x_linear: Extended chain coordinates [B, N, 3] for linear_chain noise.
-                  If None and noiser has reverse_step, will be generated.
+        x_linear: Extended chain coordinates [B, N, 3] for linear_chain/linear_flow.
+                  If None, will be generated.
+        noise_type: "gaussian", "linear_chain", or "linear_flow"
     """
     device = atom_types.device
     B, N = atom_types.shape
 
-    # Check if this is linear_chain noise (has reverse_step method)
-    use_linear_chain = hasattr(noiser, 'reverse_step')
+    # Generate extended chain if needed
+    def get_x_linear():
+        from models.diffusion import generate_extended_chain
+        xl = torch.zeros(B, N, 3, device=device)
+        for b in range(B):
+            xl[b] = generate_extended_chain(
+                N, atom_to_res[b], atom_types[b], chain_ids[b], device
+            )
+        xl = xl - xl.mean(dim=1, keepdim=True)
+        xl = xl / xl.std(dim=(1, 2), keepdim=True).clamp(min=1e-6)
+        return xl
 
-    if use_linear_chain:
-        # Start from extended chain
+    # === LINEAR_FLOW: Iterative refinement with x0 prediction ===
+    if noise_type == "linear_flow":
         if x_linear is None:
-            from models.diffusion import generate_extended_chain
-            x_linear = torch.zeros(B, N, 3, device=device)
-            for b in range(B):
-                x_linear[b] = generate_extended_chain(
-                    N, atom_to_res[b], atom_types[b], chain_ids[b], device
-                )
-            x_linear = x_linear - x_linear.mean(dim=1, keepdim=True)
-            x_linear = x_linear / x_linear.std(dim=(1, 2), keepdim=True).clamp(min=1e-6)
+            x_linear = get_x_linear()
+        x = x_linear.clone()
+
+        # Iteratively predict x0 and interpolate towards it
+        # Each step: x_t -> model -> x0_pred -> interpolate to x_{t+1}
+        for t in range(noiser.T):
+            t_batch = torch.full((B,), t, device=device, dtype=torch.long)
+            # Predict x0 from current state
+            x0_pred = model(x, atom_types, atom_to_res, aa_seq, chain_ids, t_batch, mask)
+            x0_pred = torch.clamp(x0_pred, -clamp_val, clamp_val)
+
+            if t < noiser.T - 1:
+                # Interpolate: move towards x0_pred
+                # At t+1, alpha increases, so we're closer to x0
+                alpha_next = noiser.schedule.sqrt_alpha_bar[t + 1]
+                one_minus_alpha_next = noiser.schedule.sqrt_one_minus_alpha_bar[t + 1]
+                x = alpha_next * x0_pred + one_minus_alpha_next * x_linear
+            else:
+                # Final step: return x0_pred directly
+                x = x0_pred
+        return x
+
+    # === LINEAR_CHAIN: DDPM with extended chain start ===
+    use_linear_chain = hasattr(noiser, 'reverse_step')
+    if use_linear_chain:
+        if x_linear is None:
+            x_linear = get_x_linear()
         x = x_linear.clone()
     else:
-        # Start from random noise
+        # === GAUSSIAN: Start from random noise ===
         x = torch.randn(B, N, 3, device=device)
 
     for t in reversed(range(noiser.T)):
@@ -448,7 +478,7 @@ def main():
 
     # Create diffusion components
     schedule = create_schedule(args.schedule, T=args.T)
-    if args.noise_type == "linear_chain":
+    if args.noise_type in ["linear_chain", "linear_flow"]:
         noiser = create_noiser(args.noise_type, schedule, noise_scale=args.noise_scale)
     else:
         noiser = create_noiser(args.noise_type, schedule)
@@ -493,25 +523,27 @@ def main():
             if curriculum:
                 t = curriculum.sample(args.batch_size, step, device)
             else:
+                # All noise types: sample t from 0 to T-1
                 t = torch.randint(0, noiser.T, (args.batch_size,), device=device)
 
             # Add noise (unified API)
-            # For linear_flow: target is velocity, for others: target is x_linear (unused)
-            x_t, target = noiser.add_noise(
+            # For linear_flow: x_t is x_{t-1} (input), target is x_t (more folded)
+            # For others: x_t is noisy input, target is unused (we use batch['coords'])
+            x_input, target = noiser.add_noise(
                 batch['coords'], t,
                 atom_to_res=batch['atom_to_res'],
                 atom_type=batch['atom_types'],
                 chain_ids=batch['chain_ids'],
             )
 
-            pred = model(x_t, batch['atom_types'], batch['atom_to_res'],
+            # All noise types: predict x0 from x_t
+            pred = model(x_input, batch['atom_types'], batch['atom_to_res'],
                          batch['aa_seq'], batch['chain_ids'], t, batch['mask'])
 
-            # Different loss for linear_flow (velocity prediction) vs others (x0 prediction)
+            # For linear_flow, target is x0 (returned by add_noise)
+            # For gaussian/linear_chain, target is noise/x_linear but we use batch['coords'] (x0)
             if args.noise_type == "linear_flow":
-                # Direct MSE on velocity (no Kabsch - velocity is in same frame)
-                sq_diff = ((pred - target) ** 2).sum(dim=-1)
-                loss = (sq_diff * batch['mask'].float()).sum() / batch['mask'].float().sum().clamp(min=1)
+                loss = compute_loss(pred, target, batch['mask'])  # target is x0
             else:
                 loss = compute_loss(pred, batch['coords'], batch['mask'])
 
@@ -545,7 +577,8 @@ def main():
                     s = train_samples[idx]
                     batch = collate_batch([s], device)
                     x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
-                                         batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'])
+                                         batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
+                                         noise_type=args.noise_type)
                     rmse = compute_rmse(x_pred, batch['coords'], batch['mask']).item() * s['std']
                     train_rmses.append(rmse)
                 train_avg = sum(train_rmses) / len(train_rmses)
@@ -556,7 +589,8 @@ def main():
                     s = test_samples[idx]
                     batch = collate_batch([s], device)
                     x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
-                                         batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'])
+                                         batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
+                                         noise_type=args.noise_type)
                     rmse = compute_rmse(x_pred, batch['coords'], batch['mask']).item() * s['std']
                     test_rmses.append(rmse)
                 test_avg = sum(test_rmses) / len(test_rmses)
@@ -567,7 +601,8 @@ def main():
                 s = train_samples[train_indices[0]]
                 batch = collate_batch([s], device)
                 x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
-                                     batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'])
+                                     batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
+                                     noise_type=args.noise_type)
 
                 n = s['n_atoms']
                 pred = x_pred[0, :n] * s['std']
@@ -620,7 +655,8 @@ def main():
             rmses = []
             for _ in range(3):
                 x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
-                                     batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'])
+                                     batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
+                                     noise_type=args.noise_type)
                 rmse = compute_rmse(x_pred, batch['coords'], batch['mask']).item() * s['std']
                 rmses.append(rmse)
             mean_rmse = sum(rmses) / len(rmses)
@@ -638,7 +674,8 @@ def main():
             rmses = []
             for _ in range(3):
                 x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
-                                     batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'])
+                                     batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
+                                     noise_type=args.noise_type)
                 rmse = compute_rmse(x_pred, batch['coords'], batch['mask']).item() * s['std']
                 rmses.append(rmse)
             mean_rmse = sum(rmses) / len(rmses)
