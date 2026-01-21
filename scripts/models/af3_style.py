@@ -600,8 +600,8 @@ class AF3StyleDecoder(BaseDecoder):
 
         # === DENOISER (runs each step) ===
 
-        # Timestep embedding for conditioning
-        self.time_embed = nn.Embedding(n_timesteps, c_token)
+        # Timestep embedding for conditioning (+1 for t=T in linear_chain)
+        self.time_embed = nn.Embedding(n_timesteps + 1, c_token)
 
         # AtomAttentionEncoder
         self.atom_encoder = AtomAttentionEncoder(
@@ -695,12 +695,63 @@ class AF3StyleDecoder(BaseDecoder):
             tokens, skip_states, atom_types_res, mask_res
         )  # [B, L, 4, 3]
 
-        # Residual connection with sqrt noise-level scaling
-        # sqrt scaling is less aggressive - allows learning at low timesteps
-        # t=1: scale=0.14, t=25: scale=0.71, t=50: scale=1.0
-        noise_scale = (t.float() / self.n_timesteps).sqrt().view(-1, 1, 1)  # [B, 1, 1]
-        x0_pred = x_t + noise_scale * coord_updates.view(B, N_atoms, 3)
+        # Output coordinate updates
+        coord_updates = coord_updates.view(B, N_atoms, 3)
 
+        # For Gaussian noise: use residual with sqrt noise-level scaling
+        # For linear_chain: predict coordinates directly (no scaling)
+        # The scaling causes gradient issues at low timesteps for linear_chain
+        # because noise_scale=0 at t=0 means zero gradient to coord_updates
+        noise_scale = (t.float() / self.n_timesteps).sqrt().view(-1, 1, 1)  # [B, 1, 1]
+        x0_pred = x_t + noise_scale * coord_updates
+
+        return x0_pred
+
+    def forward_direct(
+        self,
+        x_t: Tensor,
+        atom_types: Tensor,
+        atom_to_res: Tensor,
+        aa_seq: Tensor,
+        chain_ids: Tensor,
+        t: Tensor,
+        mask: Tensor = None,
+    ) -> Tensor:
+        """Predict clean coordinates directly (no residual scaling).
+
+        Use this for linear_chain noise where we need consistent gradients
+        at all timesteps.
+        """
+        B, N_atoms, _ = x_t.shape
+        N_res = N_atoms // 4
+        device = x_t.device
+
+        # Reshape to residue structure
+        x_res = x_t.view(B, N_res, 4, 3)
+        atom_types_res = atom_types.view(B, N_res, 4)
+
+        # Extract residue-level info
+        aa_res = aa_seq.view(B, N_res, 4)[:, :, 1]
+        chain_res = chain_ids.view(B, N_res, 4)[:, :, 1]
+        res_idx = atom_to_res.view(B, N_res, 4)[:, :, 1]
+
+        # Masks
+        if mask is not None:
+            mask_res = mask.view(B, N_res, 4)
+            mask_token = mask_res[:, :, 1]
+        else:
+            mask_res = torch.ones(B, N_res, 4, dtype=torch.bool, device=device)
+            mask_token = torch.ones(B, N_res, dtype=torch.bool, device=device)
+
+        # Trunk + Denoiser
+        trunk_tokens = self.trunk(x_res, aa_res, chain_res, res_idx, mask_token)
+        time_cond = self.time_embed(t).unsqueeze(1).expand(-1, N_res, -1)
+        tokens, skip_states = self.atom_encoder(x_res, atom_types_res, trunk_tokens, mask_res)
+        tokens = self.diff_transformer(tokens, time_cond, mask_token)
+        coord_updates = self.atom_decoder(tokens, skip_states, atom_types_res, mask_res)
+
+        # Direct prediction - no scaling, just output coordinates
+        x0_pred = coord_updates.view(B, N_atoms, 3)
         return x0_pred
 
     def forward_flow(

@@ -42,7 +42,7 @@ class AttentionDiffusionV2(BaseDecoder):
         self.atom_type_embed = nn.Embedding(4, h_dim // 4)
         self.aa_embed = nn.Embedding(n_aa_types, h_dim)
         self.chain_embed = nn.Embedding(n_chains, h_dim // 4)
-        self.time_embed = nn.Embedding(n_timesteps, h_dim)
+        self.time_embed = nn.Embedding(n_timesteps + 1, h_dim)  # +1 for t=T in linear_chain
         self.coord_proj = nn.Linear(3, h_dim)
 
         # Input projection

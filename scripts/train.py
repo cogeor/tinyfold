@@ -73,13 +73,14 @@ def ddpm_sample(model, atom_types, atom_to_res, aa_seq, chain_ids, noiser, mask=
     device = atom_types.device
     B, N = atom_types.shape
 
-    # Generate extended chain if needed
+    # Generate extended chain if needed (deterministic - no rotation)
     def get_x_linear():
         from models.diffusion import generate_extended_chain
         xl = torch.zeros(B, N, 3, device=device)
         for b in range(B):
             xl[b] = generate_extended_chain(
-                N, atom_to_res[b], atom_types[b], chain_ids[b], device
+                N, atom_to_res[b], atom_types[b], chain_ids[b], device,
+                apply_rotation=False  # Deterministic for inference
             )
         xl = xl - xl.mean(dim=1, keepdim=True)
         xl = xl / xl.std(dim=(1, 2), keepdim=True).clamp(min=1e-6)
@@ -116,13 +117,21 @@ def ddpm_sample(model, atom_types, atom_to_res, aa_seq, chain_ids, noiser, mask=
         if x_linear is None:
             x_linear = get_x_linear()
         x = x_linear.clone()
+        # Start from t=T (pure x_linear) and go down to t=0
+        t_range = reversed(range(noiser.T + 1))
     else:
         # === GAUSSIAN: Start from random noise ===
         x = torch.randn(B, N, 3, device=device)
+        # Standard DDPM: t goes from T-1 to 0
+        t_range = reversed(range(noiser.T))
 
-    for t in reversed(range(noiser.T)):
+    for t in t_range:
         t_batch = torch.full((B,), t, device=device, dtype=torch.long)
-        x0_pred = model(x, atom_types, atom_to_res, aa_seq, chain_ids, t_batch, mask)
+        # Use forward_direct for linear_chain with AF3-style (no residual scaling)
+        if use_linear_chain and hasattr(model, 'forward_direct'):
+            x0_pred = model.forward_direct(x, atom_types, atom_to_res, aa_seq, chain_ids, t_batch, mask)
+        else:
+            x0_pred = model(x, atom_types, atom_to_res, aa_seq, chain_ids, t_batch, mask)
         x0_pred = torch.clamp(x0_pred, -clamp_val, clamp_val)
 
         if use_linear_chain:
@@ -181,9 +190,22 @@ def kabsch_align(pred, target, mask=None):
     return pred_aligned, target_c
 
 
-def compute_loss(pred, target, mask=None):
-    """MSE loss after Kabsch alignment."""
-    pred_aligned, target_c = kabsch_align(pred, target, mask)
+def compute_loss(pred, target, mask=None, use_kabsch=True):
+    """MSE loss, optionally after Kabsch alignment.
+
+    Args:
+        use_kabsch: If True, align pred to target before computing loss.
+                    For linear_chain, set False to preserve coordinate frame.
+    """
+    if use_kabsch:
+        pred_aligned, target_c = kabsch_align(pred, target, mask)
+    else:
+        # Direct MSE without alignment - center both
+        pred_mean = pred.mean(dim=1, keepdim=True)
+        target_mean = target.mean(dim=1, keepdim=True)
+        pred_aligned = pred - pred_mean
+        target_c = target - target_mean
+
     sq_diff = ((pred_aligned - target_c) ** 2).sum(dim=-1)
 
     if mask is not None:
@@ -523,8 +545,12 @@ def main():
             if curriculum:
                 t = curriculum.sample(args.batch_size, step, device)
             else:
-                # All noise types: sample t from 0 to T-1
-                t = torch.randint(0, noiser.T, (args.batch_size,), device=device)
+                # For linear_chain: sample t from 0 to T (inclusive) so model sees pure x_linear
+                # For gaussian: sample t from 0 to T-1 (standard DDPM)
+                if args.noise_type == "linear_chain":
+                    t = torch.randint(0, noiser.T + 1, (args.batch_size,), device=device)
+                else:
+                    t = torch.randint(0, noiser.T, (args.batch_size,), device=device)
 
             # Add noise (unified API)
             # For linear_flow: x_t is x_{t-1} (input), target is x_t (more folded)
@@ -537,15 +563,22 @@ def main():
             )
 
             # All noise types: predict x0 from x_t
-            pred = model(x_input, batch['atom_types'], batch['atom_to_res'],
-                         batch['aa_seq'], batch['chain_ids'], t, batch['mask'])
+            # For AF3-style with linear_chain: use forward_direct (no scaling)
+            if args.noise_type == "linear_chain" and hasattr(model, 'forward_direct'):
+                pred = model.forward_direct(x_input, batch['atom_types'], batch['atom_to_res'],
+                                            batch['aa_seq'], batch['chain_ids'], t, batch['mask'])
+            else:
+                pred = model(x_input, batch['atom_types'], batch['atom_to_res'],
+                             batch['aa_seq'], batch['chain_ids'], t, batch['mask'])
 
             # For linear_flow, target is x0 (returned by add_noise)
             # For gaussian/linear_chain, target is noise/x_linear but we use batch['coords'] (x0)
+            # For linear_chain: disable Kabsch to preserve coordinate frame (required for reverse step)
+            use_kabsch = (args.noise_type != "linear_chain")
             if args.noise_type == "linear_flow":
-                loss = compute_loss(pred, target, batch['mask'])  # target is x0
+                loss = compute_loss(pred, target, batch['mask'], use_kabsch=use_kabsch)
             else:
-                loss = compute_loss(pred, batch['coords'], batch['mask'])
+                loss = compute_loss(pred, batch['coords'], batch['mask'], use_kabsch=use_kabsch)
 
             # Scale loss for accumulation
             loss = loss / args.grad_accum

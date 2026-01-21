@@ -17,6 +17,11 @@ from .attention_v2 import AttentionDiffusionV2
 from .hierarchical import HierarchicalDecoder
 from .pairformer_decoder import PairformerDecoder
 from .af3_style import AF3StyleDecoder
+from .resfold import ResidueDenoiser
+from .atomrefine import AtomRefiner
+from .atomrefine_v2 import AtomRefinerV2
+from .resfold_pipeline import ResFoldPipeline
+from .geometry_losses import GeometryLoss, bond_length_loss, bond_angle_loss, omega_loss
 from .diffusion import (
     CosineSchedule,
     GaussianNoise,
@@ -37,6 +42,9 @@ _MODELS = {
     "hierarchical": HierarchicalDecoder,
     "pairformer": PairformerDecoder,
     "af3_style": AF3StyleDecoder,
+    "resfold_stage1": ResidueDenoiser,
+    "resfold_stage2": AtomRefiner,
+    "resfold": ResFoldPipeline,
 }
 
 
@@ -81,6 +89,11 @@ __all__ = [
     "HierarchicalDecoder",
     "PairformerDecoder",
     "AF3StyleDecoder",
+    "ResidueDenoiser",
+    "AtomRefiner",
+    "AtomRefinerV2",
+    "ResFoldPipeline",
+    "GeometryLoss",
     "create_model",
     "list_models",
     "get_model_class",

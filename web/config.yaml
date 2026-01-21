@@ -1,0 +1,23 @@
+model:
+  checkpoint: "../outputs/af3_15M_gaussian_5K/best_model.pt"
+  architecture: "af3_style"
+
+inference:
+  noise_type: "gaussian"
+  n_timesteps: 50
+  clamp_val: 3.0
+
+data:
+  samples_path: "../data/processed/samples.parquet"
+  min_atoms: 100
+  max_atoms: 1600
+  n_train: 5000
+  n_test: 1000
+
+# Optional: pre-computed predictions (set to null or remove to use live inference)
+predictions:
+  cache_path: null  # e.g., "predictions.json"
+
+server:
+  host: "127.0.0.1"
+  port: 5001

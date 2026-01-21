@@ -156,14 +156,16 @@ class LinearChainNoise:
     chain (residues in straight lines). Small Gaussian noise is added on top.
     """
 
-    def __init__(self, schedule: CosineSchedule, noise_scale: float = 0.1):
+    def __init__(self, schedule: CosineSchedule, noise_scale: float = 0.1, rotation: bool = False):
         """
         Args:
             schedule: The alpha_bar schedule to use
             noise_scale: Scale of additional Gaussian noise (0 = pure interpolation)
+            rotation: If True, apply random rotation to extended chain (default False)
         """
         self.schedule = schedule
         self.noise_scale = noise_scale
+        self.rotation = rotation
 
     @property
     def T(self):
@@ -214,7 +216,8 @@ class LinearChainNoise:
         x_linear = torch.zeros_like(x0)
         for b in range(B):
             x_linear[b] = generate_extended_chain(
-                N, atom_to_res[b], atom_type[b], chain_ids[b], device
+                N, atom_to_res[b], atom_type[b], chain_ids[b], device,
+                apply_rotation=self.rotation
             )
 
         # Normalize extended chain to match x0 scale (zero mean, unit std)
@@ -294,14 +297,16 @@ class LinearChainFlow:
     - Final output is the folded structure
     """
 
-    def __init__(self, schedule: CosineSchedule, noise_scale: float = 0.1):
+    def __init__(self, schedule: CosineSchedule, noise_scale: float = 0.1, rotation: bool = False):
         """
         Args:
             schedule: Used only for T (number of steps)
             noise_scale: Small noise added to input during training
+            rotation: If True, apply random rotation to extended chain (default False)
         """
         self.schedule = schedule
         self.noise_scale = noise_scale
+        self.rotation = rotation
 
     @property
     def T(self):
@@ -355,7 +360,8 @@ class LinearChainFlow:
         x_linear = torch.zeros_like(x0)
         for b in range(B):
             x_linear[b] = generate_extended_chain(
-                N, atom_to_res[b], atom_type[b], chain_ids[b], device
+                N, atom_to_res[b], atom_type[b], chain_ids[b], device,
+                apply_rotation=self.rotation
             )
 
         # Normalize extended chain (same scale as x0)
@@ -424,6 +430,7 @@ def generate_extended_chain(
     atom_type: Tensor,
     chain_ids: Tensor,
     device: torch.device,
+    apply_rotation: bool = False,
 ) -> Tensor:
     """Generate extended chain coordinates (all residues in straight lines).
 
@@ -435,6 +442,7 @@ def generate_extended_chain(
         atom_type: Atom type (0=N, 1=CA, 2=C, 3=O) [N]
         chain_ids: Chain ID for each atom [N]
         device: Device to create tensor on
+        apply_rotation: If True, apply random rotation (default False for deterministic)
 
     Returns:
         x_linear: Extended chain coordinates [N, 3]
@@ -476,9 +484,10 @@ def generate_extended_chain(
     # Build atom positions: CA[res] + offset[atom_type] (fully vectorized)
     x_linear = ca_positions[atom_to_res] + ATOM_OFFSETS[atom_type] * CA_CA_DIST
 
-    # Random rotation
-    R = random_rotation_matrix(device)
-    x_linear = x_linear @ R.T
+    # Optional random rotation (disabled by default for deterministic behavior)
+    if apply_rotation:
+        R = random_rotation_matrix(device)
+        x_linear = x_linear @ R.T
 
     return x_linear
 

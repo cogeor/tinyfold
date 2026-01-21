@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TinyFold Visualizer</title>
+    <script src="https://3Dmol.org/build/3Dmol-min.js"></script>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container" id="app-container">
+        <!-- Sidebar: Sample Browser -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h1>TinyFold</h1>
+            </div>
+            <div class="search-box">
+                <input type="text" id="search" placeholder="Search samples...">
+                <select id="split-filter">
+                    <option value="all">All</option>
+                    <option value="train">Train</option>
+                    <option value="test">Test</option>
+                </select>
+            </div>
+            <div class="sample-count">
+                <span id="sample-count">0 samples</span>
+            </div>
+            <div id="sample-list" class="sample-list">
+                <!-- Populated by JS -->
+            </div>
+            <div class="pagination">
+                <button id="prev-page" disabled>&lt; Prev</button>
+                <span id="page-info">Page 1</span>
+                <button id="next-page">Next &gt;</button>
+            </div>
+        </aside>
+
+        <!-- Main: Viewer + Controls -->
+        <main class="viewer-area">
+            <!-- Style Controls -->
+            <div class="controls">
+                <div class="control-group">
+                    <label>Style:</label>
+                    <button data-style="cartoon" class="active">Cartoon</button>
+                    <button data-style="stick">Stick</button>
+                    <button data-style="sphere">Sphere</button>
+                    <button data-style="line">Line</button>
+                </div>
+                <div class="control-group">
+                    <label>Color:</label>
+                    <select id="color-scheme">
+                        <option value="chain">By Chain</option>
+                        <option value="spectrum">Spectrum</option>
+                        <option value="ss">Secondary Structure</option>
+                    </select>
+                </div>
+                <div class="control-group">
+                    <label>Show:</label>
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="show-gt" checked> Ground Truth
+                    </label>
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="show-pred" disabled> Prediction
+                    </label>
+                </div>
+                <div class="control-group prediction-controls">
+                    <button id="btn-predict" class="primary" disabled>Run Prediction</button>
+                    <button id="btn-reset" title="Reset view">Reset View</button>
+                </div>
+            </div>
+
+            <!-- 3Dmol Viewer -->
+            <div id="viewer" class="mol-viewer"></div>
+
+            <!-- Info Panel -->
+            <div id="info-panel" class="info-panel">
+                <div class="info-row">
+                    <span id="sample-title">Select a sample</span>
+                </div>
+                <div id="sample-info" class="info-details"></div>
+                <div id="pred-info" class="pred-info"></div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/viewer.js"></script>
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
