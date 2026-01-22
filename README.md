@@ -5,7 +5,7 @@ A lightweight diffusion-based model for binary protein-protein interaction (PPI)
 <p align="center">
   <img src="assets/tinyfold.png" alt="Held-out test set examples" width="800"/>
   <br>
-  <em>Carefully curated held-out test set examples of predicted vs ground truth complexes. Green-blue: ground truth. Red-yellow: predicted.</em>
+  <em>Carefully curated held-out test set example of predicted vs ground truth complexes. Green-blue: ground truth. Red-yellow: predicted.</em>
 </p>
 
 ## Overview
@@ -21,15 +21,31 @@ This hierarchical design is motivated by the observation that **backbone topolog
 ### Key Features
 
 - **Compact**: ~28M parameters total (13.8M Stage 1 + 14.2M Stage 2)
-- **Efficient**: Operates on residue-level tokens, not atoms (4x fewer tokens in the first stage)
+- **Efficient**: First-stage decoder operates on residue-level tokens, not atoms (4x fewer tokens in the first stage)
 - **Modular**: Train stages independently or end-to-end
 - **Practical**: Single GPU training (RTX 4070 Ti, ~8 hours for Stage 1)
 
 ### Rationale
 
-Protein folding in complexes is a hard problem. By splitting it into two tasks: first roughly estimating residue center positions for both chains with diffusion, then refining to atoms. This approach allows to keep the attention-based decoder small while still capturing the essential structure. We skip explicit pairwise features (as in Pairformer) and let the attention mechanism learn these relationships implicitly. The result is a compact model that is still able to learn protein-protein interactions.
+Complex folding couples global arrangement (chain–chain positioning) with local atomic detail (side-chain packing, interface chemistry). We decouple these by predicting structure at two resolutions:
 
-This also has practical benefits: when one protein's structure is already known, we only need to predict the partner's residue positions. The approach also could be extended to predicting small molecule positions in pre-defined binding pockets.
+1. **Residue-level diffusion (global scaffold)**: sample residue anchors for each chain to capture fold topology and relative orientation in the complex.
+
+2. **All-atom refinement (local consistency)**: condition on the residue scaffold to generate full atomic coordinates, resolving side chains and interface packing.
+
+Why this helps:
+
+- **Efficiency / compactness**: modeling long-range geometry at residue resolution reduces sequence length and degrees of freedom seen by the attention decoder, enabling a smaller model without sacrificing the ability to represent inter-chain organization.
+
+- **Interaction learning without explicit pair features**: rather than maintaining an explicit pairwise tensor (as in Pairformer-like designs), residue–residue dependencies are learned implicitly through attention over the coarse structural scaffold.
+
+- **Stability and controllability**: the global scaffold constrains refinement, reducing search complexity for the all-atom stage and making it easier to incorporate constraints (fixed subunits, known domains, interface restraints).
+
+### Practical benefits / deployment modes
+
+- **Partial-known complexes**: if one partner is known, keep it fixed and diffuse only the unknown partner’s residue scaffold, then refine—turning full complex prediction into a cheaper conditional docking-style problem.
+
+- **Pocket-conditioned ligand placement**: given a predefined binding pocket, first diffuse a coarse ligand representation/pose relative to pocket anchors, then refine to an all-atom, chemically valid pose.
 
 ## Architecture
 
