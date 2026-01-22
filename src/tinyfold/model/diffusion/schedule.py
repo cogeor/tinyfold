@@ -1,9 +1,61 @@
-"""Diffusion noise schedule."""
+"""Diffusion noise schedules.
+
+Provides cosine and linear schedules for alpha_bar, the cumulative
+product of (1 - beta) that controls noise levels at each timestep.
+"""
 
 import math
 
 import torch
 import torch.nn as nn
+
+
+class CosineSchedule:
+    """Cosine schedule for alpha_bar (from Nichol & Dhariwal 2021).
+
+    Non-nn.Module version for use with noise types.
+    """
+
+    def __init__(self, T: int = 50, s: float = 0.008):
+        self.T = T
+        self.s = s
+
+        t = torch.arange(T + 1, dtype=torch.float32)
+        f_t = torch.cos((t / T + s) / (1 + s) * math.pi / 2) ** 2
+        alpha_bar = f_t / f_t[0]
+
+        self.alpha_bar = alpha_bar
+        self.sqrt_alpha_bar = torch.sqrt(alpha_bar)
+        self.sqrt_one_minus_alpha_bar = torch.sqrt(1 - alpha_bar)
+        self.alphas = torch.cat([torch.ones(1), alpha_bar[1:] / alpha_bar[:-1]])
+        self.betas = 1 - self.alphas
+
+    def to(self, device):
+        for attr in ["alpha_bar", "sqrt_alpha_bar", "sqrt_one_minus_alpha_bar", "alphas", "betas"]:
+            setattr(self, attr, getattr(self, attr).to(device))
+        return self
+
+
+class LinearSchedule:
+    """Linear alpha_bar schedule. Directly interpolates alpha_bar from 1 to 0."""
+
+    def __init__(self, T: int = 50):
+        self.T = T
+
+        t = torch.arange(T + 1, dtype=torch.float32)
+        alpha_bar = 1 - t / T
+        alpha_bar = alpha_bar.clamp(min=1e-6)  # Avoid exactly 0
+
+        self.alpha_bar = alpha_bar
+        self.sqrt_alpha_bar = torch.sqrt(alpha_bar)
+        self.sqrt_one_minus_alpha_bar = torch.sqrt(1 - alpha_bar)
+        self.alphas = torch.cat([torch.ones(1), alpha_bar[1:] / alpha_bar[:-1].clamp(min=1e-6)])
+        self.betas = 1 - self.alphas
+
+    def to(self, device):
+        for attr in ["alpha_bar", "sqrt_alpha_bar", "sqrt_one_minus_alpha_bar", "alphas", "betas"]:
+            setattr(self, attr, getattr(self, attr).to(device))
+        return self
 
 
 class DiffusionSchedule(nn.Module):
