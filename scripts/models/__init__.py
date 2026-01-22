@@ -33,6 +33,7 @@ from .diffusion import (
     list_schedules,
     list_noise_types,
     generate_extended_chain,
+    kabsch_align_to_target,
 )
 
 
@@ -109,6 +110,7 @@ __all__ = [
     "create_noiser",
     "list_noise_types",
     "generate_extended_chain",
+    "kabsch_align_to_target",
     # Diffusion - curriculum
     "TimestepCurriculum",
 ]

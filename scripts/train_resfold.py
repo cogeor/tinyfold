@@ -31,10 +31,21 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from models import create_schedule, create_noiser
+# Model imports - use new tinyfold.model paths where available
+from models import create_schedule, create_noiser, kabsch_align_to_target
 from models.resfold_pipeline import ResFoldPipeline
-from models.geometry_losses import GeometryLoss, ContactLoss, compute_lddt_metrics
 from models.dockq_utils import compute_dockq
+
+# Loss imports - use consolidated losses from tinyfold.model.losses
+from tinyfold.model.losses import (
+    kabsch_align,
+    compute_mse_loss,
+    compute_rmse,
+    compute_distance_consistency_loss,
+    GeometryLoss,
+    ContactLoss,
+    compute_lddt_metrics,
+)
 from data_split import (
     DataSplitConfig, get_train_test_indices, get_split_info, save_split, load_split,
     LengthBucketSampler, DynamicBatchSampler
@@ -61,100 +72,28 @@ class Logger:
         self.file.close()
 
 
-# =============================================================================
-# Loss Functions
-# =============================================================================
-
-def kabsch_align(pred, target, mask=None):
-    """Kabsch alignment for rotation-invariant comparison."""
-    B = pred.shape[0]
-
-    if mask is not None:
-        mask_exp = mask.unsqueeze(-1).float()
-        n_valid = mask.sum(dim=1, keepdim=True).unsqueeze(-1).clamp(min=1)
-        pred_mean = (pred * mask_exp).sum(dim=1, keepdim=True) / n_valid
-        target_mean = (target * mask_exp).sum(dim=1, keepdim=True) / n_valid
-    else:
-        pred_mean = pred.mean(dim=1, keepdim=True)
-        target_mean = target.mean(dim=1, keepdim=True)
-
-    pred_c = pred - pred_mean
-    target_c = target - target_mean
-
-    if mask is not None:
-        pred_c = pred_c * mask_exp
-        target_c = target_c * mask_exp
-
-    H = torch.bmm(pred_c.transpose(1, 2), target_c)
-    U, S, Vt = torch.linalg.svd(H)
-
-    d = torch.det(torch.bmm(Vt.transpose(1, 2), U.transpose(1, 2)))
-    D = torch.eye(3, device=pred.device).unsqueeze(0).expand(B, -1, -1).clone()
-    D[:, 2, 2] = d
-
-    R = torch.bmm(torch.bmm(Vt.transpose(1, 2), D), U.transpose(1, 2))
-    pred_aligned = torch.bmm(pred_c, R.transpose(1, 2))
-
-    return pred_aligned, target_c
-
-
-def compute_mse_loss(pred, target, mask=None):
-    """MSE loss after Kabsch alignment."""
-    pred_aligned, target_c = kabsch_align(pred, target, mask)
-    sq_diff = ((pred_aligned - target_c) ** 2).sum(dim=-1)
-
-    if mask is not None:
-        loss = (sq_diff * mask.float()).sum() / mask.float().sum().clamp(min=1)
-    else:
-        loss = sq_diff.mean()
-
-    return loss
-
-
-def compute_rmse(pred, target, mask=None):
-    """RMSE after Kabsch alignment."""
-    pred_aligned, target_c = kabsch_align(pred, target, mask)
-    sq_diff = ((pred_aligned - target_c) ** 2).sum(dim=-1)
-
-    if mask is not None:
-        rmse = torch.sqrt((sq_diff * mask.float()).sum() / mask.float().sum().clamp(min=1))
-    else:
-        rmse = torch.sqrt(sq_diff.mean())
-
-    return rmse
-
-
-def compute_distance_consistency_loss(pred_centroids, target_centroids, mask=None):
-    """Loss for preserving inter-residue distances.
-
-    Encourages predicted centroids to have similar pairwise distances
-    as the ground truth centroids.
-    """
-    # Compute pairwise distances [B, L, L]
-    pred_dist = torch.cdist(pred_centroids, pred_centroids)
-    target_dist = torch.cdist(target_centroids, target_centroids)
-
-    # MSE on distances
-    dist_diff = (pred_dist - target_dist) ** 2
-
-    if mask is not None:
-        # Create pairwise mask [B, L, L]
-        pair_mask = mask.unsqueeze(-1) & mask.unsqueeze(-2)
-        loss = (dist_diff * pair_mask.float()).sum() / pair_mask.float().sum().clamp(min=1)
-    else:
-        loss = dist_diff.mean()
-
-    return loss
-
-
 @torch.no_grad()
-def sample_centroids(model, batch, noiser, device, clamp_val=3.0):
+def sample_centroids(model, batch, noiser, device, clamp_val=3.0,
+                     align_per_step=False, recenter=False):
     """DDPM sampling for Stage 1 centroids only.
+
+    Args:
+        model: ResFoldPipeline model
+        batch: Batch dict with aa_seq, chain_ids, res_idx, mask_res
+        noiser: Diffusion noiser with schedule
+        device: torch device
+        clamp_val: Value to clamp predictions
+        align_per_step: If True, Kabsch-align x0_pred to current x before update.
+                        This fixes frame drift (Boltz-1 style). Default False for
+                        backward compatibility.
+        recenter: If True, re-center coordinates each step (avoids translation drift).
+                  Default False for backward compatibility.
 
     Returns:
         centroids: [B, L, 3] predicted centroids
     """
     B, L = batch['aa_seq'].shape
+    mask = batch['mask_res']
 
     # Start from noise
     x = torch.randn(B, L, 3, device=device)
@@ -165,9 +104,13 @@ def sample_centroids(model, batch, noiser, device, clamp_val=3.0):
         # Predict x0 (clean centroids)
         x0_pred = model.forward_stage1(
             x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
-            t_batch, batch['mask_res']
+            t_batch, mask
         )
         x0_pred = torch.clamp(x0_pred, -clamp_val, clamp_val)
+
+        # NEW: Kabsch-align x0_pred to current x's frame (fixes drift)
+        if align_per_step:
+            x0_pred = kabsch_align_to_target(x0_pred, x, mask)
 
         # DDPM reverse step
         if t > 0:
@@ -185,12 +128,23 @@ def sample_centroids(model, batch, noiser, device, clamp_val=3.0):
         else:
             x = x0_pred
 
+        # NEW: Re-center to avoid translation drift
+        if recenter:
+            if mask is not None:
+                mask_exp = mask.unsqueeze(-1).float()
+                n_valid = mask.sum(dim=1, keepdim=True).unsqueeze(-1).clamp(min=1)
+                centroid = (x * mask_exp).sum(dim=1, keepdim=True) / n_valid
+            else:
+                centroid = x.mean(dim=1, keepdim=True)
+            x = x - centroid
+
     return x
 
 
 @torch.no_grad()
 def generate_stage1_predictions(
-    model, samples, indices, noiser, device, batch_size=1, logger=None
+    model, samples, indices, noiser, device, batch_size=1, logger=None,
+    align_per_step=False, recenter=False
 ):
     """Generate Stage 1 centroid predictions for all samples.
 
@@ -202,6 +156,8 @@ def generate_stage1_predictions(
         device: torch device
         batch_size: batch size for inference (1 for variable lengths)
         logger: optional logger
+        align_per_step: Kabsch-align x0_pred each step (fixes drift)
+        recenter: Re-center each step (avoids translation drift)
 
     Returns:
         dict of sample_idx -> predicted centroids tensor [L, 3] (normalized)
@@ -215,7 +171,10 @@ def generate_stage1_predictions(
         batch = collate_batch([s], device)
 
         # Run Stage 1 diffusion sampling
-        centroids_pred = sample_centroids(model, batch, noiser, device)
+        centroids_pred = sample_centroids(
+            model, batch, noiser, device,
+            align_per_step=align_per_step, recenter=recenter
+        )
 
         # Store prediction (trim to actual length)
         n_res = s['n_res']
@@ -474,6 +433,12 @@ def parse_args():
     # Checkpoint
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Path to checkpoint to load (e.g., Stage 1 checkpoint for Stage 2 training)")
+
+    # Sampling (evaluation)
+    parser.add_argument("--align_per_step", action="store_true",
+                        help="Kabsch-align x0_pred to x_t each step (fixes drift, Boltz-1 style)")
+    parser.add_argument("--recenter", action="store_true",
+                        help="Re-center coordinates each step (avoids translation drift)")
 
     # Output
     parser.add_argument("--output_dir", type=str, default="outputs/resfold")
@@ -980,7 +945,11 @@ def main():
 
                     if args.mode == "stage1_only":
                         # For Stage 1: evaluate centroid RMSE via diffusion sampling
-                        centroids_pred = sample_centroids(model, batch, noiser, device)
+                        centroids_pred = sample_centroids(
+                            model, batch, noiser, device,
+                            align_per_step=args.align_per_step,
+                            recenter=args.recenter
+                        )
                         rmse = compute_rmse(centroids_pred, batch['centroids'], batch['mask_res']).item() * s['std']
                     elif args.mode == "stage2_only" and 'centroids_pred' in batch:
                         # For Stage 2 with cached predictions: use Stage 1 predictions directly
@@ -1010,7 +979,11 @@ def main():
                     batch = collate_batch([s], device)
 
                     if args.mode == "stage1_only":
-                        centroids_pred = sample_centroids(model, batch, noiser, device)
+                        centroids_pred = sample_centroids(
+                            model, batch, noiser, device,
+                            align_per_step=args.align_per_step,
+                            recenter=args.recenter
+                        )
                         rmse = compute_rmse(centroids_pred, batch['centroids'], batch['mask_res']).item() * s['std']
                     elif args.mode == "stage2_only" and 'centroids_pred' in batch:
                         # For Stage 2 with cached predictions: use Stage 1 predictions directly
@@ -1096,7 +1069,11 @@ def main():
 
                 if args.mode == "stage1_only":
                     # Plot centroids for Stage 1
-                    centroids_pred = sample_centroids(model, batch, noiser, device)
+                    centroids_pred = sample_centroids(
+                        model, batch, noiser, device,
+                        align_per_step=args.align_per_step,
+                        recenter=args.recenter
+                    )
                     n_res = s['n_res']
                     pred = centroids_pred[0, :n_res] * s['std']
                     target = batch['centroids'][0, :n_res] * s['std']

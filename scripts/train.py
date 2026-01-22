@@ -28,12 +28,20 @@ from models import (
     create_model, list_models,
     create_schedule, create_noiser, list_noise_types,
     TimestepCurriculum,
+    kabsch_align_to_target,
 )
 from data_split import DataSplitConfig, get_train_test_indices, get_split_info
 
+# Loss imports - use consolidated losses from tinyfold.model.losses
+from tinyfold.model.losses import (
+    kabsch_align,
+    compute_mse_loss,
+    compute_rmse,
+)
+
 
 # =============================================================================
-# Logging
+# Logging (simple logger for backward compatibility)
 # =============================================================================
 
 class Logger:
@@ -58,7 +66,8 @@ class Logger:
 
 @torch.no_grad()
 def ddpm_sample(model, atom_types, atom_to_res, aa_seq, chain_ids, noiser, mask=None,
-                clamp_val=3.0, x_linear=None, noise_type="gaussian"):
+                clamp_val=3.0, x_linear=None, noise_type="gaussian",
+                align_per_step=False, recenter=False):
     """Diffusion sampling loop.
 
     For Gaussian noise: starts from random noise, uses DDPM reverse.
@@ -69,6 +78,11 @@ def ddpm_sample(model, atom_types, atom_to_res, aa_seq, chain_ids, noiser, mask=
         x_linear: Extended chain coordinates [B, N, 3] for linear_chain/linear_flow.
                   If None, will be generated.
         noise_type: "gaussian", "linear_chain", or "linear_flow"
+        align_per_step: If True, Kabsch-align x0_pred to current x before update.
+                        This fixes frame drift (Boltz-1 style). Default False for
+                        backward compatibility.
+        recenter: If True, re-center coordinates after each step to avoid
+                  translation drift. Default False for backward compatibility.
     """
     device = atom_types.device
     B, N = atom_types.shape
@@ -100,6 +114,10 @@ def ddpm_sample(model, atom_types, atom_to_res, aa_seq, chain_ids, noiser, mask=
             x0_pred = model(x, atom_types, atom_to_res, aa_seq, chain_ids, t_batch, mask)
             x0_pred = torch.clamp(x0_pred, -clamp_val, clamp_val)
 
+            # NEW: Kabsch-align x0_pred to current x's frame (fixes drift)
+            if align_per_step:
+                x0_pred = kabsch_align_to_target(x0_pred, x, mask)
+
             if t < noiser.T - 1:
                 # Interpolate: move towards x0_pred
                 # At t+1, alpha increases, so we're closer to x0
@@ -109,6 +127,17 @@ def ddpm_sample(model, atom_types, atom_to_res, aa_seq, chain_ids, noiser, mask=
             else:
                 # Final step: return x0_pred directly
                 x = x0_pred
+
+            # NEW: Re-center to avoid translation drift
+            if recenter:
+                if mask is not None:
+                    mask_exp = mask.unsqueeze(-1).float()
+                    n_valid = mask.sum(dim=1, keepdim=True).unsqueeze(-1).clamp(min=1)
+                    centroid = (x * mask_exp).sum(dim=1, keepdim=True) / n_valid
+                else:
+                    centroid = x.mean(dim=1, keepdim=True)
+                x = x - centroid
+
         return x
 
     # === LINEAR_CHAIN: DDPM with extended chain start ===
@@ -134,6 +163,10 @@ def ddpm_sample(model, atom_types, atom_to_res, aa_seq, chain_ids, noiser, mask=
             x0_pred = model(x, atom_types, atom_to_res, aa_seq, chain_ids, t_batch, mask)
         x0_pred = torch.clamp(x0_pred, -clamp_val, clamp_val)
 
+        # NEW: Kabsch-align x0_pred to current x's frame (fixes drift)
+        if align_per_step:
+            x0_pred = kabsch_align_to_target(x0_pred, x, mask)
+
         if use_linear_chain:
             # Linear chain reverse: interpolate between x0_pred and x_linear
             x = noiser.reverse_step(x, x0_pred, t, x_linear)
@@ -154,79 +187,21 @@ def ddpm_sample(model, atom_types, atom_to_res, aa_seq, chain_ids, noiser, mask=
             else:
                 x = x0_pred
 
+        # NEW: Re-center to avoid translation drift
+        if recenter:
+            if mask is not None:
+                mask_exp = mask.unsqueeze(-1).float()
+                n_valid = mask.sum(dim=1, keepdim=True).unsqueeze(-1).clamp(min=1)
+                centroid = (x * mask_exp).sum(dim=1, keepdim=True) / n_valid
+            else:
+                centroid = x.mean(dim=1, keepdim=True)
+            x = x - centroid
+
     return x
 
 
-def kabsch_align(pred, target, mask=None):
-    """Kabsch alignment for rotation-invariant comparison."""
-    B, N, _ = pred.shape
-
-    if mask is not None:
-        mask_exp = mask.unsqueeze(-1).float()
-        n_valid = mask.sum(dim=1, keepdim=True).unsqueeze(-1).clamp(min=1)
-        pred_mean = (pred * mask_exp).sum(dim=1, keepdim=True) / n_valid
-        target_mean = (target * mask_exp).sum(dim=1, keepdim=True) / n_valid
-    else:
-        pred_mean = pred.mean(dim=1, keepdim=True)
-        target_mean = target.mean(dim=1, keepdim=True)
-
-    pred_c = pred - pred_mean
-    target_c = target - target_mean
-
-    if mask is not None:
-        pred_c = pred_c * mask_exp
-        target_c = target_c * mask_exp
-
-    H = torch.bmm(pred_c.transpose(1, 2), target_c)
-    U, S, Vt = torch.linalg.svd(H)
-
-    d = torch.det(torch.bmm(Vt.transpose(1, 2), U.transpose(1, 2)))
-    D = torch.eye(3, device=pred.device).unsqueeze(0).expand(B, -1, -1).clone()
-    D[:, 2, 2] = d
-
-    R = torch.bmm(torch.bmm(Vt.transpose(1, 2), D), U.transpose(1, 2))
-    pred_aligned = torch.bmm(pred_c, R.transpose(1, 2))
-
-    return pred_aligned, target_c
-
-
-def compute_loss(pred, target, mask=None, use_kabsch=True):
-    """MSE loss, optionally after Kabsch alignment.
-
-    Args:
-        use_kabsch: If True, align pred to target before computing loss.
-                    For linear_chain, set False to preserve coordinate frame.
-    """
-    if use_kabsch:
-        pred_aligned, target_c = kabsch_align(pred, target, mask)
-    else:
-        # Direct MSE without alignment - center both
-        pred_mean = pred.mean(dim=1, keepdim=True)
-        target_mean = target.mean(dim=1, keepdim=True)
-        pred_aligned = pred - pred_mean
-        target_c = target - target_mean
-
-    sq_diff = ((pred_aligned - target_c) ** 2).sum(dim=-1)
-
-    if mask is not None:
-        loss = (sq_diff * mask.float()).sum() / mask.float().sum().clamp(min=1)
-    else:
-        loss = sq_diff.mean()
-
-    return loss
-
-
-def compute_rmse(pred, target, mask=None):
-    """RMSE after Kabsch alignment."""
-    pred_aligned, target_c = kabsch_align(pred, target, mask)
-    sq_diff = ((pred_aligned - target_c) ** 2).sum(dim=-1)
-
-    if mask is not None:
-        rmse = torch.sqrt((sq_diff * mask.float()).sum() / mask.float().sum().clamp(min=1))
-    else:
-        rmse = torch.sqrt(sq_diff.mean())
-
-    return rmse
+# Alias for backward compatibility (compute_loss -> compute_mse_loss)
+compute_loss = compute_mse_loss
 
 
 # =============================================================================
@@ -383,6 +358,12 @@ def parse_args():
     parser.add_argument("--curriculum_warmup", type=int, default=5000, help="Steps to reach full T")
     parser.add_argument("--curriculum_schedule", type=str, default="linear",
                         choices=["linear", "cosine"], help="Curriculum progression schedule")
+
+    # Sampling (evaluation)
+    parser.add_argument("--align_per_step", action="store_true",
+                        help="Kabsch-align x0_pred to x_t each step (fixes drift, Boltz-1 style)")
+    parser.add_argument("--recenter", action="store_true",
+                        help="Re-center coordinates each step (avoids translation drift)")
 
     # Output
     parser.add_argument("--output_dir", type=str, default="outputs/train")
@@ -611,7 +592,9 @@ def main():
                     batch = collate_batch([s], device)
                     x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
                                          batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
-                                         noise_type=args.noise_type)
+                                         noise_type=args.noise_type,
+                                         align_per_step=args.align_per_step,
+                                         recenter=args.recenter)
                     rmse = compute_rmse(x_pred, batch['coords'], batch['mask']).item() * s['std']
                     train_rmses.append(rmse)
                 train_avg = sum(train_rmses) / len(train_rmses)
@@ -623,7 +606,9 @@ def main():
                     batch = collate_batch([s], device)
                     x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
                                          batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
-                                         noise_type=args.noise_type)
+                                         noise_type=args.noise_type,
+                                         align_per_step=args.align_per_step,
+                                         recenter=args.recenter)
                     rmse = compute_rmse(x_pred, batch['coords'], batch['mask']).item() * s['std']
                     test_rmses.append(rmse)
                 test_avg = sum(test_rmses) / len(test_rmses)
@@ -635,7 +620,9 @@ def main():
                 batch = collate_batch([s], device)
                 x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
                                      batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
-                                     noise_type=args.noise_type)
+                                     noise_type=args.noise_type,
+                                     align_per_step=args.align_per_step,
+                                     recenter=args.recenter)
 
                 n = s['n_atoms']
                 pred = x_pred[0, :n] * s['std']
@@ -689,7 +676,9 @@ def main():
             for _ in range(3):
                 x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
                                      batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
-                                     noise_type=args.noise_type)
+                                     noise_type=args.noise_type,
+                                     align_per_step=args.align_per_step,
+                                     recenter=args.recenter)
                 rmse = compute_rmse(x_pred, batch['coords'], batch['mask']).item() * s['std']
                 rmses.append(rmse)
             mean_rmse = sum(rmses) / len(rmses)
@@ -708,7 +697,9 @@ def main():
             for _ in range(3):
                 x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
                                      batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
-                                     noise_type=args.noise_type)
+                                     noise_type=args.noise_type,
+                                     align_per_step=args.align_per_step,
+                                     recenter=args.recenter)
                 rmse = compute_rmse(x_pred, batch['coords'], batch['mask']).item() * s['std']
                 rmses.append(rmse)
             mean_rmse = sum(rmses) / len(rmses)
