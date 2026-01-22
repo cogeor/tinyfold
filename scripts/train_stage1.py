@@ -295,31 +295,36 @@ def sample_centroids(model, batch, noiser, device):
 
 
 # =============================================================================
-# Evaluation
+# Evaluation (batched for speed)
 # =============================================================================
 
 @torch.no_grad()
-def evaluate(model, samples, indices, noiser, device, n_eval=500):
-    """Evaluate centroid RMSE on subset."""
+def evaluate(model, samples, indices, noiser, device, n_eval=100, batch_size=16):
+    """Evaluate centroid RMSE on subset using batched sampling."""
     model.eval()
 
     eval_indices = random.sample(list(indices), min(n_eval, len(indices)))
     rmses = []
     lddts = []
 
-    for idx in eval_indices:
-        s = samples[idx]
-        batch = collate_batch([s], device)
+    # Process in batches
+    for i in range(0, len(eval_indices), batch_size):
+        batch_indices = eval_indices[i:i+batch_size]
+        batch_samples = [samples[idx] for idx in batch_indices]
+        batch = collate_batch(batch_samples, device)
 
+        # Batched sampling
         pred = sample_centroids(model, batch, noiser, device)
 
-        n = s['n_res']
-        rmse = compute_rmse(pred[:, :n], batch['centroids'][:, :n]).item() * s['std']
-        rmses.append(rmse)
+        # Compute metrics per sample
+        for j, idx in enumerate(batch_indices):
+            s = samples[idx]
+            n = s['n_res']
+            rmse = compute_rmse(pred[j:j+1, :n], batch['centroids'][j:j+1, :n]).item() * s['std']
+            rmses.append(rmse)
 
-        # lDDT on centroids (treat as CA)
-        lddt = compute_lddt(pred[:, :n], batch['centroids'][:, :n], coord_scale=s['std'])
-        lddts.append(lddt.item())
+            lddt = compute_lddt(pred[j:j+1, :n], batch['centroids'][j:j+1, :n], coord_scale=s['std'])
+            lddts.append(lddt.item())
 
     return {
         'rmse': sum(rmses) / len(rmses),
@@ -372,7 +377,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_path', default='data/processed/samples.parquet')
     parser.add_argument('--n_test', type=int, default=500)
-    parser.add_argument('--n_eval_train', type=int, default=500, help='Train samples for eval')
+    parser.add_argument('--n_eval_train', type=int, default=100, help='Train samples for eval')
     parser.add_argument('--n_steps', type=int, default=100000)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--grad_accum', type=int, default=4)

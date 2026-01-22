@@ -315,10 +315,10 @@ class ResidueDenoiser(BaseDecoder):
         t: Tensor,           # [B] timestep
         mask: Optional[Tensor] = None,  # [B, L]
     ) -> Tensor:
-        """Predict noise epsilon from noisy input (epsilon prediction).
+        """Predict clean centroids x0 from noisy input (x0 prediction).
 
         Returns:
-            epsilon_pred: [B, L, 3] predicted noise
+            x0_pred: [B, L, 3] predicted clean centroids
         """
         B, L, _ = x_t.shape
         device = x_t.device
@@ -343,10 +343,10 @@ class ResidueDenoiser(BaseDecoder):
         # Diffusion transformer
         tokens = self.diff_transformer(tokens, time_cond, mask)
 
-        # Output: predict noise epsilon directly
-        epsilon_pred = self.output_proj(tokens)  # [B, L, 3]
+        # Output: predict clean centroids x0 directly
+        x0_pred = self.output_proj(tokens)  # [B, L, 3]
 
-        return epsilon_pred
+        return x0_pred
 
     def get_trunk_tokens(
         self,
