@@ -756,6 +756,48 @@ class VENoiser:
         sigma = sigma.clamp(self.schedule.sigma_min, self.schedule.sigma_max)
         return sigma
 
+    def sample_sigma_stratified(self, batch_size: int, device) -> Tensor:
+        """Sample sigma with stratified buckets for better high-sigma coverage.
+
+        Problem: AF3's log-normal barely samples high sigma (>6 only ~2% of time),
+        but inference starts at sigma_max (10.0). This causes poor denoising.
+
+        Solution: Stratified sampling across log-space buckets:
+        - Bucket 1: [sigma_min, 0.1] - fine detail denoising (25%)
+        - Bucket 2: [0.1, 1.0] - medium noise (25%)
+        - Bucket 3: [1.0, 5.0] - high noise (25%)
+        - Bucket 4: [5.0, sigma_max] - very high noise (25%)
+
+        This ensures the model trains adequately at all noise levels.
+        """
+        sigma_min = self.schedule.sigma_min
+        sigma_max = self.schedule.sigma_max
+
+        # Define bucket boundaries in log-space
+        buckets = [
+            (sigma_min, 0.1),
+            (0.1, 1.0),
+            (1.0, 5.0),
+            (5.0, sigma_max),
+        ]
+
+        # Randomly assign each sample to a bucket
+        bucket_idx = torch.randint(0, len(buckets), (batch_size,), device=device)
+
+        # Sample uniformly in log-space within each bucket
+        sigma = torch.zeros(batch_size, device=device)
+        for i, (lo, hi) in enumerate(buckets):
+            mask = bucket_idx == i
+            n_in_bucket = mask.sum().item()
+            if n_in_bucket > 0:
+                # Uniform in log-space
+                log_lo, log_hi = math.log(lo), math.log(hi)
+                log_sigma = torch.rand(n_in_bucket, device=device) * (log_hi - log_lo) + log_lo
+                sigma[mask] = torch.exp(log_sigma)
+
+        return sigma
+
+
     def loss_weight(self, sigma: Tensor) -> Tensor:
         """AF3/EDM-style loss weighting.
 

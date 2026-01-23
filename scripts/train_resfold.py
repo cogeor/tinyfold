@@ -37,6 +37,7 @@ from models.resfold_pipeline import ResFoldPipeline
 from models.dockq_utils import compute_dockq
 from models.training_utils import (
     random_rigid_augment,
+    random_rotation_matrix,
     MultiCopyTrainer,
     VectorizedMultiCopyTrainer,
 )
@@ -148,7 +149,7 @@ def sample_centroids(model, batch, noiser, device, clamp_val=3.0,
 
 @torch.no_grad()
 def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
-                        align_per_step=True, recenter=True):
+                        align_per_step=True, recenter=True, self_cond=True):
     """VE (variance-exploding) sampling for continuous sigma models.
 
     Uses AF3-style Euler sampling with the Karras sigma schedule.
@@ -162,6 +163,7 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
         clamp_val: Value to clamp predictions
         align_per_step: Kabsch-align x0_pred to x each step
         recenter: Re-center coordinates each step
+        self_cond: Use self-conditioning (pass previous x0_pred to model)
 
     Returns:
         centroids: [B, L, 3] predicted centroids
@@ -175,6 +177,9 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
     # Initialize at highest noise level (VE: x = sigma * noise)
     x = sigmas[0] * torch.randn(B, L, 3, device=device)
 
+    # Track previous x0_pred for self-conditioning
+    x0_prev = None
+
     # Euler sampling loop
     for i in range(len(sigmas) - 1):
         sigma = sigmas[i]
@@ -183,16 +188,19 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
         # Create sigma tensor for batch
         sigma_batch = sigma.expand(B)
 
-        # Predict x0 using continuous sigma conditioning
+        # Predict x0 using continuous sigma conditioning (with self-conditioning)
         x0_pred = model.stage1.forward_sigma(
             x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
-            sigma_batch, mask
+            sigma_batch, mask, x0_prev=x0_prev if self_cond else None
         )
         x0_pred = torch.clamp(x0_pred, -clamp_val, clamp_val)
 
         # Kabsch-align x0_pred to current x
         if align_per_step:
             x0_pred = kabsch_align_to_target(x0_pred, x, mask)
+
+        # Store for self-conditioning in next iteration
+        x0_prev = x0_pred.detach()
 
         # Euler step: x_next = x + (sigma_next - sigma) * (x - x0_pred) / sigma
         # This is the score-based update: dx/dt = -sigma * score, where score = (x - x0_pred) / sigma^2
@@ -525,6 +533,10 @@ def parse_args():
     parser.add_argument("--self_cond_prob", type=float, default=0.5,
                         help="Probability of using self-conditioning during training (0 to disable)")
 
+    # Training augmentation
+    parser.add_argument("--translate_aug", type=float, default=0.0,
+                        help="Random translation augmentation scale (in normalized units, try 0.1-0.3)")
+
     # Loss weights
     parser.add_argument("--dist_weight", type=float, default=0.1,
                         help="Weight for distance consistency loss")
@@ -576,6 +588,9 @@ def parse_args():
                         help="Apply random rotation augmentation during training")
     parser.add_argument("--loss_weighting", action="store_true",
                         help="Apply AF3-style loss weighting by noise level")
+    parser.add_argument("--no_stratified_sigma", dest="stratified_sigma", action="store_false",
+                        help="Disable stratified sigma sampling (use AF3 default sampling instead)")
+    parser.set_defaults(stratified_sigma=True)  # Stratified sampling ON by default
 
     # Output
     parser.add_argument("--output_dir", type=str, default="outputs/resfold")
@@ -825,6 +840,8 @@ def main():
         logger.log(f"  sigma_data: {args.sigma_data}")
         logger.log(f"  sigma_range: [{args.sigma_min}, {args.sigma_max}]")
         logger.log(f"  T: {args.T} (inference steps)")
+        logger.log(f"  self_cond_prob: {args.self_cond_prob}")
+        logger.log(f"  translate_aug: {args.translate_aug}")
     else:
         # Standard: VP noise with discrete timesteps
         schedule = create_schedule(args.schedule, T=args.T)
@@ -903,10 +920,30 @@ def main():
             # Sample noise levels and add noise to centroids (for Stage 1)
             noise = torch.randn_like(batch['centroids'])
 
+            # Target for loss (may be rotated by augmentation)
+            centroids_target = batch['centroids']
+
             if args.continuous_sigma:
                 # AF3-style: continuous sigma with VE noise (x_t = x0 + sigma * noise)
-                sigma = noiser.sample_sigma_af3(current_batch_size, device)
+                if args.stratified_sigma:
+                    sigma = noiser.sample_sigma_stratified(current_batch_size, device)
+                else:
+                    sigma = noiser.sample_sigma_af3(current_batch_size, device)
                 x_t = batch['centroids'] + sigma.view(-1, 1, 1) * noise
+
+                # Rotation augmentation: rotate BOTH x_t AND target by same rotation
+                # This preserves the coordinate frame relationship
+                if args.augment_rotation:
+                    R = random_rotation_matrix(current_batch_size, device)
+                    x_t = torch.bmm(x_t, R.transpose(1, 2))
+                    centroids_target = torch.bmm(centroids_target, R.transpose(1, 2))
+
+                # Translation augmentation: add small random shift to x_t
+                # This makes the model robust to drift during inference
+                if args.translate_aug > 0:
+                    translation = args.translate_aug * torch.randn(current_batch_size, 1, 3, device=device)
+                    x_t = x_t + translation
+
                 # Loss weighting (AF3-style)
                 loss_weight = noiser.loss_weight(sigma).mean() if args.loss_weighting else 1.0
             else:
@@ -984,9 +1021,19 @@ def main():
                     # === STANDARD TRAINING ===
                     if args.continuous_sigma:
                         # AF3-style with continuous sigma
+                        # Self-conditioning: with probability p, first run model to get x0_prev
+                        x0_prev = None
+                        if args.self_cond_prob > 0 and torch.rand(1).item() < args.self_cond_prob:
+                            with torch.no_grad():
+                                x0_prev = model.stage1.forward_sigma(
+                                    x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
+                                    sigma, batch['mask_res'], x0_prev=None
+                                ).detach()
+
+                        # Main forward pass (with or without self-conditioning)
                         centroids_pred = model.stage1.forward_sigma(
                             x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
-                            sigma, batch['mask_res']
+                            sigma, batch['mask_res'], x0_prev=x0_prev
                         )
                     else:
                         # Original behavior with discrete timesteps
@@ -995,9 +1042,10 @@ def main():
                             t, batch['mask_res']
                         )
                     # Loss: MSE on centroids + distance consistency
-                    loss_mse = compute_mse_loss(centroids_pred, batch['centroids'], batch['mask_res'])
+                    # Use centroids_target which may be rotated by augmentation
+                    loss_mse = compute_mse_loss(centroids_pred, centroids_target, batch['mask_res'])
                     loss_dist = compute_distance_consistency_loss(
-                        centroids_pred, batch['centroids'], batch['mask_res']
+                        centroids_pred, centroids_target, batch['mask_res']
                     )
                     loss = loss_mse + args.dist_weight * loss_dist
 
@@ -1009,7 +1057,7 @@ def main():
                     if contact_loss_fn is not None and args.contact_stage in ["stage1", "both"]:
                         contact_losses = contact_loss_fn(
                             pred_centroids=centroids_pred,
-                            gt_centroids=batch['centroids'],
+                            gt_centroids=centroids_target,
                             chain_ids=batch['chain_ids'],
                             mask=batch['mask_res']
                         )
