@@ -573,18 +573,230 @@ def kabsch_align_to_target(
 
 
 # =============================================================================
+# Karras Schedule (EDM-style continuous sigma)
+# =============================================================================
+
+class KarrasSchedule:
+    """Karras/EDM-style continuous sigma schedule.
+
+    From "Elucidating the Design Space of Diffusion-Based Generative Models"
+    (Karras et al., 2022). Uses continuous sigma values instead of discrete timesteps.
+
+    Schedule: sigma[i] = (sigma_max^(1/rho) + i/(n-1) * (sigma_min^(1/rho) - sigma_max^(1/rho)))^rho
+
+    For normalized coordinates (std=1), use sigma_min=0.002, sigma_max=10.0.
+    """
+
+    def __init__(
+        self,
+        n_steps: int = 200,
+        sigma_min: float = 0.002,
+        sigma_max: float = 10.0,
+        rho: float = 7.0,
+    ):
+        self.n_steps = n_steps
+        self.sigma_min = sigma_min
+        self.sigma_max = sigma_max
+        self.rho = rho
+
+        # Build schedule: decreasing from sigma_max to sigma_min
+        steps = torch.arange(n_steps + 1, dtype=torch.float32) / n_steps
+        inv_rho = 1.0 / rho
+        sigmas = (sigma_max ** inv_rho + steps * (sigma_min ** inv_rho - sigma_max ** inv_rho)) ** rho
+        self.sigmas = sigmas  # [n_steps+1], from high to low
+
+        # For compatibility with VP-style code, create fake alpha_bar
+        # VP: x_t = sqrt(ab) * x0 + sqrt(1-ab) * eps
+        # VE: x_t = x0 + sigma * eps
+        # Mapping: sigma^2 = (1 - ab) / ab  =>  ab = 1 / (1 + sigma^2)
+        self.alpha_bar = 1.0 / (1.0 + sigmas ** 2)
+        self.sqrt_alpha_bar = torch.sqrt(self.alpha_bar)
+        self.sqrt_one_minus_alpha_bar = torch.sqrt(1 - self.alpha_bar)
+
+        # Fake betas/alphas for interface compatibility
+        self.betas = torch.zeros(n_steps + 1)
+        self.alphas = torch.ones(n_steps + 1)
+
+    @property
+    def T(self):
+        return self.n_steps
+
+    def to(self, device):
+        for attr in ['sigmas', 'alpha_bar', 'sqrt_alpha_bar', 'sqrt_one_minus_alpha_bar', 'betas', 'alphas']:
+            setattr(self, attr, getattr(self, attr).to(device))
+        return self
+
+    def sigma_to_t(self, sigma: Tensor) -> Tensor:
+        """Convert sigma to equivalent discrete timestep index."""
+        # Find nearest sigma in schedule
+        dists = (self.sigmas.unsqueeze(0) - sigma.unsqueeze(1)).abs()
+        return dists.argmin(dim=1)
+
+
+# =============================================================================
+# VE Noiser (Variance-Exploding, AF3-style)
+# =============================================================================
+
+class VENoiser:
+    """Variance-Exploding noise process (AF3/EDM style).
+
+    VE diffusion: x_t = x0 + sigma * eps (additive noise)
+
+    Unlike VP (variance-preserving) which blends x0 with noise,
+    VE simply adds noise of increasing magnitude.
+
+    This is the noise process used in AlphaFold3.
+    """
+
+    def __init__(
+        self,
+        schedule: KarrasSchedule,
+        sigma_data: float = 1.0,
+    ):
+        """
+        Args:
+            schedule: KarrasSchedule with sigma values
+            sigma_data: Standard deviation of data (1.0 for normalized coords)
+        """
+        self.schedule = schedule
+        self.sigma_data = sigma_data
+
+    @property
+    def T(self):
+        return self.schedule.T
+
+    @property
+    def sigmas(self):
+        return self.schedule.sigmas
+
+    @property
+    def alpha_bar(self):
+        return self.schedule.alpha_bar
+
+    @property
+    def betas(self):
+        return self.schedule.betas
+
+    @property
+    def alphas(self):
+        return self.schedule.alphas
+
+    def to(self, device):
+        self.schedule = self.schedule.to(device)
+        return self
+
+    def add_noise(
+        self,
+        x0: Tensor,
+        t: Tensor,
+        **kwargs,
+    ) -> tuple[Tensor, Tensor]:
+        """Add VE noise: x_t = x0 + sigma[t] * eps
+
+        Args:
+            x0: Clean coordinates [B, N, 3]
+            t: Timestep indices [B] (used to look up sigma)
+            **kwargs: Ignored (for API compatibility)
+
+        Returns:
+            x_t: Noisy coordinates [B, N, 3]
+            noise: The noise that was added [B, N, 3]
+        """
+        noise = torch.randn_like(x0)
+        sigma = self.schedule.sigmas[t].view(-1, 1, 1)  # [B, 1, 1]
+        x_t = x0 + sigma * noise
+        return x_t, noise
+
+    def add_noise_continuous(
+        self,
+        x0: Tensor,
+        sigma: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        """Add VE noise with continuous sigma (for training).
+
+        Args:
+            x0: Clean coordinates [B, N, 3]
+            sigma: Noise level [B]
+
+        Returns:
+            x_t: Noisy coordinates [B, N, 3]
+            noise: The noise that was added [B, N, 3]
+        """
+        noise = torch.randn_like(x0)
+        sigma_view = sigma.view(-1, 1, 1)
+        x_t = x0 + sigma_view * noise
+        return x_t, noise
+
+    def sample_sigma(self, batch_size: int, device) -> Tensor:
+        """Sample sigma for training (log-normal, like AF3/EDM).
+
+        Returns sigma in [sigma_min, sigma_max] with log-uniform density.
+        """
+        log_sigma = torch.randn(batch_size, device=device) * 1.2  # P_mean=0, P_std=1.2
+        sigma = self.sigma_data * torch.exp(log_sigma)
+        # Clamp to valid range
+        sigma = sigma.clamp(self.schedule.sigma_min, self.schedule.sigma_max)
+        return sigma
+
+    def sample_sigma_af3(self, batch_size: int, device) -> Tensor:
+        """Sample sigma for training using AF3's exact distribution.
+
+        AF3 uses: σ = σ_data * exp(-1.2 + 1.5 * N(0,1))
+
+        This distribution:
+        - Is centered at σ_data * exp(-1.2) ≈ 0.3 * σ_data
+        - Has wider spread than standard log-normal (std=1.5 vs 1.2)
+        - Biases toward lower noise levels (the -1.2 shift)
+
+        For normalized coords (σ_data=1.0), typical range is ~[0.01, 10].
+        """
+        log_sigma = -1.2 + 1.5 * torch.randn(batch_size, device=device)
+        sigma = self.sigma_data * torch.exp(log_sigma)
+        # Clamp to valid range
+        sigma = sigma.clamp(self.schedule.sigma_min, self.schedule.sigma_max)
+        return sigma
+
+    def loss_weight(self, sigma: Tensor) -> Tensor:
+        """AF3/EDM-style loss weighting.
+
+        Weight = (sigma^2 + sigma_data^2) / (sigma * sigma_data)^2
+
+        This gives higher weight to intermediate noise levels.
+        """
+        return (sigma**2 + self.sigma_data**2) / ((sigma * self.sigma_data) ** 2 + 1e-8)
+
+    def c_skip(self, sigma: Tensor) -> Tensor:
+        """Skip connection coefficient for EDM preconditioning."""
+        return self.sigma_data**2 / (sigma**2 + self.sigma_data**2)
+
+    def c_out(self, sigma: Tensor) -> Tensor:
+        """Output scaling coefficient for EDM preconditioning."""
+        return sigma * self.sigma_data / torch.sqrt(sigma**2 + self.sigma_data**2)
+
+    def c_in(self, sigma: Tensor) -> Tensor:
+        """Input scaling coefficient for EDM preconditioning."""
+        return 1.0 / torch.sqrt(sigma**2 + self.sigma_data**2)
+
+    def c_noise(self, sigma: Tensor) -> Tensor:
+        """Noise level encoding for model input."""
+        return torch.log(sigma / self.sigma_data) / 4.0
+
+
+# =============================================================================
 # Factory functions
 # =============================================================================
 
 _SCHEDULES = {
     "cosine": CosineSchedule,
     "linear": LinearSchedule,
+    "karras": KarrasSchedule,
 }
 
 _NOISE_TYPES = {
     "gaussian": GaussianNoise,
     "linear_chain": LinearChainNoise,
     "linear_flow": LinearChainFlow,
+    "ve": VENoiser,
 }
 
 

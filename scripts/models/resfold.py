@@ -63,7 +63,10 @@ class ResidueEncoder(nn.Module):
     """Residue-level encoder (trunk) that runs ONCE per sample.
 
     Produces token embeddings that condition the denoiser.
-    Operates on residue centroids instead of individual atoms.
+
+    IMPORTANT: This trunk processes ONLY sequence/token features (aa_seq, chain_ids, res_idx).
+    It does NOT take coordinates as input. This enables the trunk-once optimization
+    where trunk runs once and denoiser runs multiple times with different noisy coords.
     """
 
     def __init__(
@@ -78,16 +81,13 @@ class ResidueEncoder(nn.Module):
         super().__init__()
         self.c_token = c_token
 
-        # Residue embeddings
+        # Residue embeddings (sequence-only, no coordinates!)
         self.aa_embed = nn.Embedding(n_aa_types, c_token)
         self.chain_embed = nn.Embedding(n_chains, c_token // 4)
 
-        # Centroid coordinate projection
-        self.coord_proj = nn.Linear(3, c_token // 2)
-
         # Input projection
-        # aa_emb (c_token) + chain_emb (c_token//4) + res_pos (c_token) + coord (c_token//2)
-        input_dim = c_token + (c_token // 4) + c_token + (c_token // 2)
+        # aa_emb (c_token) + chain_emb (c_token//4) + res_pos (c_token)
+        input_dim = c_token + (c_token // 4) + c_token
         self.input_proj = nn.Linear(input_dim, c_token)
 
         # Transformer
@@ -107,27 +107,25 @@ class ResidueEncoder(nn.Module):
 
     def forward(
         self,
-        centroids: Tensor,       # [B, L, 3] residue centroids
         aa_seq: Tensor,          # [B, L]
         chain_ids: Tensor,       # [B, L]
         res_idx: Tensor,         # [B, L]
         mask: Optional[Tensor] = None,  # [B, L]
     ) -> Tensor:
-        """Encode residue-level features.
+        """Encode residue-level sequence features (NO coordinates).
 
         Returns:
             tokens: [B, L, c_token] conditioning for denoiser
         """
-        B, L, _ = centroids.shape
+        B, L = aa_seq.shape
 
-        # Embeddings
+        # Embeddings (sequence-only)
         aa_emb = self.aa_embed(aa_seq)  # [B, L, c_token]
         chain_emb = self.chain_embed(chain_ids)  # [B, L, c_token//4]
         res_emb = sinusoidal_pos_enc(res_idx, self.c_token)  # [B, L, c_token]
-        coord_emb = self.coord_proj(centroids)  # [B, L, c_token//2]
 
         # Concatenate and project
-        h = torch.cat([aa_emb, chain_emb, res_emb, coord_emb], dim=-1)
+        h = torch.cat([aa_emb, chain_emb, res_emb], dim=-1)
         h = self.input_proj(h)  # [B, L, c_token]
 
         # Apply transformer
@@ -289,11 +287,24 @@ class ResidueDenoiser(BaseDecoder):
 
         # === DENOISER (runs each step) ===
 
-        # Timestep embedding
+        # Timestep embedding (discrete, for backward compatibility)
         self.time_embed = nn.Embedding(n_timesteps, c_token)
+
+        # Continuous sigma embedding (AF3-style Fourier features)
+        # Uses sinusoidal encoding of log(sigma/sigma_data)/4
+        self.sigma_data = 1.0  # For normalized coordinates
+        self.sigma_embed = nn.Sequential(
+            nn.Linear(c_token, c_token),
+            nn.SiLU(),
+            nn.Linear(c_token, c_token),
+        )
 
         # Coordinate embedding for noisy input (same dim for additive)
         self.coord_embed = nn.Linear(3, c_token)
+
+        # Self-conditioning embedding (for x0_prev from previous iteration)
+        # This allows the model to refine its own predictions during inference
+        self.self_cond_embed = nn.Linear(3, c_token)
 
         # Diffusion transformer
         self.diff_transformer = DiffusionTransformer(
@@ -326,8 +337,8 @@ class ResidueDenoiser(BaseDecoder):
         if mask is None:
             mask = torch.ones(B, L, dtype=torch.bool, device=device)
 
-        # === TRUNK (once) ===
-        trunk_tokens = self.trunk(x_t, aa_seq, chain_ids, res_idx, mask)
+        # === TRUNK (once, sequence-only) ===
+        trunk_tokens = self.trunk(aa_seq, chain_ids, res_idx, mask)
 
         # === DENOISER ===
 
@@ -348,23 +359,199 @@ class ResidueDenoiser(BaseDecoder):
 
         return x0_pred
 
+    def _embed_sigma(self, sigma: Tensor) -> Tensor:
+        """Embed continuous sigma using Fourier features (AF3-style).
+
+        Uses c_noise = log(sigma/sigma_data) / 4 as input to sinusoidal encoding.
+
+        Args:
+            sigma: [B] noise levels
+
+        Returns:
+            sigma_emb: [B, c_token] sigma embeddings
+        """
+        # AF3-style noise encoding: c_noise = log(sigma/sigma_data) / 4
+        c_noise = torch.log(sigma / self.sigma_data + 1e-8) / 4.0  # [B]
+
+        # Sinusoidal encoding (same as timestep but continuous)
+        half_dim = self.c_token // 2
+        emb_scale = math.log(10000) / (half_dim - 1)
+        emb = torch.exp(torch.arange(half_dim, device=sigma.device) * -emb_scale)
+        emb = c_noise.unsqueeze(-1) * emb.unsqueeze(0)  # [B, half_dim]
+        emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)  # [B, c_token]
+
+        # Project through MLP
+        return self.sigma_embed(emb)  # [B, c_token]
+
+    def forward_sigma(
+        self,
+        x_t: Tensor,         # [B, L, 3] noisy residue centroids
+        aa_seq: Tensor,      # [B, L]
+        chain_ids: Tensor,   # [B, L]
+        res_idx: Tensor,     # [B, L]
+        sigma: Tensor,       # [B] continuous noise level
+        mask: Optional[Tensor] = None,  # [B, L]
+        x0_prev: Optional[Tensor] = None,  # [B, L, 3] previous x0 prediction (self-conditioning)
+    ) -> Tensor:
+        """Predict clean centroids x0 from noisy input using continuous sigma.
+
+        This is the AF3-style forward pass with continuous noise levels.
+        Supports self-conditioning: if x0_prev is provided, it's used to help
+        the model refine predictions.
+
+        Args:
+            x_t: Noisy centroids
+            aa_seq, chain_ids, res_idx: Sequence features
+            sigma: Continuous noise level (NOT discrete timestep)
+            mask: Valid residue mask
+            x0_prev: Previous x0 prediction for self-conditioning (optional)
+
+        Returns:
+            x0_pred: [B, L, 3] predicted clean centroids
+        """
+        B, L, _ = x_t.shape
+        device = x_t.device
+
+        if mask is None:
+            mask = torch.ones(B, L, dtype=torch.bool, device=device)
+
+        # === TRUNK (once, sequence-only) ===
+        trunk_tokens = self.trunk(aa_seq, chain_ids, res_idx, mask)
+
+        # === DENOISER ===
+
+        # Embed noisy coordinates
+        coord_emb = self.coord_embed(x_t)  # [B, L, c_token]
+
+        # Additive conditioning (like AF3)
+        tokens = coord_emb + trunk_tokens  # [B, L, c_token]
+
+        # Self-conditioning: add embedding of previous prediction
+        if x0_prev is not None:
+            self_cond_emb = self.self_cond_embed(x0_prev)  # [B, L, c_token]
+            tokens = tokens + self_cond_emb
+
+        # Continuous sigma conditioning (instead of discrete timestep)
+        sigma_cond = self._embed_sigma(sigma).unsqueeze(1).expand(-1, L, -1)
+
+        # Diffusion transformer
+        tokens = self.diff_transformer(tokens, sigma_cond, mask)
+
+        # Output: predict clean centroids x0 directly
+        x0_pred = self.output_proj(tokens)  # [B, L, 3]
+
+        return x0_pred
+
+    def forward_sigma_with_trunk(
+        self,
+        x_t: Tensor,         # [B, L, 3] noisy residue centroids
+        trunk_tokens: Tensor,  # [B, L, c_token] pre-computed trunk embeddings
+        sigma: Tensor,       # [B] continuous noise level
+        mask: Optional[Tensor] = None,  # [B, L]
+        x0_prev: Optional[Tensor] = None,  # [B, L, 3] previous x0 prediction (self-conditioning)
+    ) -> Tensor:
+        """Predict x0 using pre-computed trunk and continuous sigma.
+
+        Combines AF3's trunk-once optimization with continuous sigma conditioning.
+        Supports self-conditioning for improved inference.
+
+        Args:
+            x_t: Noisy centroids (possibly augmented)
+            trunk_tokens: Pre-computed trunk embeddings
+            sigma: Continuous noise level
+            mask: Valid residue mask
+            x0_prev: Previous x0 prediction for self-conditioning (optional)
+
+        Returns:
+            x0_pred: [B, L, 3] predicted clean centroids
+        """
+        B, L, _ = x_t.shape
+        device = x_t.device
+
+        if mask is None:
+            mask = torch.ones(B, L, dtype=torch.bool, device=device)
+
+        # Embed noisy coordinates
+        coord_emb = self.coord_embed(x_t)  # [B, L, c_token]
+
+        # Additive conditioning with pre-computed trunk tokens
+        tokens = coord_emb + trunk_tokens  # [B, L, c_token]
+
+        # Self-conditioning: add embedding of previous prediction
+        if x0_prev is not None:
+            self_cond_emb = self.self_cond_embed(x0_prev)  # [B, L, c_token]
+            tokens = tokens + self_cond_emb
+
+        # Continuous sigma conditioning
+        sigma_cond = self._embed_sigma(sigma).unsqueeze(1).expand(-1, L, -1)
+
+        # Diffusion transformer
+        tokens = self.diff_transformer(tokens, sigma_cond, mask)
+
+        # Output: predict clean centroids x0 directly
+        x0_pred = self.output_proj(tokens)  # [B, L, 3]
+
+        return x0_pred
+
     def get_trunk_tokens(
         self,
-        centroids: Tensor,   # [B, L, 3] clean centroids
         aa_seq: Tensor,      # [B, L]
         chain_ids: Tensor,   # [B, L]
         res_idx: Tensor,     # [B, L]
         mask: Optional[Tensor] = None,
     ) -> Tensor:
-        """Compute trunk embeddings from centroids (for Stage 2).
+        """Compute trunk embeddings from sequence features (for Stage 2 or multi-copy).
 
-        Args:
-            centroids: Clean (predicted or GT) centroid positions
+        The trunk processes ONLY sequence features, enabling trunk-once optimization.
 
         Returns:
-            trunk_tokens: [B, L, c_token] embeddings for Stage 2
+            trunk_tokens: [B, L, c_token] embeddings
         """
-        return self.trunk(centroids, aa_seq, chain_ids, res_idx, mask)
+        return self.trunk(aa_seq, chain_ids, res_idx, mask)
+
+    def forward_with_trunk(
+        self,
+        x_t: Tensor,         # [B, L, 3] noisy residue centroids
+        trunk_tokens: Tensor,  # [B, L, c_token] pre-computed trunk embeddings
+        t: Tensor,           # [B] timestep
+        mask: Optional[Tensor] = None,  # [B, L]
+    ) -> Tensor:
+        """Predict x0 using pre-computed trunk tokens (for efficient multi-copy training).
+
+        This is the AF3-style training optimization: trunk runs ONCE on clean coords,
+        then denoiser runs on multiple noisy copies with different augmentations.
+
+        Args:
+            x_t: Noisy centroids (possibly augmented)
+            trunk_tokens: Pre-computed trunk embeddings from clean centroids
+            t: Timestep indices
+            mask: Valid residue mask
+
+        Returns:
+            x0_pred: [B, L, 3] predicted clean centroids
+        """
+        B, L, _ = x_t.shape
+        device = x_t.device
+
+        if mask is None:
+            mask = torch.ones(B, L, dtype=torch.bool, device=device)
+
+        # Embed noisy coordinates
+        coord_emb = self.coord_embed(x_t)  # [B, L, c_token]
+
+        # Additive conditioning with pre-computed trunk tokens
+        tokens = coord_emb + trunk_tokens  # [B, L, c_token]
+
+        # Timestep conditioning
+        time_cond = self.time_embed(t).unsqueeze(1).expand(-1, L, -1)
+
+        # Diffusion transformer
+        tokens = self.diff_transformer(tokens, time_cond, mask)
+
+        # Output: predict clean centroids x0 directly
+        x0_pred = self.output_proj(tokens)  # [B, L, 3]
+
+        return x0_pred
 
     def count_parameters(self) -> dict:
         """Count parameters in trunk vs denoiser."""

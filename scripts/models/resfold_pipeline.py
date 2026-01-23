@@ -6,7 +6,6 @@ import torch.nn as nn
 from torch import Tensor
 
 from .resfold import ResidueDenoiser
-from .atomrefine_v2 import AtomRefinerV2
 
 TrainingMode = Literal['stage1_only', 'stage2_only', 'end_to_end']
 
@@ -25,10 +24,12 @@ class ResFoldPipeline(nn.Module):
         n_aa_types: int = 21,
         n_chains: int = 2,
         dropout: float = 0.0,
+        stage1_only: bool = False,  # Lightweight mode: skip Stage 2
     ):
         super().__init__()
         self.n_timesteps = n_timesteps
         self.c_token_s1 = c_token_s1
+        self._stage1_only = stage1_only
 
         self.stage1 = ResidueDenoiser(
             c_token=c_token_s1,
@@ -42,32 +43,40 @@ class ResFoldPipeline(nn.Module):
             dropout=dropout,
         )
 
-        self.stage2 = AtomRefinerV2(
-            c_token=c_token_s2,
-            n_layers=s2_layers,
-            n_heads=s2_heads,
-            dropout=dropout,
-        )
+        # Only create Stage 2 if needed (saves ~14M params for stage1_only training)
+        self.stage2 = None
+        if not stage1_only:
+            from .atomrefine_v2 import AtomRefinerV2
+            self.stage2 = AtomRefinerV2(
+                c_token=c_token_s2,
+                n_layers=s2_layers,
+                n_heads=s2_heads,
+                dropout=dropout,
+            )
 
     def forward_stage1(self, x_t, aa_seq, chain_ids, res_idx, t, mask=None):
         return self.stage1(x_t, aa_seq, chain_ids, res_idx, t, mask)
 
-    def get_trunk_tokens(self, centroids, aa_seq, chain_ids, res_idx, mask=None):
-        return self.stage1.get_trunk_tokens(centroids, aa_seq, chain_ids, res_idx, mask)
+    def get_trunk_tokens(self, aa_seq, chain_ids, res_idx, mask=None):
+        """Get trunk tokens from sequence features (no coordinates)."""
+        return self.stage1.get_trunk_tokens(aa_seq, chain_ids, res_idx, mask)
 
-    def forward_stage2(self, centroids, aa_seq, chain_ids, res_idx, mask=None, trunk_tokens=None, centroids_for_trunk=None):
+    def forward_stage2(self, centroids, aa_seq, chain_ids, res_idx, mask=None, trunk_tokens=None):
+        if self.stage2 is None:
+            raise RuntimeError("Stage 2 not available (model created with stage1_only=True)")
         if trunk_tokens is None:
-            trunk_centroids = centroids_for_trunk if centroids_for_trunk is not None else centroids
-            trunk_tokens = self.get_trunk_tokens(trunk_centroids, aa_seq, chain_ids, res_idx, mask)
+            trunk_tokens = self.get_trunk_tokens(aa_seq, chain_ids, res_idx, mask)
         offsets = self.stage2(trunk_tokens, centroids, mask)
         atom_coords = centroids.unsqueeze(2) + offsets
         return atom_coords
 
     def forward(self, x_t, aa_seq, chain_ids, res_idx, t, mask=None, mode='end_to_end', gt_centroids=None, centroid_noise=0.0):
         result = {}
+        # Trunk tokens are sequence-only (computed once)
+        trunk_tokens = self.get_trunk_tokens(aa_seq, chain_ids, res_idx, mask)
+
         if mode == 'stage2_only':
             assert gt_centroids is not None
-            trunk_tokens = self.get_trunk_tokens(gt_centroids, aa_seq, chain_ids, res_idx, mask)
             centroids_input = gt_centroids
             if centroid_noise > 0:
                 centroids_input = gt_centroids + centroid_noise * torch.randn_like(gt_centroids)
@@ -80,7 +89,6 @@ class ResFoldPipeline(nn.Module):
             result['atoms_pred'] = None
         else:
             centroids_pred = self.forward_stage1(x_t, aa_seq, chain_ids, res_idx, t, mask)
-            trunk_tokens = self.get_trunk_tokens(centroids_pred, aa_seq, chain_ids, res_idx, mask)
             atoms_pred = self.forward_stage2(centroids_pred, aa_seq, chain_ids, res_idx, mask, trunk_tokens=trunk_tokens)
             result['centroids_pred'] = centroids_pred
             result['atoms_pred'] = atoms_pred
@@ -116,8 +124,11 @@ class ResFoldPipeline(nn.Module):
     def set_training_mode(self, mode):
         if mode == 'stage1_only':
             for p in self.stage1.parameters(): p.requires_grad = True
-            for p in self.stage2.parameters(): p.requires_grad = False
+            if self.stage2 is not None:
+                for p in self.stage2.parameters(): p.requires_grad = False
         elif mode == 'stage2_only':
+            if self.stage2 is None:
+                raise RuntimeError("Stage 2 not available (model created with stage1_only=True)")
             for p in self.stage1.parameters(): p.requires_grad = False
             for p in self.stage2.parameters(): p.requires_grad = True
         else:
@@ -125,6 +136,8 @@ class ResFoldPipeline(nn.Module):
 
     def count_parameters(self):
         s1 = sum(p.numel() for p in self.stage1.parameters())
-        s2 = sum(p.numel() for p in self.stage2.parameters())
+        s2 = sum(p.numel() for p in self.stage2.parameters()) if self.stage2 is not None else 0
         total = s1 + s2
+        if total == 0:
+            return {'stage1': s1, 'stage2': s2, 'total': total, 'stage1_pct': 0, 'stage2_pct': 0}
         return {'stage1': s1, 'stage2': s2, 'total': total, 'stage1_pct': 100*s1/total, 'stage2_pct': 100*s2/total}

@@ -32,9 +32,14 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # Model imports - use new tinyfold.model paths where available
-from models import create_schedule, create_noiser, kabsch_align_to_target
+from models import create_schedule, create_noiser, kabsch_align_to_target, create_sampler
 from models.resfold_pipeline import ResFoldPipeline
 from models.dockq_utils import compute_dockq
+from models.training_utils import (
+    random_rigid_augment,
+    MultiCopyTrainer,
+    VectorizedMultiCopyTrainer,
+)
 
 # Loss imports - use consolidated losses from tinyfold.model.losses
 from tinyfold.model.losses import (
@@ -142,9 +147,115 @@ def sample_centroids(model, batch, noiser, device, clamp_val=3.0,
 
 
 @torch.no_grad()
+def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
+                        align_per_step=True, recenter=True):
+    """VE (variance-exploding) sampling for continuous sigma models.
+
+    Uses AF3-style Euler sampling with the Karras sigma schedule.
+    Model must have been trained with continuous sigma (forward_sigma).
+
+    Args:
+        model: ResFoldPipeline model (trained with continuous_sigma)
+        batch: Batch dict with aa_seq, chain_ids, res_idx, mask_res
+        noiser: VENoiser with KarrasSchedule (has .sigmas attribute)
+        device: torch device
+        clamp_val: Value to clamp predictions
+        align_per_step: Kabsch-align x0_pred to x each step
+        recenter: Re-center coordinates each step
+
+    Returns:
+        centroids: [B, L, 3] predicted centroids
+    """
+    B, L = batch['aa_seq'].shape
+    mask = batch['mask_res']
+
+    # Get sigma schedule from noiser
+    sigmas = noiser.sigmas.to(device)  # Decreasing: [sigma_max, ..., sigma_min]
+
+    # Initialize at highest noise level (VE: x = sigma * noise)
+    x = sigmas[0] * torch.randn(B, L, 3, device=device)
+
+    # Euler sampling loop
+    for i in range(len(sigmas) - 1):
+        sigma = sigmas[i]
+        sigma_next = sigmas[i + 1]
+
+        # Create sigma tensor for batch
+        sigma_batch = sigma.expand(B)
+
+        # Predict x0 using continuous sigma conditioning
+        x0_pred = model.stage1.forward_sigma(
+            x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
+            sigma_batch, mask
+        )
+        x0_pred = torch.clamp(x0_pred, -clamp_val, clamp_val)
+
+        # Kabsch-align x0_pred to current x
+        if align_per_step:
+            x0_pred = kabsch_align_to_target(x0_pred, x, mask)
+
+        # Euler step: x_next = x + (sigma_next - sigma) * (x - x0_pred) / sigma
+        # This is the score-based update: dx/dt = -sigma * score, where score = (x - x0_pred) / sigma^2
+        d = (x - x0_pred) / sigma  # Direction toward x0
+        dt = sigma_next - sigma    # Negative (decreasing sigma)
+        x = x + d * dt
+
+        # Re-center
+        if recenter:
+            if mask is not None:
+                mask_exp = mask.unsqueeze(-1).float()
+                n_valid = mask.sum(dim=1, keepdim=True).unsqueeze(-1).clamp(min=1)
+                centroid = (x * mask_exp).sum(dim=1, keepdim=True) / n_valid
+            else:
+                centroid = x.mean(dim=1, keepdim=True)
+            x = x - centroid
+
+    return x
+
+
+@torch.no_grad()
+def sample_centroids_with_sampler(model, batch, noiser, device, sampler):
+    """Sample centroids using a sampler from the registry.
+
+    Args:
+        model: ResFoldPipeline model
+        batch: Batch dict with aa_seq, chain_ids, res_idx, mask_res
+        noiser: Diffusion noiser with schedule
+        device: torch device
+        sampler: Sampler instance from create_sampler()
+
+    Returns:
+        centroids: [B, L, 3] predicted centroids
+    """
+    B, L = batch['aa_seq'].shape
+
+    # Create model kwargs for sampler
+    model_kwargs = {
+        'aa_seq': batch['aa_seq'],
+        'chain_ids': batch['chain_ids'],
+        'res_idx': batch['res_idx'],
+        'mask_res': batch['mask_res'],
+    }
+
+    # Custom forward function that adapts ResFold interface to sampler interface
+    def forward_fn(mdl, x, t, aa_seq, chain_ids, res_idx, mask_res, **kwargs):
+        return mdl.forward_stage1(x, aa_seq, chain_ids, res_idx, t, mask_res)
+
+    # Run sampler
+    return sampler.sample(
+        model=model,
+        shape=(B, L, 3),
+        model_kwargs=model_kwargs,
+        noiser=noiser,
+        device=device,
+        forward_fn=forward_fn,
+    )
+
+
+@torch.no_grad()
 def generate_stage1_predictions(
     model, samples, indices, noiser, device, batch_size=1, logger=None,
-    align_per_step=False, recenter=False
+    align_per_step=False, recenter=False, sampler=None
 ):
     """Generate Stage 1 centroid predictions for all samples.
 
@@ -171,10 +282,13 @@ def generate_stage1_predictions(
         batch = collate_batch([s], device)
 
         # Run Stage 1 diffusion sampling
-        centroids_pred = sample_centroids(
-            model, batch, noiser, device,
-            align_per_step=align_per_step, recenter=recenter
-        )
+        if sampler is not None:
+            centroids_pred = sample_centroids_with_sampler(model, batch, noiser, device, sampler)
+        else:
+            centroids_pred = sample_centroids(
+                model, batch, noiser, device,
+                align_per_step=align_per_step, recenter=recenter
+            )
 
         # Store prediction (trim to actual length)
         n_res = s['n_res']
@@ -398,6 +512,18 @@ def parse_args():
     # Diffusion
     parser.add_argument("--T", type=int, default=50)
     parser.add_argument("--schedule", type=str, default="linear")
+    parser.add_argument("--continuous_sigma", action="store_true",
+                        help="Use AF3-style continuous sigma instead of discrete timesteps")
+    parser.add_argument("--sigma_data", type=float, default=1.0,
+                        help="Sigma_data for normalized coordinates (1.0 for std=1)")
+    parser.add_argument("--sigma_min", type=float, default=0.002,
+                        help="Minimum sigma for VE noise")
+    parser.add_argument("--sigma_max", type=float, default=10.0,
+                        help="Maximum sigma for VE noise")
+
+    # Self-conditioning
+    parser.add_argument("--self_cond_prob", type=float, default=0.5,
+                        help="Probability of using self-conditioning during training (0 to disable)")
 
     # Loss weights
     parser.add_argument("--dist_weight", type=float, default=0.1,
@@ -435,10 +561,21 @@ def parse_args():
                         help="Path to checkpoint to load (e.g., Stage 1 checkpoint for Stage 2 training)")
 
     # Sampling (evaluation)
+    parser.add_argument("--sampler", type=str, default=None,
+                        choices=["ddpm", "ddpm_kabsch", "ddpm_kabsch_recenter", "heun", "ddim", "edm"],
+                        help="Sampler for evaluation (default: use --align_per_step/--recenter flags)")
     parser.add_argument("--align_per_step", action="store_true",
                         help="Kabsch-align x0_pred to x_t each step (fixes drift, Boltz-1 style)")
     parser.add_argument("--recenter", action="store_true",
                         help="Re-center coordinates each step (avoids translation drift)")
+
+    # AF3-style training (multi-copy with trunk reuse)
+    parser.add_argument("--multi_copy", type=int, default=0,
+                        help="Number of augmented copies per sample (0=disabled, 48=AF3-style)")
+    parser.add_argument("--augment_rotation", action="store_true",
+                        help="Apply random rotation augmentation during training")
+    parser.add_argument("--loss_weighting", action="store_true",
+                        help="Apply AF3-style loss weighting by noise level")
 
     # Output
     parser.add_argument("--output_dir", type=str, default="outputs/resfold")
@@ -624,7 +761,7 @@ def main():
         )
         logger.log(f"  Using length bucketing ({args.n_buckets} buckets)")
 
-    # Create model
+    # Create model (use lightweight mode for stage1_only to save ~14M params)
     model = ResFoldPipeline(
         c_token_s1=args.c_token_s1,
         trunk_layers=args.trunk_layers,
@@ -634,6 +771,7 @@ def main():
         s2_heads=args.s2_heads,
         n_timesteps=args.T,
         dropout=0.0,
+        stage1_only=(args.mode == "stage1_only"),
     ).to(device)
 
     # Load checkpoint if provided
@@ -671,13 +809,38 @@ def main():
     logger.log("")
 
     # Create diffusion components (for Stage 1)
-    schedule = create_schedule(args.schedule, T=args.T)
-    noiser = create_noiser("gaussian", schedule)
-    noiser = noiser.to(device)
+    if args.continuous_sigma:
+        # AF3-style: VE noise with Karras schedule and continuous sigma
+        from models.diffusion import KarrasSchedule, VENoiser
+        schedule = KarrasSchedule(
+            n_steps=args.T,
+            sigma_min=args.sigma_min,
+            sigma_max=args.sigma_max,
+            rho=7.0,
+        )
+        noiser = VENoiser(schedule, sigma_data=args.sigma_data)
+        noiser = noiser.to(device)
+        logger.log(f"Diffusion:")
+        logger.log(f"  Mode: AF3-style continuous sigma (VE)")
+        logger.log(f"  sigma_data: {args.sigma_data}")
+        logger.log(f"  sigma_range: [{args.sigma_min}, {args.sigma_max}]")
+        logger.log(f"  T: {args.T} (inference steps)")
+    else:
+        # Standard: VP noise with discrete timesteps
+        schedule = create_schedule(args.schedule, T=args.T)
+        noiser = create_noiser("gaussian", schedule)
+        noiser = noiser.to(device)
+        logger.log(f"Diffusion:")
+        logger.log(f"  Schedule: {args.schedule}")
+        logger.log(f"  Noise type: gaussian (VP, discrete t)")
 
-    logger.log(f"Diffusion:")
-    logger.log(f"  Schedule: {args.schedule}")
-    logger.log(f"  Noise type: gaussian")
+    # Create sampler for evaluation (if specified)
+    eval_sampler = None
+    if args.sampler:
+        eval_sampler = create_sampler(args.sampler)
+        logger.log(f"  Sampler: {args.sampler}")
+    elif args.align_per_step or args.recenter:
+        logger.log(f"  Sampling: align_per_step={args.align_per_step}, recenter={args.recenter}")
     logger.log("")
 
     # Geometry loss (for Stage 2 only - not used in stage1_only)
@@ -737,48 +900,130 @@ def main():
             batch_samples = [train_samples[idx] for idx in batch_indices]
             batch = collate_batch(batch_samples, device)
 
-            # Sample timesteps
-            t = torch.randint(0, noiser.T, (current_batch_size,), device=device)
-
-            # Add noise to centroids (for Stage 1)
+            # Sample noise levels and add noise to centroids (for Stage 1)
             noise = torch.randn_like(batch['centroids'])
-            sqrt_ab = noiser.schedule.sqrt_alpha_bar[t].view(-1, 1, 1)
-            sqrt_one_minus_ab = noiser.schedule.sqrt_one_minus_alpha_bar[t].view(-1, 1, 1)
-            x_t = sqrt_ab * batch['centroids'] + sqrt_one_minus_ab * noise
+
+            if args.continuous_sigma:
+                # AF3-style: continuous sigma with VE noise (x_t = x0 + sigma * noise)
+                sigma = noiser.sample_sigma_af3(current_batch_size, device)
+                x_t = batch['centroids'] + sigma.view(-1, 1, 1) * noise
+                # Loss weighting (AF3-style)
+                loss_weight = noiser.loss_weight(sigma).mean() if args.loss_weighting else 1.0
+            else:
+                # Standard: discrete timesteps with VP noise
+                t = torch.randint(0, noiser.T, (current_batch_size,), device=device)
+                sqrt_ab = noiser.schedule.sqrt_alpha_bar[t].view(-1, 1, 1)
+                sqrt_one_minus_ab = noiser.schedule.sqrt_one_minus_alpha_bar[t].view(-1, 1, 1)
+                x_t = sqrt_ab * batch['centroids'] + sqrt_one_minus_ab * noise
+                loss_weight = 1.0
 
             # Forward pass
             if args.mode == "stage1_only":
-                # Only Stage 1
-                centroids_pred = model.forward_stage1(
-                    x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
-                    t, batch['mask_res']
-                )
-                # Loss: MSE on centroids + distance consistency
-                loss_mse = compute_mse_loss(centroids_pred, batch['centroids'], batch['mask_res'])
-                loss_dist = compute_distance_consistency_loss(
-                    centroids_pred, batch['centroids'], batch['mask_res']
-                )
-                loss = loss_mse + args.dist_weight * loss_dist
-
-                # Contact loss for Stage 1
-                loss_contact = 0.0
-                if contact_loss_fn is not None and args.contact_stage in ["stage1", "both"]:
-                    contact_losses = contact_loss_fn(
-                        pred_centroids=centroids_pred,
-                        gt_centroids=batch['centroids'],
-                        chain_ids=batch['chain_ids'],
-                        mask=batch['mask_res']
+                # === AF3-STYLE MULTI-COPY TRAINING ===
+                # Trunk processes sequence-only (no coords), so we can run it ONCE
+                # and reuse tokens for multiple augmented/noisy copies.
+                if args.multi_copy > 0:
+                    # Run trunk ONCE on sequence features (no coordinates!)
+                    trunk_tokens = model.stage1.get_trunk_tokens(
+                        batch['aa_seq'], batch['chain_ids'],
+                        batch['res_idx'], batch['mask_res']
                     )
-                    loss_contact = contact_losses['stage1'].item()
-                    loss = loss + args.contact_weight * contact_losses['stage1']
 
-                # Track loss components for logging
-                if accum_step == args.grad_accum - 1:
-                    loss_components = {
-                        'mse': loss_mse.item(),
-                        'dist': loss_dist.item(),
-                        'contact': loss_contact,
-                    }
+                    # Expand for n_copies
+                    n_copies = args.multi_copy
+                    B_orig, L, _ = batch['centroids'].shape
+
+                    # Expand tensors: [B, ...] -> [B * n_copies, ...]
+                    trunk_tokens_exp = trunk_tokens.unsqueeze(1).expand(-1, n_copies, -1, -1)
+                    trunk_tokens_exp = trunk_tokens_exp.reshape(B_orig * n_copies, L, -1)
+
+                    centroids_exp = batch['centroids'].unsqueeze(1).expand(-1, n_copies, -1, -1)
+                    centroids_exp = centroids_exp.reshape(B_orig * n_copies, L, 3)
+
+                    mask_exp = batch['mask_res'].unsqueeze(1).expand(-1, n_copies, -1)
+                    mask_exp = mask_exp.reshape(B_orig * n_copies, L)
+
+                    # Apply different augmentations to each copy
+                    if args.augment_rotation:
+                        centroids_aug = random_rigid_augment(centroids_exp, mask_exp, rotation=True)
+                    else:
+                        centroids_aug = centroids_exp
+
+                    # Sample different timesteps for each copy
+                    t_exp = torch.randint(0, noiser.T, (B_orig * n_copies,), device=device)
+
+                    # Add noise
+                    noise = torch.randn_like(centroids_aug)
+                    sqrt_ab = noiser.schedule.sqrt_alpha_bar[t_exp].view(-1, 1, 1)
+                    sqrt_one_minus_ab = noiser.schedule.sqrt_one_minus_alpha_bar[t_exp].view(-1, 1, 1)
+                    x_t_exp = sqrt_ab * centroids_aug + sqrt_one_minus_ab * noise
+
+                    # Run denoiser with pre-computed trunk tokens
+                    centroids_pred = model.stage1.forward_with_trunk(
+                        x_t_exp, trunk_tokens_exp, t_exp, mask_exp
+                    )
+
+                    # Loss: MSE on centroids (target is augmented centroids)
+                    loss_mse = compute_mse_loss(centroids_pred, centroids_aug, mask_exp)
+                    loss_dist = compute_distance_consistency_loss(
+                        centroids_pred, centroids_aug, mask_exp
+                    )
+                    loss = loss_mse + args.dist_weight * loss_dist
+
+                    # Track loss components
+                    if accum_step == args.grad_accum - 1:
+                        loss_components = {
+                            'mse': loss_mse.item(),
+                            'dist': loss_dist.item(),
+                            'contact': 0.0,
+                            'n_copies': n_copies,
+                            'eff_batch': B_orig * n_copies,
+                        }
+
+                else:
+                    # === STANDARD TRAINING ===
+                    if args.continuous_sigma:
+                        # AF3-style with continuous sigma
+                        centroids_pred = model.stage1.forward_sigma(
+                            x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
+                            sigma, batch['mask_res']
+                        )
+                    else:
+                        # Original behavior with discrete timesteps
+                        centroids_pred = model.forward_stage1(
+                            x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
+                            t, batch['mask_res']
+                        )
+                    # Loss: MSE on centroids + distance consistency
+                    loss_mse = compute_mse_loss(centroids_pred, batch['centroids'], batch['mask_res'])
+                    loss_dist = compute_distance_consistency_loss(
+                        centroids_pred, batch['centroids'], batch['mask_res']
+                    )
+                    loss = loss_mse + args.dist_weight * loss_dist
+
+                    # Apply AF3-style loss weighting (if enabled)
+                    loss = loss * loss_weight
+
+                    # Contact loss for Stage 1
+                    loss_contact = 0.0
+                    if contact_loss_fn is not None and args.contact_stage in ["stage1", "both"]:
+                        contact_losses = contact_loss_fn(
+                            pred_centroids=centroids_pred,
+                            gt_centroids=batch['centroids'],
+                            chain_ids=batch['chain_ids'],
+                            mask=batch['mask_res']
+                        )
+                        loss_contact = contact_losses['stage1'].item()
+                        loss = loss + args.contact_weight * contact_losses['stage1']
+
+                    # Track loss components for logging
+                    if accum_step == args.grad_accum - 1:
+                        loss_components = {
+                            'mse': loss_mse.item(),
+                            'dist': loss_dist.item(),
+                            'contact': loss_contact,
+                            'loss_weight': loss_weight if isinstance(loss_weight, float) else loss_weight.item(),
+                        }
 
             elif args.mode == "stage2_only":
                 # Only Stage 2
@@ -788,9 +1033,9 @@ def main():
                 else:
                     centroids_for_s2 = batch['centroids']
 
-                # Compute trunk tokens from centroids
+                # Compute trunk tokens from sequence features (no coordinates)
                 trunk_tokens = model.get_trunk_tokens(
-                    centroids_for_s2, batch['aa_seq'], batch['chain_ids'],
+                    batch['aa_seq'], batch['chain_ids'],
                     batch['res_idx'], batch['mask_res']
                 )
                 # Add noise augmentation to centroids input (optional)
@@ -928,7 +1173,8 @@ def main():
             elif args.mode == "stage1_only" and 'loss_components' in dir():
                 lc = loss_components
                 contact_str = f" | cnt: {lc.get('contact', 0):.4f}" if args.contact_weight > 0 else ""
-                logger.log(f"Step {step:5d} | loss: {loss:.6f} | mse: {lc['mse']:.4f} | dst: {lc['dist']:.4f}{contact_str} | lr: {scheduler.get_last_lr()[0]:.2e} | {elapsed:.0f}s")
+                weight_str = f" | w: {lc.get('loss_weight', 1.0):.2f}" if args.continuous_sigma and args.loss_weighting else ""
+                logger.log(f"Step {step:5d} | loss: {loss:.6f} | mse: {lc['mse']:.4f} | dst: {lc['dist']:.4f}{contact_str}{weight_str} | lr: {scheduler.get_last_lr()[0]:.2e} | {elapsed:.0f}s")
             else:
                 logger.log(f"Step {step:5d} | loss: {loss:.6f} | lr: {scheduler.get_last_lr()[0]:.2e} | {elapsed:.0f}s")
 
@@ -945,11 +1191,21 @@ def main():
 
                     if args.mode == "stage1_only":
                         # For Stage 1: evaluate centroid RMSE via diffusion sampling
-                        centroids_pred = sample_centroids(
-                            model, batch, noiser, device,
-                            align_per_step=args.align_per_step,
-                            recenter=args.recenter
-                        )
+                        if args.continuous_sigma:
+                            # Use VE sampling for continuous sigma models
+                            centroids_pred = sample_centroids_ve(
+                                model, batch, noiser, device,
+                                align_per_step=args.align_per_step,
+                                recenter=args.recenter
+                            )
+                        elif eval_sampler is not None:
+                            centroids_pred = sample_centroids_with_sampler(model, batch, noiser, device, eval_sampler)
+                        else:
+                            centroids_pred = sample_centroids(
+                                model, batch, noiser, device,
+                                align_per_step=args.align_per_step,
+                                recenter=args.recenter
+                            )
                         rmse = compute_rmse(centroids_pred, batch['centroids'], batch['mask_res']).item() * s['std']
                     elif args.mode == "stage2_only" and 'centroids_pred' in batch:
                         # For Stage 2 with cached predictions: use Stage 1 predictions directly
@@ -979,11 +1235,21 @@ def main():
                     batch = collate_batch([s], device)
 
                     if args.mode == "stage1_only":
-                        centroids_pred = sample_centroids(
-                            model, batch, noiser, device,
-                            align_per_step=args.align_per_step,
-                            recenter=args.recenter
-                        )
+                        if args.continuous_sigma:
+                            # Use VE sampling for continuous sigma models
+                            centroids_pred = sample_centroids_ve(
+                                model, batch, noiser, device,
+                                align_per_step=args.align_per_step,
+                                recenter=args.recenter
+                            )
+                        elif eval_sampler is not None:
+                            centroids_pred = sample_centroids_with_sampler(model, batch, noiser, device, eval_sampler)
+                        else:
+                            centroids_pred = sample_centroids(
+                                model, batch, noiser, device,
+                                align_per_step=args.align_per_step,
+                                recenter=args.recenter
+                            )
                         rmse = compute_rmse(centroids_pred, batch['centroids'], batch['mask_res']).item() * s['std']
                     elif args.mode == "stage2_only" and 'centroids_pred' in batch:
                         # For Stage 2 with cached predictions: use Stage 1 predictions directly
@@ -1069,16 +1335,25 @@ def main():
 
                 if args.mode == "stage1_only":
                     # Plot centroids for Stage 1
-                    centroids_pred = sample_centroids(
-                        model, batch, noiser, device,
-                        align_per_step=args.align_per_step,
-                        recenter=args.recenter
-                    )
+                    if args.continuous_sigma:
+                        centroids_pred = sample_centroids_ve(
+                            model, batch, noiser, device,
+                            align_per_step=args.align_per_step,
+                            recenter=args.recenter
+                        )
+                    elif eval_sampler is not None:
+                        centroids_pred = sample_centroids_with_sampler(model, batch, noiser, device, eval_sampler)
+                    else:
+                        centroids_pred = sample_centroids(
+                            model, batch, noiser, device,
+                            align_per_step=args.align_per_step,
+                            recenter=args.recenter
+                        )
                     n_res = s['n_res']
                     pred = centroids_pred[0, :n_res] * s['std']
                     target = batch['centroids'][0, :n_res] * s['std']
                     pred_aligned, target_c = kabsch_align(pred.unsqueeze(0), target.unsqueeze(0))
-                    rmse_viz = compute_rmse(pred.unsqueeze(0), target.unsqueeze(0)).item()
+                    rmse_viz = compute_rmse(pred_aligned, target_c).item()
                     chain_ids_plot = batch['chain_ids'][0, :n_res]
                 elif args.mode == "stage2_only" and 'centroids_pred' in batch:
                     # Plot atoms for Stage 2 with cached predictions
@@ -1090,7 +1365,7 @@ def main():
                     pred = atoms_pred[0].view(-1, 3)[:n] * s['std']
                     target = batch['coords'][0, :n] * s['std']
                     pred_aligned, target_c = kabsch_align(pred.unsqueeze(0), target.unsqueeze(0))
-                    rmse_viz = compute_rmse(pred.unsqueeze(0), target.unsqueeze(0)).item()
+                    rmse_viz = compute_rmse(pred_aligned, target_c).item()
                     chain_ids_plot = batch['chain_ids'][0].unsqueeze(-1).expand(-1, 4).reshape(-1)[:n]
                 else:
                     # Plot atoms for end_to_end (or stage2 without cached)
@@ -1102,7 +1377,7 @@ def main():
                     pred = atoms_pred[0, :n] * s['std']
                     target = batch['coords'][0, :n] * s['std']
                     pred_aligned, target_c = kabsch_align(pred.unsqueeze(0), target.unsqueeze(0))
-                    rmse_viz = compute_rmse(pred.unsqueeze(0), target.unsqueeze(0)).item()
+                    rmse_viz = compute_rmse(pred_aligned, target_c).item()
                     chain_ids_plot = batch['chain_ids'][0].unsqueeze(-1).expand(-1, 4).reshape(-1)[:n]
 
                 plot_path = os.path.join(plots_dir, f'step_{step:06d}.png')

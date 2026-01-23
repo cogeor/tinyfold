@@ -24,9 +24,12 @@ from .resfold_pipeline import ResFoldPipeline
 from .geometry_losses import GeometryLoss, bond_length_loss, bond_angle_loss, omega_loss
 from .diffusion import (
     CosineSchedule,
+    LinearSchedule,
+    KarrasSchedule,
     GaussianNoise,
     LinearChainNoise,
     LinearChainFlow,
+    VENoiser,
     TimestepCurriculum,
     create_schedule,
     create_noiser,
@@ -34,6 +37,27 @@ from .diffusion import (
     list_noise_types,
     generate_extended_chain,
     kabsch_align_to_target,
+)
+from .samplers import (
+    BaseSampler,
+    DDPMSampler,
+    HeunSampler,
+    DeterministicDDIMSampler,
+    EDMSampler,
+    create_sampler,
+    list_samplers,
+)
+from .training_utils import (
+    random_rigid_augment,
+    random_rotation_matrix,
+    af3_loss_weight,
+    MultiCopyTrainer,
+    VectorizedMultiCopyTrainer,
+)
+from .self_conditioning import (
+    self_conditioning_training_step,
+    sample_step_with_self_cond,
+    create_self_cond_embedding,
 )
 
 
@@ -111,6 +135,29 @@ __all__ = [
     "list_noise_types",
     "generate_extended_chain",
     "kabsch_align_to_target",
+    # Diffusion - schedules
+    "LinearSchedule",
+    "KarrasSchedule",
+    # Diffusion - noise types
+    "VENoiser",
     # Diffusion - curriculum
     "TimestepCurriculum",
+    # Diffusion - samplers
+    "BaseSampler",
+    "DDPMSampler",
+    "HeunSampler",
+    "DeterministicDDIMSampler",
+    "EDMSampler",
+    "create_sampler",
+    "list_samplers",
+    # Training utilities
+    "random_rigid_augment",
+    "random_rotation_matrix",
+    "af3_loss_weight",
+    "MultiCopyTrainer",
+    "VectorizedMultiCopyTrainer",
+    # Self-conditioning
+    "self_conditioning_training_step",
+    "sample_step_with_self_cond",
+    "create_self_cond_embedding",
 ]
