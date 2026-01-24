@@ -20,6 +20,7 @@ Usage:
 import sys
 import math
 import random
+import numpy as np
 import torch
 import torch.nn as nn
 import pyarrow.parquet as pq
@@ -322,8 +323,14 @@ def load_stage1_predictions(path):
 # Data Loading
 # =============================================================================
 
-def load_sample_raw(table, i):
-    """Load sample without batching."""
+def load_sample_raw(table, i, normalize=True):
+    """Load sample without batching.
+
+    Args:
+        table: PyArrow table
+        i: Sample index
+        normalize: If True, normalize coords to unit variance. If False, keep in Angstroms.
+    """
     coords = torch.tensor(table['atom_coords'][i].as_py(), dtype=torch.float32)
     atom_types = torch.tensor(table['atom_type'][i].as_py(), dtype=torch.long)
     atom_to_res = torch.tensor(table['atom_to_res'][i].as_py(), dtype=torch.long)
@@ -334,11 +341,19 @@ def load_sample_raw(table, i):
     n_res = n_atoms // 4
     coords = coords.reshape(n_atoms, 3)
 
-    # Normalize
+    # Center coordinates
     centroid = coords.mean(dim=0, keepdim=True)
     coords = coords - centroid
-    std = coords.std()
-    coords = coords / std
+
+    # Compute std (always, for reference)
+    original_std = coords.std()
+
+    # Optionally normalize to unit variance
+    if normalize:
+        coords = coords / original_std
+        std = original_std
+    else:
+        std = torch.tensor(1.0)  # No scaling, coords stay in Angstroms
 
     # Compute residue centroids (mean of 4 backbone atoms)
     coords_res = coords.view(n_res, 4, 3)
@@ -487,6 +502,8 @@ def parse_args():
     parser.add_argument("--max_atoms", type=int, default=400)
     parser.add_argument("--select_smallest", action="store_true",
                         help="Select N smallest proteins instead of filtering by atom range")
+    parser.add_argument("--no_normalize", action="store_true",
+                        help="Don't normalize coordinates to unit variance - work in Angstroms directly")
     parser.add_argument("--load_split", type=str, default=None,
                         help="Load train/test split from JSON (for Stage 2 to reuse Stage 1 split)")
     parser.add_argument("--batch_size", type=int, default=64)
@@ -503,6 +520,7 @@ def parse_args():
     parser.add_argument("--n_steps", type=int, default=10000)
     parser.add_argument("--eval_every", type=int, default=1000)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--min_lr", type=float, default=1e-5, help="Minimum LR for cosine schedule")
     parser.add_argument("--grad_accum", type=int, default=1)
 
     # Model - Stage 1
@@ -690,10 +708,26 @@ def main():
     logger.log("")
 
     # Preload samples
-    logger.log("Preloading samples...")
-    train_samples = {idx: load_sample_raw(table, idx) for idx in train_indices}
-    test_samples = {idx: load_sample_raw(table, idx) for idx in test_indices}
+    normalize = not args.no_normalize
+    logger.log(f"Preloading samples... (normalize={normalize})")
+    train_samples = {idx: load_sample_raw(table, idx, normalize=normalize) for idx in train_indices}
+    test_samples = {idx: load_sample_raw(table, idx, normalize=normalize) for idx in test_indices}
     logger.log(f"  Loaded {len(train_samples)} train, {len(test_samples)} test samples")
+
+    # If not normalizing, warn about sigma values
+    if args.no_normalize:
+        # Compute what the typical STD would have been
+        # We need to compute it from centered coords before the std=1 assignment
+        sample_stds = []
+        for idx in list(train_indices)[:100]:
+            coords_raw = torch.tensor(table['atom_coords'][idx].as_py(), dtype=torch.float32).reshape(-1, 3)
+            coords_centered = coords_raw - coords_raw.mean(dim=0, keepdim=True)
+            sample_stds.append(coords_centered.std().item())
+        avg_std = np.mean(sample_stds)
+        logger.log(f"  Working in ANGSTROM space (typical coord std ~{avg_std:.1f}A)")
+        logger.log(f"  Recommended sigma_max ~{avg_std * 10:.0f} (currently {args.sigma_max})")
+        if args.sigma_max < avg_std * 5:
+            logger.log(f"  WARNING: sigma_max={args.sigma_max} may be too small for Angstrom space!")
 
     # For Stage 2: load or generate Stage 1 predictions
     if args.mode == "stage2_only" and args.load_split:
@@ -888,7 +922,7 @@ def main():
     # Optimizer (only on trainable params)
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=0.0)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.n_steps, eta_min=1e-5)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.n_steps, eta_min=args.min_lr)
 
     # Training loop
     logger.log(f"Training for {args.n_steps} steps...")
