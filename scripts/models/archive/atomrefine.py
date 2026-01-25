@@ -18,7 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from .base import sinusoidal_pos_enc
+from ..base import sinusoidal_pos_enc
 
 
 # =============================================================================

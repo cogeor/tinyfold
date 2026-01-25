@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from .base import BaseDecoder, sinusoidal_pos_enc
+from ..base import BaseDecoder, sinusoidal_pos_enc
 
 
 class HierarchicalDecoder(BaseDecoder):

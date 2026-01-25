@@ -14,14 +14,26 @@ Usage:
 
 from .base import BaseDecoder, sinusoidal_pos_enc
 from .attention_v2 import AttentionDiffusionV2
-from .hierarchical import HierarchicalDecoder
-from .pairformer_decoder import PairformerDecoder
 from .af3_style import AF3StyleDecoder
 from .resfold import ResidueDenoiser
-from .atomrefine import AtomRefiner
 from .atomrefine_v2 import AtomRefinerV2
+from .atomrefine_continuous import AtomRefinerContinuous
 from .resfold_pipeline import ResFoldPipeline
-from .geometry_losses import GeometryLoss, bond_length_loss, bond_angle_loss, omega_loss
+# Archived models (kept for backward compatibility with old checkpoints)
+from .archive import AtomRefiner, HierarchicalDecoder, PairformerDecoder
+# GeometryLoss and related functions now come from tinyfold.model.losses
+# Import them here for backward compatibility with scripts that import from models
+from tinyfold.model.losses import (
+    GeometryLoss,
+    bond_length_loss,
+    bond_angle_loss,
+    omega_loss,
+    o_chirality_loss,
+    virtual_cb_loss,
+    dihedral_angle,
+    BOND_LENGTHS,
+    BOND_ANGLES,
+)
 from .diffusion import (
     CosineSchedule,
     LinearSchedule,
@@ -117,6 +129,7 @@ __all__ = [
     "ResidueDenoiser",
     "AtomRefiner",
     "AtomRefinerV2",
+    "AtomRefinerContinuous",
     "ResFoldPipeline",
     "GeometryLoss",
     "create_model",
