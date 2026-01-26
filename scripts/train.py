@@ -222,6 +222,73 @@ def ddpm_sample(model, atom_types, atom_to_res, aa_seq, chain_ids, noiser, mask=
     return x
 
 
+@torch.no_grad()
+def ddpm_sample_ve(model, atom_types, atom_to_res, aa_seq, chain_ids, noiser, mask=None,
+                   clamp_val=3.0, align_per_step=True, recenter=True):
+    """VE (Euler) sampling for af3_style with continuous sigma.
+
+    Directly mirrors sample_centroids_ve from train_resfold.py.
+    Uses Karras/EDM-style Euler sampling with the model's forward_sigma method.
+
+    Args:
+        model: Model with forward_sigma(x, atom_types, atom_to_res, aa_seq, chain_ids, sigma, mask)
+        atom_types: [B, N] atom type indices
+        atom_to_res: [B, N] residue index per atom
+        aa_seq: [B, N] amino acid type per atom
+        chain_ids: [B, N] chain ID per atom
+        noiser: VENoiser with .sigmas attribute (Karras schedule)
+        mask: [B, N] valid atom mask
+        clamp_val: Clamp x0 predictions to [-clamp_val, clamp_val]
+        align_per_step: Kabsch-align x0_pred to current x (fixes drift)
+        recenter: Re-center coordinates each step (avoids translation drift)
+
+    Returns:
+        x: [B, N, 3] sampled coordinates
+    """
+    device = atom_types.device
+    B, N = atom_types.shape
+
+    # Get sigma schedule from noiser (decreasing: sigma_max -> sigma_min)
+    sigmas = noiser.sigmas.to(device)
+
+    # Initialize at highest noise level (VE: x = sigma * noise)
+    x = sigmas[0] * torch.randn(B, N, 3, device=device)
+
+    # Euler sampling loop (same as sample_centroids_ve in train_resfold.py)
+    for i in range(len(sigmas) - 1):
+        sigma = sigmas[i]
+        sigma_next = sigmas[i + 1]
+
+        # Create sigma tensor for batch
+        sigma_batch = sigma.expand(B)
+
+        # Predict x0 using continuous sigma conditioning
+        x0_pred = model.forward_sigma(x, atom_types, atom_to_res, aa_seq, chain_ids,
+                                       sigma_batch, mask)
+        x0_pred = torch.clamp(x0_pred, -clamp_val, clamp_val)
+
+        # Kabsch-align x0_pred to current x
+        if align_per_step:
+            x0_pred = kabsch_align_to_target(x0_pred, x, mask)
+
+        # Euler step: x_next = x + (sigma_next - sigma) * (x - x0_pred) / sigma
+        d = (x - x0_pred) / sigma  # Direction toward x0
+        dt = sigma_next - sigma    # Negative (decreasing sigma)
+        x = x + d * dt
+
+        # Re-center
+        if recenter:
+            if mask is not None:
+                mask_exp = mask.unsqueeze(-1).float()
+                n_valid = mask.sum(dim=1, keepdim=True).unsqueeze(-1).clamp(min=1)
+                centroid = (x * mask_exp).sum(dim=1, keepdim=True) / n_valid
+            else:
+                centroid = x.mean(dim=1, keepdim=True)
+            x = x - centroid
+
+    return x
+
+
 # Alias for backward compatibility (compute_loss -> compute_mse_loss)
 compute_loss = compute_mse_loss
 
@@ -392,6 +459,9 @@ def parse_args():
                         help="Minimum sigma for VE noise")
     parser.add_argument("--sigma_max", type=float, default=10.0,
                         help="Maximum sigma for VE noise")
+    parser.add_argument("--sigma_sampling", type=str, default="log_uniform",
+                        choices=["log_uniform", "stratified"],
+                        help="Sigma sampling method: log_uniform (default) or stratified (better high-sigma coverage)")
 
     # Self-conditioning
     parser.add_argument("--self_cond_prob", type=float, default=0.0,
@@ -425,6 +495,10 @@ def parse_args():
 
     # Output
     parser.add_argument("--output_dir", type=str, default="outputs/train")
+
+    # Resume from checkpoint
+    parser.add_argument("--resume", type=str, default=None,
+                        help="Path to checkpoint .pt file to resume training from")
 
     return parser.parse_args()
 
@@ -657,9 +731,13 @@ def main():
 
             # Sample noise level / timestep
             if args.continuous_sigma:
-                # VE noise: sample log-uniform sigma
-                log_sigma = torch.rand(B, device=device) * (math.log(args.sigma_max) - math.log(args.sigma_min)) + math.log(args.sigma_min)
-                sigma = log_sigma.exp()
+                # VE noise: sample sigma based on selected method
+                if args.sigma_sampling == "stratified":
+                    sigma = noiser.sample_sigma_stratified(B, device)
+                else:
+                    # Default log-uniform sampling
+                    log_sigma = torch.rand(B, device=device) * (math.log(args.sigma_max) - math.log(args.sigma_min)) + math.log(args.sigma_min)
+                    sigma = log_sigma.exp()
                 # Add noise: x_t = x_0 + sigma * epsilon
                 noise = torch.randn_like(x0)
                 x_input = x0 + sigma.view(B, 1, 1) * noise
@@ -773,11 +851,17 @@ def main():
                 for idx in eval_train_indices:
                     s = train_samples[idx]
                     batch = collate_batch([s], device)
-                    x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
-                                         batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
-                                         noise_type=args.noise_type,
-                                         align_per_step=args.align_per_step,
-                                         recenter=args.recenter)
+                    if args.continuous_sigma:
+                        x_pred = ddpm_sample_ve(model, batch['atom_types'], batch['atom_to_res'],
+                                                batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
+                                                align_per_step=args.align_per_step,
+                                                recenter=args.recenter)
+                    else:
+                        x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
+                                             batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
+                                             noise_type=args.noise_type,
+                                             align_per_step=args.align_per_step,
+                                             recenter=args.recenter)
                     rmse = compute_rmse(x_pred, batch['coords'], batch['mask']).item() * s['std']
                     train_rmses.append(rmse)
                 train_avg = sum(train_rmses) / len(train_rmses)
@@ -787,11 +871,17 @@ def main():
                 for idx in test_indices:
                     s = test_samples[idx]
                     batch = collate_batch([s], device)
-                    x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
-                                         batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
-                                         noise_type=args.noise_type,
-                                         align_per_step=args.align_per_step,
-                                         recenter=args.recenter)
+                    if args.continuous_sigma:
+                        x_pred = ddpm_sample_ve(model, batch['atom_types'], batch['atom_to_res'],
+                                                batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
+                                                align_per_step=args.align_per_step,
+                                                recenter=args.recenter)
+                    else:
+                        x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
+                                             batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
+                                             noise_type=args.noise_type,
+                                             align_per_step=args.align_per_step,
+                                             recenter=args.recenter)
                     rmse = compute_rmse(x_pred, batch['coords'], batch['mask']).item() * s['std']
                     test_rmses.append(rmse)
                 test_avg = sum(test_rmses) / len(test_rmses)
@@ -801,11 +891,17 @@ def main():
                 # Plot first train sample
                 s = train_samples[train_indices[0]]
                 batch = collate_batch([s], device)
-                x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
-                                     batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
-                                     noise_type=args.noise_type,
-                                     align_per_step=args.align_per_step,
-                                     recenter=args.recenter)
+                if args.continuous_sigma:
+                    x_pred = ddpm_sample_ve(model, batch['atom_types'], batch['atom_to_res'],
+                                            batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
+                                            align_per_step=args.align_per_step,
+                                            recenter=args.recenter)
+                else:
+                    x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
+                                         batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
+                                         noise_type=args.noise_type,
+                                         align_per_step=args.align_per_step,
+                                         recenter=args.recenter)
 
                 n = s['n_atoms']
                 pred = x_pred[0, :n] * s['std']
@@ -857,39 +953,49 @@ def main():
             batch = collate_batch([s], device)
             rmses = []
             for _ in range(3):
-                x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
-                                     batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
-                                     noise_type=args.noise_type,
-                                     align_per_step=args.align_per_step,
-                                     recenter=args.recenter)
+                if args.continuous_sigma:
+                    x_pred = ddpm_sample_ve(model, batch['atom_types'], batch['atom_to_res'],
+                                            batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
+                                            align_per_step=args.align_per_step,
+                                            recenter=args.recenter)
+                else:
+                    x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
+                                         batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
+                                         noise_type=args.noise_type,
+                                         align_per_step=args.align_per_step,
+                                         recenter=args.recenter)
                 rmse = compute_rmse(x_pred, batch['coords'], batch['mask']).item() * s['std']
                 rmses.append(rmse)
             mean_rmse = sum(rmses) / len(rmses)
             train_final_rmses.append(mean_rmse)
-            logger.log(f"  {s['sample_id']}: {mean_rmse:.2f} A")
         train_overall = sum(train_final_rmses) / len(train_final_rmses)
-        logger.log(f"  --- Train mean: {train_overall:.2f} A")
+        logger.log(f"  Mean: {train_overall:.2f} A")
 
         # Evaluate TEST set (never seen during training)
-        logger.log(f"\nTEST SET ({len(test_indices)} samples) - NEVER SEEN DURING TRAINING:")
+        logger.log(f"\nTEST SET ({len(test_indices)} samples):")
         test_final_rmses = []
         for idx in test_indices:
             s = test_samples[idx]
             batch = collate_batch([s], device)
             rmses = []
             for _ in range(3):
-                x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
-                                     batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
-                                     noise_type=args.noise_type,
-                                     align_per_step=args.align_per_step,
-                                     recenter=args.recenter)
+                if args.continuous_sigma:
+                    x_pred = ddpm_sample_ve(model, batch['atom_types'], batch['atom_to_res'],
+                                            batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
+                                            align_per_step=args.align_per_step,
+                                            recenter=args.recenter)
+                else:
+                    x_pred = ddpm_sample(model, batch['atom_types'], batch['atom_to_res'],
+                                         batch['aa_seq'], batch['chain_ids'], noiser, batch['mask'],
+                                         noise_type=args.noise_type,
+                                         align_per_step=args.align_per_step,
+                                         recenter=args.recenter)
                 rmse = compute_rmse(x_pred, batch['coords'], batch['mask']).item() * s['std']
                 rmses.append(rmse)
             mean_rmse = sum(rmses) / len(rmses)
             test_final_rmses.append(mean_rmse)
-            logger.log(f"  {s['sample_id']}: {mean_rmse:.2f} A")
         test_overall = sum(test_final_rmses) / len(test_final_rmses)
-        logger.log(f"  --- Test mean: {test_overall:.2f} A")
+        logger.log(f"  Mean: {test_overall:.2f} A")
 
         logger.log("")
         logger.log("=" * 70)

@@ -105,9 +105,10 @@ def random_rigid_augment(
 
 
 def af3_loss_weight(sigma: Tensor, sigma_data: float = 1.0) -> Tensor:
-    """AF3-style loss weighting based on noise level.
+    """AF3/EDM-style loss weighting based on noise level.
 
-    Higher weight for intermediate noise levels where structure is partially visible.
+    From EDM paper (Karras et al. 2022): λ(σ) = (σ² + σ_data²) / (σ + σ_data)²
+    This gives weights in range [0.5, 1.0] - higher for extreme noise levels.
 
     Args:
         sigma: Noise level [B]
@@ -116,7 +117,7 @@ def af3_loss_weight(sigma: Tensor, sigma_data: float = 1.0) -> Tensor:
     Returns:
         weight: [B] loss weights
     """
-    return (sigma**2 + sigma_data**2) / (sigma * sigma_data + 1e-8)**2
+    return (sigma**2 + sigma_data**2) / (sigma + sigma_data + 1e-8)**2
 
 
 def timestep_to_sigma(t: Tensor, noiser) -> Tensor:

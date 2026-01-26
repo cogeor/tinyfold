@@ -801,11 +801,10 @@ class VENoiser:
     def loss_weight(self, sigma: Tensor) -> Tensor:
         """AF3/EDM-style loss weighting.
 
-        Weight = (sigma^2 + sigma_data^2) / (sigma * sigma_data)^2
-
-        This gives higher weight to intermediate noise levels.
+        From EDM paper: λ(σ) = (σ² + σ_data²) / (σ + σ_data)²
+        This gives weights in range [0.5, 1.0] for typical sigma values.
         """
-        return (sigma**2 + self.sigma_data**2) / ((sigma * self.sigma_data) ** 2 + 1e-8)
+        return (sigma**2 + self.sigma_data**2) / ((sigma + self.sigma_data) ** 2 + 1e-8)
 
     def c_skip(self, sigma: Tensor) -> Tensor:
         """Skip connection coefficient for EDM preconditioning."""
