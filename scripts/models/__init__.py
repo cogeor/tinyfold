@@ -18,7 +18,18 @@ from .af3_style import AF3StyleDecoder
 from .resfold import ResidueDenoiser
 from .atomrefine_v2 import AtomRefinerV2
 from .atomrefine_continuous import AtomRefinerContinuous
+from .atomrefine_multi_sample import AtomRefinerV2MultiSample
 from .resfold_pipeline import ResFoldPipeline
+from .resfold_e2e import ResFoldE2E, sample_e2e
+from .iterative_assembler import IterativeAtomAssembler
+from .resfold_assembler import ResFoldAssembler
+from .clustering import (
+    compute_bond_connectivity,
+    hierarchical_cluster_atoms,
+    select_next_atoms_to_place,
+    get_placement_order,
+    simulate_known_mask,
+)
 # Archived models (kept for backward compatibility with old checkpoints)
 from .archive import AtomRefiner, HierarchicalDecoder, PairformerDecoder
 # GeometryLoss and related functions now come from tinyfold.model.losses
@@ -81,7 +92,11 @@ _MODELS = {
     "af3_style": AF3StyleDecoder,
     "resfold_stage1": ResidueDenoiser,
     "resfold_stage2": AtomRefiner,
+    "resfold_stage2_multi": AtomRefinerV2MultiSample,
     "resfold": ResFoldPipeline,
+    "resfold_e2e": ResFoldE2E,
+    "iterative_assembler": IterativeAtomAssembler,
+    "resfold_assembler": ResFoldAssembler,
 }
 
 
@@ -129,8 +144,19 @@ __all__ = [
     "ResidueDenoiser",
     "AtomRefiner",
     "AtomRefinerV2",
+    "AtomRefinerV2MultiSample",
     "AtomRefinerContinuous",
     "ResFoldPipeline",
+    "ResFoldE2E",
+    "sample_e2e",
+    "IterativeAtomAssembler",
+    "ResFoldAssembler",
+    # Clustering utilities
+    "compute_bond_connectivity",
+    "hierarchical_cluster_atoms",
+    "select_next_atoms_to_place",
+    "get_placement_order",
+    "simulate_known_mask",
     "GeometryLoss",
     "create_model",
     "list_models",

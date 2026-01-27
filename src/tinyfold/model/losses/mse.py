@@ -145,6 +145,65 @@ def compute_rmse(
     return rmse
 
 
+def compute_relative_distance_loss(
+    pred_coords: Tensor,       # [B, K, 3] predicted coordinates
+    gt_coords: Tensor,         # [B, K, 3] ground truth for target atoms
+    known_coords: Tensor,      # [B, M, 3] coordinates of known atoms
+    known_mask: Optional[Tensor] = None,  # [B, M] mask for valid known atoms
+    align_first: bool = True,
+) -> Tensor:
+    """Compute loss on distances from predicted atoms to known atoms.
+
+    Instead of penalizing absolute positions, this penalizes the distance
+    from each predicted atom to each known atom. This makes the loss
+    invariant to global translation/rotation.
+
+    Optionally performs Kabsch alignment of predicted to ground truth
+    first (considering only the predicted atoms).
+
+    Args:
+        pred_coords: Predicted coordinates for K target atoms [B, K, 3]
+        gt_coords: Ground truth coordinates for K target atoms [B, K, 3]
+        known_coords: Coordinates of M already-placed atoms [B, M, 3]
+        known_mask: Boolean mask for valid known atoms [B, M]
+        align_first: Whether to Kabsch-align pred to gt before computing loss
+
+    Returns:
+        loss: Scalar loss value
+    """
+    B, K, _ = pred_coords.shape
+    M = known_coords.shape[1]
+
+    # Handle empty known case
+    if M == 0 or (known_mask is not None and not known_mask.any()):
+        # Fall back to direct MSE if no known atoms
+        return ((pred_coords - gt_coords) ** 2).sum(dim=-1).mean()
+
+    if align_first and K >= 3:
+        # Kabsch align predicted to ground truth
+        pred_aligned, _ = kabsch_align(pred_coords, gt_coords)
+    else:
+        pred_aligned = pred_coords
+
+    # Compute distances from predicted to known atoms [B, K, M]
+    pred_dists = torch.cdist(pred_aligned, known_coords)  # [B, K, M]
+    gt_dists = torch.cdist(gt_coords, known_coords)       # [B, K, M]
+
+    # MSE on distances, masked
+    sq_diff = (pred_dists - gt_dists) ** 2
+
+    if known_mask is not None:
+        mask_exp = known_mask.unsqueeze(1).float()  # [B, 1, M]
+        # Per-target loss: average over valid known atoms
+        n_valid = mask_exp.sum(dim=-1, keepdim=True).clamp(min=1)  # [B, 1, 1]
+        per_target_loss = (sq_diff * mask_exp).sum(dim=-1) / n_valid.squeeze(-1)  # [B, K]
+        loss = per_target_loss.mean()
+    else:
+        loss = sq_diff.mean()
+
+    return loss
+
+
 def compute_distance_consistency_loss(
     pred: Tensor,
     target: Tensor,

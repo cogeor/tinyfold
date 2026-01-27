@@ -2,15 +2,23 @@
 """
 Two-Stage Evaluation: Stage 1 (centroids) → Stage 2 (atoms) → DockQ
 
-Loads Stage 1 model to predict centroids, then Stage 2 model to predict atoms,
-and computes DockQ scores.
+Supports two modes:
+1. Separate models: --stage1_checkpoint + --stage2_checkpoint
+2. E2E model: --e2e_checkpoint (ResFoldE2E with multi-sample diffusion)
 
 Usage:
+    # Separate models
     python scripts/eval_two_stage.py \
         --stage1_checkpoint outputs/train_10k_continuous/best_model.pt \
         --stage2_checkpoint outputs/stage2_continuous_rot/best_model.pt \
         --load_split outputs/train_10k_continuous/split.json \
         --n_train_eval 100
+
+    # E2E model
+    python scripts/eval_two_stage.py \
+        --e2e_checkpoint outputs/resfold_e2e/best_model.pt \
+        --load_split outputs/resfold_e2e/split.json \
+        --n_samples 5
 """
 
 import sys
@@ -27,8 +35,9 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from models.resfold import ResidueDenoiser
 from models.atomrefine_continuous import AtomRefinerContinuous
+from models.resfold_e2e import ResFoldE2E, sample_e2e
 from models.dockq_utils import compute_dockq
-from models import create_schedule, create_noiser
+from models import create_schedule, create_noiser, KarrasSchedule, VENoiser
 
 # Loss imports
 from tinyfold.model.losses import kabsch_align, compute_rmse
@@ -158,11 +167,13 @@ def sample_centroids_ddpm(model, aa_seq, chain_ids, res_idx, mask, noiser, devic
 def parse_args():
     parser = argparse.ArgumentParser(description="Two-Stage Evaluation")
 
-    # Checkpoints
-    parser.add_argument("--stage1_checkpoint", type=str, required=True,
+    # Checkpoints - either separate or E2E
+    parser.add_argument("--stage1_checkpoint", type=str, default=None,
                         help="Path to Stage 1 model checkpoint")
-    parser.add_argument("--stage2_checkpoint", type=str, required=True,
+    parser.add_argument("--stage2_checkpoint", type=str, default=None,
                         help="Path to Stage 2 model checkpoint")
+    parser.add_argument("--e2e_checkpoint", type=str, default=None,
+                        help="Path to E2E model checkpoint (ResFoldE2E)")
 
     # Data
     parser.add_argument("--load_split", type=str, required=True,
@@ -178,26 +189,49 @@ def parse_args():
     parser.add_argument("--sigma_min", type=float, default=0.002)
     parser.add_argument("--sigma_max", type=float, default=10.0)
 
+    # E2E options
+    parser.add_argument("--n_samples", type=int, default=5,
+                        help="Number of diffusion samples for E2E model")
+
     # Output
     parser.add_argument("--output_dir", type=str, default=None,
-                        help="Output directory (default: stage2 checkpoint dir)")
+                        help="Output directory (default: checkpoint dir)")
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    # Validate: either e2e or both stage1+stage2
+    if args.e2e_checkpoint is None and (args.stage1_checkpoint is None or args.stage2_checkpoint is None):
+        parser.error("Either --e2e_checkpoint or both --stage1_checkpoint and --stage2_checkpoint required")
+
+    return args
 
 
 def main():
     args = parse_args()
 
+    # Determine mode
+    e2e_mode = args.e2e_checkpoint is not None
+
     # Setup output
     if args.output_dir is None:
-        args.output_dir = os.path.dirname(args.stage2_checkpoint)
+        if e2e_mode:
+            args.output_dir = os.path.dirname(args.e2e_checkpoint)
+        else:
+            args.output_dir = os.path.dirname(args.stage2_checkpoint)
     os.makedirs(args.output_dir, exist_ok=True)
 
     print("=" * 70)
-    print("Two-Stage Evaluation: Stage 1 -> Stage 2 -> DockQ")
+    if e2e_mode:
+        print("E2E Evaluation: ResFoldE2E -> DockQ")
+    else:
+        print("Two-Stage Evaluation: Stage 1 -> Stage 2 -> DockQ")
     print("=" * 70)
-    print(f"Stage 1 checkpoint: {args.stage1_checkpoint}")
-    print(f"Stage 2 checkpoint: {args.stage2_checkpoint}")
+    if e2e_mode:
+        print(f"E2E checkpoint: {args.e2e_checkpoint}")
+        print(f"N samples (K): {args.n_samples}")
+    else:
+        print(f"Stage 1 checkpoint: {args.stage1_checkpoint}")
+        print(f"Stage 2 checkpoint: {args.stage2_checkpoint}")
     print(f"Split: {args.load_split}")
     print(f"N train eval: {args.n_train_eval}")
     print()
@@ -218,64 +252,105 @@ def main():
     print(f"Test samples: {len(test_indices)}")
     print()
 
-    # Load Stage 1 model
-    print("Loading Stage 1 model...")
-    s1_ckpt = torch.load(args.stage1_checkpoint, map_location=device, weights_only=False)
-    s1_args = s1_ckpt.get('args', {})
+    if e2e_mode:
+        # Load E2E model
+        print("Loading E2E model...")
+        e2e_ckpt = torch.load(args.e2e_checkpoint, map_location=device, weights_only=False)
+        e2e_args = e2e_ckpt.get('args', {})
 
-    # Detect model config from checkpoint
-    c_token_s1 = s1_args.get('c_token_s1', 256)
-    trunk_layers = s1_args.get('trunk_layers', 14)
-    denoiser_blocks = s1_args.get('denoiser_blocks', 10)
-    continuous_sigma = s1_args.get('continuous_sigma', True)
+        e2e_model = ResFoldE2E(
+            c_token=e2e_args.get('c_token', 256),
+            trunk_layers=e2e_args.get('trunk_layers', 9),
+            denoiser_blocks=e2e_args.get('denoiser_blocks', 7),
+            n_timesteps=e2e_args.get('T', 50),
+            s2_layers=e2e_args.get('s2_layers', 6),
+            s2_heads=e2e_args.get('s2_heads', 8),
+            n_samples=e2e_args.get('n_samples', args.n_samples),
+            s2_aggregation=e2e_args.get('s2_aggregation', 'learned'),
+        ).to(device)
+        e2e_model.load_state_dict(e2e_ckpt['model_state_dict'])
+        e2e_model.eval()
 
-    stage1_model = ResidueDenoiser(
-        c_token=c_token_s1,
-        trunk_layers=trunk_layers,
-        denoiser_blocks=denoiser_blocks,
-        n_timesteps=args.T,
-    ).to(device)
+        counts = e2e_model.count_parameters()
+        print(f"  Loaded E2E: {counts['total']:,} params")
+        print(f"    Stage 1: {counts['stage1']:,}")
+        print(f"    Stage 2: {counts['stage2']:,}")
+        print()
 
-    # Load weights (handle both pipeline and standalone checkpoints)
-    state_dict = s1_ckpt['model_state_dict']
-    if any(k.startswith('stage1.') for k in state_dict.keys()):
-        # Pipeline checkpoint - extract stage1 weights
-        state_dict = {k.replace('stage1.', ''): v for k, v in state_dict.items() if k.startswith('stage1.')}
-    stage1_model.load_state_dict(state_dict)
-    stage1_model.eval()
-    print(f"  Loaded Stage 1: {sum(p.numel() for p in stage1_model.parameters()):,} params")
-    print(f"  continuous_sigma: {continuous_sigma}")
-    print()
-
-    # Load Stage 2 model
-    print("Loading Stage 2 model...")
-    s2_ckpt = torch.load(args.stage2_checkpoint, map_location=device, weights_only=False)
-    s2_args = s2_ckpt.get('args', {})
-
-    stage2_model = AtomRefinerContinuous(
-        c_token=s2_args.get('c_token', 256),
-        c_atom=s2_args.get('c_atom', 128),
-        trunk_layers=s2_args.get('trunk_layers', 3),
-        refine_layers=s2_args.get('refine_layers', 3),
-        local_atom_blocks=s2_args.get('local_atom_blocks', 2),
-    ).to(device)
-    stage2_model.load_state_dict(s2_ckpt['model_state_dict'])
-    stage2_model.eval()
-    print(f"  Loaded Stage 2: {sum(p.numel() for p in stage2_model.parameters()):,} params")
-    print()
-
-    # Setup diffusion for Stage 1
-    if continuous_sigma:
-        from models.diffusion import KarrasSchedule
+        # Setup diffusion
         schedule = KarrasSchedule(
             sigma_min=args.sigma_min,
             sigma_max=args.sigma_max,
             n_steps=args.T,
         )
-        sigmas = schedule.sigmas.to(device)
+        noiser = VENoiser(schedule, sigma_data=1.0).to(device)
+
+        stage1_model = None
+        stage2_model = None
+        continuous_sigma = True
+
     else:
-        schedule = create_schedule("cosine", T=args.T)
-        noiser = create_noiser("gaussian", schedule)
+        # Load Stage 1 model
+        print("Loading Stage 1 model...")
+        s1_ckpt = torch.load(args.stage1_checkpoint, map_location=device, weights_only=False)
+        s1_args = s1_ckpt.get('args', {})
+
+        # Detect model config from checkpoint
+        c_token_s1 = s1_args.get('c_token_s1', 256)
+        trunk_layers = s1_args.get('trunk_layers', 14)
+        denoiser_blocks = s1_args.get('denoiser_blocks', 10)
+        continuous_sigma = s1_args.get('continuous_sigma', True)
+
+        stage1_model = ResidueDenoiser(
+            c_token=c_token_s1,
+            trunk_layers=trunk_layers,
+            denoiser_blocks=denoiser_blocks,
+            n_timesteps=args.T,
+        ).to(device)
+
+        # Load weights (handle both pipeline and standalone checkpoints)
+        state_dict = s1_ckpt['model_state_dict']
+        if any(k.startswith('stage1.') for k in state_dict.keys()):
+            # Pipeline checkpoint - extract stage1 weights
+            state_dict = {k.replace('stage1.', ''): v for k, v in state_dict.items() if k.startswith('stage1.')}
+        stage1_model.load_state_dict(state_dict)
+        stage1_model.eval()
+        print(f"  Loaded Stage 1: {sum(p.numel() for p in stage1_model.parameters()):,} params")
+        print(f"  continuous_sigma: {continuous_sigma}")
+        print()
+
+        # Load Stage 2 model
+        print("Loading Stage 2 model...")
+        s2_ckpt = torch.load(args.stage2_checkpoint, map_location=device, weights_only=False)
+        s2_args = s2_ckpt.get('args', {})
+
+        stage2_model = AtomRefinerContinuous(
+            c_token=s2_args.get('c_token', 256),
+            c_atom=s2_args.get('c_atom', 128),
+            trunk_layers=s2_args.get('trunk_layers', 3),
+            refine_layers=s2_args.get('refine_layers', 3),
+            local_atom_blocks=s2_args.get('local_atom_blocks', 2),
+        ).to(device)
+        stage2_model.load_state_dict(s2_ckpt['model_state_dict'])
+        stage2_model.eval()
+        print(f"  Loaded Stage 2: {sum(p.numel() for p in stage2_model.parameters()):,} params")
+        print()
+
+        e2e_model = None
+
+        # Setup diffusion for Stage 1
+        if continuous_sigma:
+            schedule = KarrasSchedule(
+                sigma_min=args.sigma_min,
+                sigma_max=args.sigma_max,
+                n_steps=args.T,
+            )
+            sigmas = schedule.sigmas.to(device)
+            noiser = None
+        else:
+            schedule = create_schedule("cosine", T=args.T)
+            noiser = create_noiser("gaussian", schedule)
+            sigmas = None
 
     # Evaluate
     results = {'train': [], 'test': []}
@@ -297,21 +372,34 @@ def main():
             gt_centroids = sample['centroids'].unsqueeze(0).to(device)
             gt_atoms = sample['coords_res'].unsqueeze(0).to(device)
 
-            # Stage 1: Predict centroids
-            if continuous_sigma:
-                pred_centroids = sample_centroids_ve(
-                    stage1_model, aa_seq, chain_ids, res_idx, mask, sigmas, device
+            if e2e_mode:
+                # E2E model: sample_e2e returns both centroids and atoms
+                result = sample_e2e(
+                    e2e_model, aa_seq, chain_ids, res_idx, noiser, mask,
+                    n_samples=args.n_samples,
+                    self_cond=True,
+                    align_per_step=True,
+                    recenter=True,
                 )
+                pred_centroids = result['mean_centroids']
+                pred_atoms = result['atoms_pred']
             else:
-                pred_centroids = sample_centroids_ddpm(
-                    stage1_model, aa_seq, chain_ids, res_idx, mask, noiser, device
-                )
+                # Separate models
+                # Stage 1: Predict centroids
+                if continuous_sigma:
+                    pred_centroids = sample_centroids_ve(
+                        stage1_model, aa_seq, chain_ids, res_idx, mask, sigmas, device
+                    )
+                else:
+                    pred_centroids = sample_centroids_ddpm(
+                        stage1_model, aa_seq, chain_ids, res_idx, mask, noiser, device
+                    )
+
+                # Stage 2: Predict atoms from predicted centroids
+                pred_atoms = stage2_model(aa_seq, chain_ids, res_idx, pred_centroids, mask)
 
             # Compute centroid RMSE
             centroid_rmse = compute_rmse(pred_centroids, gt_centroids, mask).item() * sample['std']
-
-            # Stage 2: Predict atoms from predicted centroids
-            pred_atoms = stage2_model(aa_seq, chain_ids, res_idx, pred_centroids, mask)
 
             # Compute atom RMSE
             L = sample['n_res']

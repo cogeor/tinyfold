@@ -627,6 +627,13 @@ def main():
     if args.model == "af3_style":
         logger.log(f"  trunk_layers: {trunk_layers}")
         logger.log(f"  denoiser_blocks: {denoiser_blocks}")
+
+    # Resume from checkpoint if specified
+    if args.resume:
+        logger.log(f"  Resuming from: {args.resume}")
+        checkpoint = torch.load(args.resume, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        logger.log(f"  Loaded weights from step {checkpoint.get('step', 'unknown')}")
     logger.log("")
 
     # Create diffusion components
