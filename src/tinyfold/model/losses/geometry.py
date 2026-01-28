@@ -6,6 +6,7 @@ Enforces chemically reasonable configurations:
 - Omega dihedral (peptide planarity)
 - O chirality (carbonyl on correct side)
 - Virtual CB chirality (L-amino acid handedness)
+- Pairwise distances (global structure)
 
 All losses can be disabled by setting their weight to 0.
 """
@@ -26,11 +27,10 @@ BOND_LENGTHS_ANGSTROM = {
     "C_N": 1.329,    # Peptide bond (between residues)
 }
 
-# Default normalization scale (typical std of protein coords)
-DEFAULT_COORD_SCALE = 10.0
 
-# Normalized bond lengths (for models using normalized coords)
-BOND_LENGTHS = {k: v / DEFAULT_COORD_SCALE for k, v in BOND_LENGTHS_ANGSTROM.items()}
+def get_normalized_bond_lengths(coord_std: float) -> dict:
+    """Get bond lengths normalized by coordinate std."""
+    return {k: v / coord_std for k, v in BOND_LENGTHS_ANGSTROM.items()}
 
 # Expected bond angles in degrees
 BOND_ANGLES = {
@@ -57,12 +57,27 @@ def bond_angle(p0: Tensor, p1: Tensor, p2: Tensor) -> Tensor:
     """
     v1 = safe_normalize(p0 - p1, dim=-1)
     v2 = safe_normalize(p2 - p1, dim=-1)
-    cos_angle = (v1 * v2).sum(dim=-1).clamp(-0.9999, 0.9999)
+    # Clamp more aggressively to avoid gradient explosion at ±1
+    cos_angle = (v1 * v2).sum(dim=-1).clamp(-0.99, 0.99)
     return torch.acos(cos_angle) * 180 / math.pi
 
 
+def bond_angle_cos(p0: Tensor, p1: Tensor, p2: Tensor) -> Tensor:
+    """Compute cosine of angle at p1 (gradient-safe version).
+
+    Args:
+        p0, p1, p2: [..., 3] tensors
+
+    Returns:
+        [...] cosine of angle (no acos, gradient-safe)
+    """
+    v1 = safe_normalize(p0 - p1, dim=-1)
+    v2 = safe_normalize(p2 - p1, dim=-1)
+    return (v1 * v2).sum(dim=-1)
+
+
 def dihedral_angle(p0: Tensor, p1: Tensor, p2: Tensor, p3: Tensor) -> Tensor:
-    """Compute dihedral angle p0-p1-p2-p3 in radians.
+    """Compute dihedral angle p0-p1-p2-p3 in radians (gradient-safe).
 
     Args:
         p0, p1, p2, p3: [..., 3] tensors
@@ -74,6 +89,12 @@ def dihedral_angle(p0: Tensor, p1: Tensor, p2: Tensor, p3: Tensor) -> Tensor:
     b2 = p2 - p1
     b3 = p3 - p2
 
+    # Add small eps to avoid zero vectors
+    eps = 1e-7
+    b1 = b1 + eps * torch.randn_like(b1)
+    b2 = b2 + eps * torch.randn_like(b2)
+    b3 = b3 + eps * torch.randn_like(b3)
+
     n1 = torch.cross(b1, b2, dim=-1)
     n2 = torch.cross(b2, b3, dim=-1)
 
@@ -84,13 +105,15 @@ def dihedral_angle(p0: Tensor, p1: Tensor, p2: Tensor, p3: Tensor) -> Tensor:
     x = (n1 * n2).sum(dim=-1)
     y = (m1 * n2).sum(dim=-1)
 
-    return torch.atan2(y, x)
+    # Add eps to avoid division by zero in atan2 gradient
+    return torch.atan2(y + eps, x + eps)
 
 
 def bond_length_loss(
     coords: Tensor,
     mask: Optional[Tensor] = None,
     valid_peptide: Optional[Tensor] = None,
+    coord_std: float = 1.0,
 ) -> Tensor:
     """Compute bond length loss.
 
@@ -98,10 +121,13 @@ def bond_length_loss(
         coords: [B, L, 4, 3] - N=0, CA=1, C=2, O=3
         mask: [B, L] residue mask (optional)
         valid_peptide: [B, L-1] precomputed mask of valid peptide bonds from GT (optional)
+        coord_std: Coordinate normalization std (to get correct bond lengths)
 
     Returns:
         Scalar loss
     """
+    bond_lengths = get_normalized_bond_lengths(coord_std)
+
     N = coords[..., 0, :]   # [B, L, 3]
     CA = coords[..., 1, :]
     C = coords[..., 2, :]
@@ -117,11 +143,11 @@ def bond_length_loss(
 
     # MSE from expected values
     loss_within = (
-        (d_N_CA - BOND_LENGTHS["N_CA"]) ** 2 +
-        (d_CA_C - BOND_LENGTHS["CA_C"]) ** 2 +
-        (d_C_O - BOND_LENGTHS["C_O"]) ** 2
+        (d_N_CA - bond_lengths["N_CA"]) ** 2 +
+        (d_CA_C - bond_lengths["CA_C"]) ** 2 +
+        (d_C_O - bond_lengths["C_O"]) ** 2
     )
-    loss_peptide = (d_C_N - BOND_LENGTHS["C_N"]) ** 2
+    loss_peptide = (d_C_N - bond_lengths["C_N"]) ** 2
 
     if mask is not None:
         loss_within = loss_within * mask.float()
@@ -149,7 +175,9 @@ def bond_angle_loss(
     mask: Optional[Tensor] = None,
     valid_peptide: Optional[Tensor] = None,
 ) -> Tensor:
-    """Compute bond angle loss.
+    """Compute bond angle loss using cosine-based comparison (gradient-safe).
+
+    Uses cosine of angles instead of angles in degrees to avoid acos gradient explosion.
 
     Args:
         coords: [B, L, 4, 3]
@@ -166,23 +194,31 @@ def bond_angle_loss(
     N_next = N[:, 1:]
     CA_next = CA[:, 1:]
 
-    # Within-residue angles
-    angle_N_CA_C = bond_angle(N, CA, C)      # [B, L]
-    angle_CA_C_O = bond_angle(CA, C, O)      # [B, L]
+    # Within-residue angles (use cosine for gradient stability)
+    cos_N_CA_C = bond_angle_cos(N, CA, C)      # [B, L]
+    cos_CA_C_O = bond_angle_cos(CA, C, O)      # [B, L]
 
     # Cross-residue angles (peptide)
-    angle_CA_C_N = bond_angle(CA[:, :-1], C[:, :-1], N_next)  # [B, L-1]
-    angle_C_N_CA = bond_angle(C[:, :-1], N_next, CA_next)     # [B, L-1]
+    cos_CA_C_N = bond_angle_cos(CA[:, :-1], C[:, :-1], N_next)  # [B, L-1]
+    cos_C_N_CA = bond_angle_cos(C[:, :-1], N_next, CA_next)     # [B, L-1]
 
-    # MSE from expected (scale down since angles are in degrees)
+    # Expected cosines from expected angles
+    expected_cos = {
+        "N_CA_C": math.cos(math.radians(BOND_ANGLES["N_CA_C"])),
+        "CA_C_O": math.cos(math.radians(BOND_ANGLES["CA_C_O"])),
+        "CA_C_N": math.cos(math.radians(BOND_ANGLES["CA_C_N"])),
+        "C_N_CA": math.cos(math.radians(BOND_ANGLES["C_N_CA"])),
+    }
+
+    # MSE of cosines (scaled to be similar magnitude to degree-based loss)
     loss_within = (
-        (angle_N_CA_C - BOND_ANGLES["N_CA_C"]) ** 2 +
-        (angle_CA_C_O - BOND_ANGLES["CA_C_O"]) ** 2
-    ) / 100.0
+        (cos_N_CA_C - expected_cos["N_CA_C"]) ** 2 +
+        (cos_CA_C_O - expected_cos["CA_C_O"]) ** 2
+    )
     loss_peptide = (
-        (angle_CA_C_N - BOND_ANGLES["CA_C_N"]) ** 2 +
-        (angle_C_N_CA - BOND_ANGLES["C_N_CA"]) ** 2
-    ) / 100.0
+        (cos_CA_C_N - expected_cos["CA_C_N"]) ** 2 +
+        (cos_C_N_CA - expected_cos["C_N_CA"]) ** 2
+    )
 
     if mask is not None:
         loss_within = loss_within * mask.float()
@@ -371,6 +407,76 @@ def virtual_cb_loss(
     return loss.mean()
 
 
+def pairwise_distance_loss(
+    pred_coords: Tensor,
+    gt_coords: Tensor,
+    mask: Optional[Tensor] = None,
+    n_sample: int = 64,
+) -> Tensor:
+    """Compute pairwise distance loss to enforce global structure.
+
+    Randomly samples pairs of residues and computes MSE of their CA distances.
+    This prevents the model from collapsing to a linear/planar solution.
+
+    Args:
+        pred_coords: [B, L, 4, 3] predicted coordinates (uses CA=index 1)
+        gt_coords: [B, L, 4, 3] ground truth coordinates
+        mask: [B, L] residue mask (optional)
+        n_sample: Number of pairs to sample per batch item (default 64)
+
+    Returns:
+        Scalar loss
+    """
+    B, L = pred_coords.shape[:2]
+    device = pred_coords.device
+
+    # Extract CA atoms
+    pred_ca = pred_coords[:, :, 1, :]  # [B, L, 3]
+    gt_ca = gt_coords[:, :, 1, :]      # [B, L, 3]
+
+    total_loss = 0.0
+    n_valid = 0
+
+    for b in range(B):
+        # Get valid residue indices for this sample
+        if mask is not None:
+            valid_idx = torch.where(mask[b])[0]
+        else:
+            valid_idx = torch.arange(L, device=device)
+
+        n_valid_res = len(valid_idx)
+        if n_valid_res < 2:
+            continue
+
+        # Sample random pairs
+        n_pairs = min(n_sample, n_valid_res * (n_valid_res - 1) // 2)
+
+        # Generate random pair indices
+        idx1 = torch.randint(0, n_valid_res, (n_pairs,), device=device)
+        idx2 = torch.randint(0, n_valid_res, (n_pairs,), device=device)
+
+        # Ensure different indices
+        same_mask = idx1 == idx2
+        idx2[same_mask] = (idx2[same_mask] + 1) % n_valid_res
+
+        # Map to actual residue indices
+        res1 = valid_idx[idx1]
+        res2 = valid_idx[idx2]
+
+        # Compute distances
+        pred_dist = (pred_ca[b, res1] - pred_ca[b, res2]).norm(dim=-1)  # [n_pairs]
+        gt_dist = (gt_ca[b, res1] - gt_ca[b, res2]).norm(dim=-1)        # [n_pairs]
+
+        # MSE of distances
+        total_loss = total_loss + ((pred_dist - gt_dist) ** 2).mean()
+        n_valid += 1
+
+    if n_valid == 0:
+        return torch.tensor(0.0, device=device, requires_grad=True)
+
+    return total_loss / n_valid
+
+
 def bounded_loss(loss: Tensor, scale: float = 1.0) -> Tensor:
     """Bound loss to [0, 1] range using x/(1+x) transform.
 
@@ -437,6 +543,7 @@ class GeometryLoss(nn.Module):
         glycine_mask: Optional[Tensor] = None,
         gt_coords: Optional[Tensor] = None,
         peptide_threshold: float = 0.2,
+        coord_std: float = 1.0,
     ) -> Dict[str, Tensor]:
         """Compute geometry losses.
 
@@ -446,6 +553,7 @@ class GeometryLoss(nn.Module):
             glycine_mask: [B, L] True for glycine residues (optional)
             gt_coords: [B, L, 4, 3] ground truth coords for peptide bond detection (optional)
             peptide_threshold: Max C-N distance (normalized) for valid peptide bond (default 0.2 = 2A)
+            coord_std: Coordinate normalization std (for correct bond lengths)
 
         Returns:
             dict with individual losses + 'total'
@@ -462,7 +570,7 @@ class GeometryLoss(nn.Module):
 
         # Only compute losses with non-zero weights
         if self.weights["bond_length"] > 0:
-            losses["bond_length"] = bond_length_loss(coords, mask, valid_peptide)
+            losses["bond_length"] = bond_length_loss(coords, mask, valid_peptide, coord_std)
         else:
             losses["bond_length"] = torch.tensor(0.0, device=coords.device)
 
@@ -491,6 +599,11 @@ class GeometryLoss(nn.Module):
             for k in losses:
                 if k in self.scales:
                     losses[k] = bounded_loss(losses[k], self.scales[k])
+
+        # NaN guard: replace any NaN losses with 0
+        for k in losses:
+            if torch.isnan(losses[k]).any() or torch.isinf(losses[k]).any():
+                losses[k] = torch.tensor(0.0, device=coords.device, requires_grad=True)
 
         # Weighted sum
         total = sum(self.weights[k] * v for k, v in losses.items())

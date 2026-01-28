@@ -23,7 +23,8 @@ from .geometry import (
     o_chirality_loss,
     virtual_cb_loss,
     dihedral_angle,
-    BOND_LENGTHS,
+    BOND_LENGTHS_ANGSTROM,
+    get_normalized_bond_lengths,
     BOND_ANGLES,
 )
 from .contact import (
@@ -54,7 +55,8 @@ __all__ = [
     "o_chirality_loss",
     "virtual_cb_loss",
     "dihedral_angle",
-    "BOND_LENGTHS",
+    "BOND_LENGTHS_ANGSTROM",
+    "get_normalized_bond_lengths",
     "BOND_ANGLES",
     # Contact
     "ContactLoss",
