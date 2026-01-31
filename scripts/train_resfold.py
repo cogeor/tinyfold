@@ -556,8 +556,10 @@ def parse_args():
     # AF3-style training (multi-copy with trunk reuse)
     parser.add_argument("--multi_copy", type=int, default=0,
                         help="Number of augmented copies per sample (0=disabled, 48=AF3-style)")
-    parser.add_argument("--augment_rotation", action="store_true",
-                        help="Apply random rotation augmentation during training")
+    parser.add_argument("--augment_rotation", action="store_true", default=True,
+                        help="Apply random rotation augmentation during training (default: True)")
+    parser.add_argument("--no_augment_rotation", dest="augment_rotation", action="store_false",
+                        help="Disable rotation augmentation")
     parser.add_argument("--loss_weighting", action="store_true",
                         help="Apply AF3-style loss weighting by noise level")
     parser.add_argument("--no_stratified_sigma", dest="stratified_sigma", action="store_false",
