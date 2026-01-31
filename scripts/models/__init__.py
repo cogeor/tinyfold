@@ -23,6 +23,7 @@ from .resfold_pipeline import ResFoldPipeline
 from .resfold_e2e import ResFoldE2E, sample_e2e
 from .iterative_assembler import IterativeAtomAssembler
 from .resfold_assembler import ResFoldAssembler
+from .iterfold import IterFold, AnchorDecoder
 from .clustering import (
     compute_bond_connectivity,
     hierarchical_cluster_atoms,
@@ -42,7 +43,8 @@ from tinyfold.model.losses import (
     o_chirality_loss,
     virtual_cb_loss,
     dihedral_angle,
-    BOND_LENGTHS,
+    BOND_LENGTHS_ANGSTROM,
+    get_normalized_bond_lengths,
     BOND_ANGLES,
 )
 from .diffusion import (
@@ -97,6 +99,7 @@ _MODELS = {
     "resfold_e2e": ResFoldE2E,
     "iterative_assembler": IterativeAtomAssembler,
     "resfold_assembler": ResFoldAssembler,
+    "iterfold": IterFold,
 }
 
 
@@ -151,6 +154,8 @@ __all__ = [
     "sample_e2e",
     "IterativeAtomAssembler",
     "ResFoldAssembler",
+    "IterFold",
+    "AnchorDecoder",
     # Clustering utilities
     "compute_bond_connectivity",
     "hierarchical_cluster_atoms",

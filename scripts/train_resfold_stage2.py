@@ -35,9 +35,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import pyarrow.parquet as pq
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+
+# Shared utilities
+from script_utils import (
+    Logger,
+    load_sample_residue as load_sample_raw,
+    collate_batch_residue as collate_batch,
+    set_seed,
+    save_config,
+    get_data_path,
+)
 
 # Model imports
 from models.resfold import ResidueDenoiser
@@ -57,26 +64,10 @@ from tinyfold.model.losses import (
 from data_split import (
     DataSplitConfig, get_train_test_indices, get_split_info, save_split, load_split,
 )
+from models.dockq_utils import compute_dockq
 
 
-# =============================================================================
-# Logging
-# =============================================================================
-
-class Logger:
-    """Dual output to console and file."""
-
-    def __init__(self, log_path: str):
-        self.log_path = log_path
-        self.file = open(log_path, 'w', buffering=1)
-
-    def log(self, msg: str = ""):
-        print(msg)
-        self.file.write(msg + "\n")
-        self.file.flush()
-
-    def close(self):
-        self.file.close()
+# Data loading functions: load_sample_raw and collate_batch imported from script_utils
 
 
 # =============================================================================
@@ -234,14 +225,14 @@ def generate_centroid_samples(
 
             if use_gt_shortcut:
                 # Fast shortcut: just use noisy GT (for debugging)
-                samples.append(noisy)
+                samples.append(noisy.detach())
             else:
                 # Proper: run Stage 1 denoising
                 with torch.no_grad():
                     pred = trunk_model.forward_sigma_with_trunk(
                         noisy, trunk_tokens, sigma, mask
                     )
-                samples.append(pred)
+                samples.append(pred.detach())
 
         return torch.stack(samples, dim=1)  # [B, K, L, 3]
     else:
@@ -309,11 +300,13 @@ def train_step(
                 batch['aa_seq'], batch['chain_ids'], batch['res_idx'], batch['mask_res']
             )
             # Generate centroid samples: Stage 1 denoising predictions
+            # If fast_centroid_train, skip Stage 1 denoising and use noisy GT directly
             centroid_samples = generate_centroid_samples(
                 trunk_model, noiser,
                 batch['aa_seq'], batch['chain_ids'], batch['res_idx'], batch['mask_res'],
                 n_samples=args.n_samples,
                 gt_centroids=batch['centroids'],
+                use_gt_shortcut=args.fast_centroid_train,
             )
         loss_s1 = torch.tensor(0.0, device=device)
     else:
@@ -363,8 +356,9 @@ def train_step(
     gt_flat = batch['coords_res'].view(B, -1, 3)
     loss_atom_mse = compute_mse_loss(pred_flat, gt_flat, batch['mask_atom'])
 
-    # Geometry losses
-    geom_result = geom_loss_fn(pred_atoms, batch['mask_res'])
+    # Geometry losses (use mean std for batch)
+    mean_std = sum(batch['stds']) / len(batch['stds'])
+    geom_result = geom_loss_fn(pred_atoms, batch['mask_res'], coord_std=mean_std)
     loss_geom = geom_result['total']
 
     loss_s2 = loss_atom_mse + args.geom_weight * loss_geom
@@ -396,17 +390,20 @@ def evaluate(
     args,
     use_iterative: bool = False,
     k_per_step: int = 4,
+    compute_dockq_scores: bool = False,
 ) -> dict:
     """Evaluate model.
 
     Args:
         use_iterative: If True, use iterative inference (mask->predict->unmask)
         k_per_step: Atoms to fix per iteration (if iterative)
+        compute_dockq_scores: If True, also compute DockQ (slower)
     """
     trunk_model.eval()
     assembler.eval()
 
     atom_rmses = []
+    dockq_scores = []
 
     for idx in indices:
         s = samples[idx]
@@ -436,16 +433,38 @@ def evaluate(
             pred_atoms = assembler(trunk_tokens, centroid_samples, batch['mask_res'])
 
         # Compute RMSE
-        pred_flat = pred_atoms.view(1, -1, 3)[:, :s['n_atoms']]
-        gt_flat = batch['coords'][:, :s['n_atoms']]
-        rmse = compute_rmse(pred_flat, gt_flat).item() * s['std']
+        n_res = s['n_res']
+        pred_res = pred_atoms[0, :n_res]  # [L, 4, 3]
+        gt_res = batch['coords_res'][0, :n_res]  # [L, 4, 3]
+
+        pred_flat = pred_res.view(-1, 3)
+        gt_flat = gt_res.view(-1, 3)
+        rmse = compute_rmse(pred_flat.unsqueeze(0), gt_flat.unsqueeze(0)).item() * s['std']
         atom_rmses.append(rmse)
 
-    return {
+        # Compute DockQ if requested
+        if compute_dockq_scores:
+            dockq_result = compute_dockq(
+                pred_res, gt_res,
+                batch['aa_seq'][0, :n_res],
+                batch['chain_ids'][0, :n_res],
+                std=s['std']
+            )
+            if dockq_result['dockq'] is not None:
+                dockq_scores.append(dockq_result['dockq'])
+
+    result = {
         'atom_rmse': np.mean(atom_rmses) if atom_rmses else 0.0,
         'atom_rmse_std': np.std(atom_rmses) if atom_rmses else 0.0,
         'n_samples': len(indices),
     }
+
+    if compute_dockq_scores and dockq_scores:
+        result['dockq'] = np.mean(dockq_scores)
+        result['dockq_std'] = np.std(dockq_scores)
+        result['n_dockq_valid'] = len(dockq_scores)
+
+    return result
 
 
 # =============================================================================
@@ -488,6 +507,8 @@ def parse_args():
     parser.add_argument("--mask_ratio", type=float, default=0.3)
     parser.add_argument("--use_gt_centroids_eval", action="store_true",
                         help="Use GT centroids for evaluation (faster)")
+    parser.add_argument("--fast_centroid_train", action="store_true",
+                        help="Use noisy GT centroids directly (skip Stage 1 denoising during training)")
 
     # Loss weights
     parser.add_argument("--s1_weight", type=float, default=1.0)
@@ -503,16 +524,26 @@ def parse_args():
     # Output
     parser.add_argument("--output_dir", type=str, default="outputs/resfold_stage2")
 
+    # Reproducibility
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for reproducibility")
+
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
 
+    # Reproducibility: set seed before anything else
+    set_seed(args.seed)
+
     # Setup
     os.makedirs(args.output_dir, exist_ok=True)
     plots_dir = os.path.join(args.output_dir, 'plots')
     os.makedirs(plots_dir, exist_ok=True)
+
+    # Save config at startup
+    save_config(args, args.output_dir)
 
     logger = Logger(os.path.join(args.output_dir, 'train.log'))
 
@@ -521,6 +552,7 @@ def main():
     logger.log("ResFold Stage 2 Training (Atom Assembly)")
     logger.log("=" * 70)
     logger.log(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.log(f"Seed: {args.seed}")
     logger.log(f"Command: python {' '.join(sys.argv)}")
     logger.log("")
 
@@ -551,9 +583,7 @@ def main():
     logger.log("")
 
     # Load data
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(script_dir)
-    data_path = os.path.join(project_root, "data/processed/samples.parquet")
+    data_path = get_data_path()
     table = pq.read_table(data_path)
 
     # Data split
@@ -704,19 +734,22 @@ def main():
             n_eval_train = min(args.n_eval_train, len(train_indices))
             eval_train_indices = random.sample(train_indices, n_eval_train)
             train_results = evaluate(
-                trunk_model, assembler, all_samples, eval_train_indices, noiser, device, args
+                trunk_model, assembler, all_samples, eval_train_indices, noiser, device, args,
+                compute_dockq_scores=False  # Skip DockQ for train (too slow)
             )
 
             test_results = evaluate(
-                trunk_model, assembler, all_samples, test_indices, noiser, device, args
+                trunk_model, assembler, all_samples, test_indices, noiser, device, args,
+                compute_dockq_scores=False  # Skip DockQ during training (too slow)
             )
 
-            logger.log(
-                f"         >>> Train ({n_eval_train}): RMSE={train_results['atom_rmse']:.2f}A"
-            )
-            logger.log(
-                f"         >>> Test ({len(test_indices)}):  RMSE={test_results['atom_rmse']:.2f}A"
-            )
+            train_log = f"         >>> Train ({n_eval_train}): RMSE={train_results['atom_rmse']:.2f}A"
+            logger.log(train_log)
+
+            test_log = f"         >>> Test ({len(test_indices)}):  RMSE={test_results['atom_rmse']:.2f}A"
+            if 'dockq' in test_results:
+                test_log += f" | DockQ={test_results['dockq']:.3f}"
+            logger.log(test_log)
 
             # Save best model
             if test_results['atom_rmse'] < best_rmse:
@@ -725,12 +758,14 @@ def main():
                     'step': step,
                     'assembler_state_dict': assembler.state_dict(),
                     'test_atom_rmse': test_results['atom_rmse'],
+                    'test_dockq': test_results.get('dockq'),
                     'args': vars(args),
                 }
                 if not args.freeze_stage1:
                     save_dict['trunk_state_dict'] = trunk_model.state_dict()
                 torch.save(save_dict, os.path.join(args.output_dir, 'best_model.pt'))
-                logger.log(f"         >>> New best! Saved.")
+                dockq_str = f", DockQ={test_results['dockq']:.3f}" if test_results.get('dockq') else ""
+                logger.log(f"         >>> New best! Saved.{dockq_str}")
 
     # Final summary
     total_time = time.time() - start_time

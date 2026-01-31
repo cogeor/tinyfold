@@ -33,9 +33,17 @@ import numpy as np
 import torch
 import torch.nn as nn
 import pyarrow.parquet as pq
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+
+# Shared utilities
+from script_utils import (
+    Logger,
+    load_sample_residue as load_sample_raw,
+    collate_batch_residue as collate_batch,
+    set_seed,
+    save_config,
+    get_data_path,
+    plot_prediction,
+)
 
 # Model imports
 from models import create_schedule, KarrasSchedule, VENoiser, kabsch_align_to_target
@@ -57,129 +65,9 @@ from data_split import (
 )
 
 
-# =============================================================================
-# Logging
-# =============================================================================
-
-class Logger:
-    """Dual output to console and file."""
-
-    def __init__(self, log_path: str):
-        self.log_path = log_path
-        self.file = open(log_path, 'w', buffering=1)
-
-    def log(self, msg: str = ""):
-        print(msg)
-        self.file.write(msg + "\n")
-        self.file.flush()
-
-    def close(self):
-        self.file.close()
+# Data loading imported from script_utils: load_sample_raw, collate_batch
 
 
-# =============================================================================
-# Data Loading (copied from train_resfold.py)
-# =============================================================================
-
-def load_sample_raw(table, i, normalize=True):
-    """Load sample without batching."""
-    coords = torch.tensor(table['atom_coords'][i].as_py(), dtype=torch.float32)
-    atom_types = torch.tensor(table['atom_type'][i].as_py(), dtype=torch.long)
-    atom_to_res = torch.tensor(table['atom_to_res'][i].as_py(), dtype=torch.long)
-    seq_res = torch.tensor(table['seq'][i].as_py(), dtype=torch.long)
-    chain_res = torch.tensor(table['chain_id_res'][i].as_py(), dtype=torch.long)
-
-    n_atoms = len(atom_types)
-    n_res = n_atoms // 4
-    coords = coords.reshape(n_atoms, 3)
-
-    # Center coordinates
-    centroid = coords.mean(dim=0, keepdim=True)
-    coords = coords - centroid
-
-    # Compute std (always, for reference)
-    original_std = coords.std()
-
-    # Optionally normalize to unit variance
-    if normalize:
-        coords = coords / original_std
-        std = original_std
-    else:
-        std = torch.tensor(1.0)
-
-    # Compute residue centroids (mean of 4 backbone atoms)
-    coords_res = coords.view(n_res, 4, 3)
-    centroids = coords_res.mean(dim=1)  # [L, 3]
-
-    return {
-        'coords': coords,
-        'coords_res': coords_res,
-        'centroids': centroids,
-        'atom_types': atom_types,
-        'atom_to_res': atom_to_res,
-        'aa_seq': seq_res,
-        'chain_ids': chain_res,
-        'res_idx': torch.arange(n_res),
-        'std': std.item(),
-        'n_atoms': n_atoms,
-        'n_res': n_res,
-        'sample_id': table['sample_id'][i].as_py(),
-    }
-
-
-def collate_batch(samples, device):
-    """Collate samples into a padded batch."""
-    B = len(samples)
-    max_res = max(s['n_res'] for s in samples)
-    max_atoms = max_res * 4
-
-    # Residue-level tensors
-    centroids = torch.zeros(B, max_res, 3)
-    coords_res = torch.zeros(B, max_res, 4, 3)
-    aa_seq = torch.zeros(B, max_res, dtype=torch.long)
-    chain_ids = torch.zeros(B, max_res, dtype=torch.long)
-    res_idx = torch.zeros(B, max_res, dtype=torch.long)
-    mask_res = torch.zeros(B, max_res, dtype=torch.bool)
-
-    # Atom-level tensors
-    coords = torch.zeros(B, max_atoms, 3)
-    mask_atom = torch.zeros(B, max_atoms, dtype=torch.bool)
-
-    stds = []
-
-    for i, s in enumerate(samples):
-        L = s['n_res']
-        N = s['n_atoms']
-
-        centroids[i, :L] = s['centroids']
-        coords_res[i, :L] = s['coords_res']
-        aa_seq[i, :L] = s['aa_seq']
-        chain_ids[i, :L] = s['chain_ids']
-        res_idx[i, :L] = s['res_idx']
-        mask_res[i, :L] = True
-
-        coords[i, :N] = s['coords']
-        mask_atom[i, :N] = True
-
-        stds.append(s['std'])
-
-    return {
-        'centroids': centroids.to(device),
-        'coords_res': coords_res.to(device),
-        'aa_seq': aa_seq.to(device),
-        'chain_ids': chain_ids.to(device),
-        'res_idx': res_idx.to(device),
-        'mask_res': mask_res.to(device),
-        'coords': coords.to(device),
-        'mask_atom': mask_atom.to(device),
-        'stds': stds,
-        'n_res': [s['n_res'] for s in samples],
-        'n_atoms': [s['n_atoms'] for s in samples],
-        'sample_ids': [s['sample_id'] for s in samples],
-    }
-
-
-# =============================================================================
 # Training Step
 # =============================================================================
 
@@ -348,37 +236,7 @@ def evaluate_e2e(
     }
 
 
-# =============================================================================
-# Visualization
-# =============================================================================
-
-def plot_prediction(pred, target, chain_ids, sample_id, rmse, output_path):
-    """Plot prediction vs ground truth."""
-    fig = plt.figure(figsize=(12, 5))
-
-    pred = pred.cpu().numpy()
-    target = target.cpu().numpy()
-    chain_ids = chain_ids.cpu().numpy()
-
-    ax1 = fig.add_subplot(1, 2, 1, projection='3d')
-    mask_a = chain_ids == 0
-    mask_b = chain_ids == 1
-    if mask_a.any():
-        ax1.scatter(target[mask_a, 0], target[mask_a, 1], target[mask_a, 2], c='blue', s=10, alpha=0.7)
-    if mask_b.any():
-        ax1.scatter(target[mask_b, 0], target[mask_b, 1], target[mask_b, 2], c='red', s=10, alpha=0.7)
-    ax1.set_title(f'{sample_id}\nGround Truth')
-
-    ax2 = fig.add_subplot(1, 2, 2, projection='3d')
-    if mask_a.any():
-        ax2.scatter(pred[mask_a, 0], pred[mask_a, 1], pred[mask_a, 2], c='cyan', s=10, alpha=0.7)
-    if mask_b.any():
-        ax2.scatter(pred[mask_b, 0], pred[mask_b, 1], pred[mask_b, 2], c='orange', s=10, alpha=0.7)
-    ax2.set_title(f'Prediction\nRMSE: {rmse:.2f} A')
-
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=100)
-    plt.close()
+# Visualization: plot_prediction imported from script_utils
 
 
 # =============================================================================
@@ -448,16 +306,26 @@ def parse_args():
     # Output
     parser.add_argument("--output_dir", type=str, default="outputs/resfold_e2e")
 
+    # Reproducibility
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for reproducibility")
+
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
 
+    # Reproducibility: set seed before anything else
+    set_seed(args.seed)
+
     # Setup
     os.makedirs(args.output_dir, exist_ok=True)
     plots_dir = os.path.join(args.output_dir, 'plots')
     os.makedirs(plots_dir, exist_ok=True)
+
+    # Save config at startup
+    save_config(args, args.output_dir)
 
     logger = Logger(os.path.join(args.output_dir, 'train.log'))
 
@@ -466,6 +334,7 @@ def main():
     logger.log("ResFold E2E Training with Multi-Sample Diffusion")
     logger.log("=" * 70)
     logger.log(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.log(f"Seed: {args.seed}")
     logger.log(f"Command: python {' '.join(sys.argv)}")
     logger.log("")
 
@@ -494,9 +363,7 @@ def main():
     logger.log("")
 
     # Load data
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(script_dir)
-    data_path = os.path.join(project_root, "data/processed/samples.parquet")
+    data_path = get_data_path()
     table = pq.read_table(data_path)
 
     # Data split

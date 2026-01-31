@@ -9,10 +9,117 @@ Usage:
     from script_utils import Logger, load_sample_raw, collate_batch
 """
 
+import os
+import json
+import random
+from datetime import datetime
+
+import numpy as np
 import torch
 from torch import Tensor
 from typing import Dict, List, Any, Optional
 import pyarrow.parquet as pq
+
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend
+import matplotlib.pyplot as plt
+
+
+# =============================================================================
+# Reproducibility
+# =============================================================================
+
+def set_seed(seed: int = 42) -> None:
+    """Set random seeds for reproducibility.
+    
+    Args:
+        seed: Random seed value
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
+# =============================================================================
+# Paths and Config
+# =============================================================================
+
+def get_project_root() -> str:
+    """Get the project root directory."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.dirname(script_dir)
+
+
+def get_data_path() -> str:
+    """Get the default data path."""
+    return os.path.join(get_project_root(), "data/processed/samples.parquet")
+
+
+def save_config(args, output_dir: str) -> str:
+    """Save training config to JSON at startup.
+    
+    Args:
+        args: Argument namespace or dict
+        output_dir: Output directory
+        
+    Returns:
+        Path to saved config file
+    """
+    config = vars(args) if hasattr(args, '__dict__') else dict(args)
+    config['_saved_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    config_path = os.path.join(output_dir, "config.json")
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2, default=str)
+    return config_path
+
+
+# =============================================================================
+# Visualization
+# =============================================================================
+
+def plot_prediction(pred, target, chain_ids, sample_id, rmse, output_path):
+    """Plot prediction vs ground truth for a protein structure.
+    
+    Args:
+        pred: Predicted coordinates [N, 3]
+        target: Ground truth coordinates [N, 3]  
+        chain_ids: Chain IDs [N]
+        sample_id: Sample identifier string
+        rmse: RMSE value to display
+        output_path: Path to save the figure
+    """
+    fig = plt.figure(figsize=(12, 5))
+
+    pred = pred.cpu().numpy() if hasattr(pred, 'cpu') else pred
+    target = target.cpu().numpy() if hasattr(target, 'cpu') else target
+    chain_ids = chain_ids.cpu().numpy() if hasattr(chain_ids, 'cpu') else chain_ids
+
+    ax1 = fig.add_subplot(1, 2, 1, projection='3d')
+    mask_a = chain_ids == 0
+    mask_b = chain_ids == 1
+    if mask_a.any():
+        ax1.scatter(target[mask_a, 0], target[mask_a, 1], target[mask_a, 2], c='blue', s=10, alpha=0.7)
+    if mask_b.any():
+        ax1.scatter(target[mask_b, 0], target[mask_b, 1], target[mask_b, 2], c='red', s=10, alpha=0.7)
+    ax1.set_title(f'{sample_id}\nGround Truth')
+    ax1.set_xlabel('X'); ax1.set_ylabel('Y'); ax1.set_zlabel('Z')
+
+    ax2 = fig.add_subplot(1, 2, 2, projection='3d')
+    if mask_a.any():
+        ax2.scatter(pred[mask_a, 0], pred[mask_a, 1], pred[mask_a, 2], c='cyan', s=10, alpha=0.7)
+    if mask_b.any():
+        ax2.scatter(pred[mask_b, 0], pred[mask_b, 1], pred[mask_b, 2], c='orange', s=10, alpha=0.7)
+    ax2.set_title(f'Prediction\nRMSE: {rmse:.2f} Å')
+    ax2.set_xlabel('X'); ax2.set_ylabel('Y'); ax2.set_zlabel('Z')
+
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=100)
+    plt.close()
 
 
 # =============================================================================

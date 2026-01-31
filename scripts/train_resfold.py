@@ -28,9 +28,15 @@ import argparse
 import os
 import time
 from datetime import datetime
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+
+# Shared utilities (consolidates Logger, reproducibility, config)
+from script_utils import (
+    Logger,
+    set_seed,
+    save_config,
+    get_data_path,
+    plot_prediction,
+)
 
 # Model imports - use new tinyfold.model paths where available
 from models import create_schedule, create_noiser, kabsch_align_to_target, create_sampler
@@ -57,26 +63,6 @@ from data_split import (
     DataSplitConfig, get_train_test_indices, get_split_info, save_split, load_split,
     LengthBucketSampler, DynamicBatchSampler
 )
-
-
-# =============================================================================
-# Logging
-# =============================================================================
-
-class Logger:
-    """Dual output to console and file."""
-
-    def __init__(self, log_path: str):
-        self.log_path = log_path
-        self.file = open(log_path, 'w', buffering=1)
-
-    def log(self, msg: str = ""):
-        print(msg)
-        self.file.write(msg + "\n")
-        self.file.flush()
-
-    def close(self):
-        self.file.close()
 
 
 @torch.no_grad()
@@ -447,39 +433,7 @@ def collate_batch(samples, device):
     return result
 
 
-# =============================================================================
-# Visualization
-# =============================================================================
-
-def plot_prediction(pred, target, chain_ids, sample_id, rmse, output_path):
-    """Plot prediction vs ground truth."""
-    fig = plt.figure(figsize=(12, 5))
-
-    pred = pred.cpu().numpy()
-    target = target.cpu().numpy()
-    chain_ids = chain_ids.cpu().numpy()
-
-    ax1 = fig.add_subplot(1, 2, 1, projection='3d')
-    mask_a = chain_ids == 0
-    mask_b = chain_ids == 1
-    if mask_a.any():
-        ax1.scatter(target[mask_a, 0], target[mask_a, 1], target[mask_a, 2], c='blue', s=10, alpha=0.7)
-    if mask_b.any():
-        ax1.scatter(target[mask_b, 0], target[mask_b, 1], target[mask_b, 2], c='red', s=10, alpha=0.7)
-    ax1.set_title(f'{sample_id}\nGround Truth')
-    ax1.set_xlabel('X'); ax1.set_ylabel('Y'); ax1.set_zlabel('Z')
-
-    ax2 = fig.add_subplot(1, 2, 2, projection='3d')
-    if mask_a.any():
-        ax2.scatter(pred[mask_a, 0], pred[mask_a, 1], pred[mask_a, 2], c='cyan', s=10, alpha=0.7)
-    if mask_b.any():
-        ax2.scatter(pred[mask_b, 0], pred[mask_b, 1], pred[mask_b, 2], c='orange', s=10, alpha=0.7)
-    ax2.set_title(f'Prediction\nRMSE: {rmse:.2f} A')
-    ax2.set_xlabel('X'); ax2.set_ylabel('Y'); ax2.set_zlabel('Z')
-
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=100)
-    plt.close()
+# Visualization: plot_prediction imported from script_utils
 
 
 # =============================================================================
@@ -613,16 +567,26 @@ def parse_args():
     # Output
     parser.add_argument("--output_dir", type=str, default="outputs/resfold")
 
+    # Reproducibility
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for reproducibility")
+
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
 
+    # Reproducibility: set seed before anything else
+    set_seed(args.seed)
+
     # Setup output directory
     os.makedirs(args.output_dir, exist_ok=True)
     plots_dir = os.path.join(args.output_dir, 'plots')
     os.makedirs(plots_dir, exist_ok=True)
+
+    # Save config at startup (before training, in case of crash)
+    save_config(args, args.output_dir)
 
     # Setup logging
     log_path = os.path.join(args.output_dir, 'train.log')
@@ -633,6 +597,7 @@ def main():
     logger.log("ResFold Training")
     logger.log("=" * 70)
     logger.log(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.log(f"Seed: {args.seed}")
     logger.log(f"Script: {os.path.abspath(__file__)}")
     logger.log(f"Command: python {' '.join(sys.argv)}")
     logger.log("")
@@ -669,9 +634,7 @@ def main():
     logger.log("")
 
     # Load data
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(script_dir)
-    data_path = os.path.join(project_root, "data/processed/samples.parquet")
+    data_path = get_data_path()
     table = pq.read_table(data_path)
 
     # Deterministic split (either load from file or create new)
