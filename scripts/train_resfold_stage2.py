@@ -39,11 +39,15 @@ import pyarrow.parquet as pq
 # Shared utilities
 from script_utils import (
     Logger,
-    load_sample_residue as load_sample_raw,
-    collate_batch_residue as collate_batch,
     set_seed,
     save_config,
     get_data_path,
+)
+
+# Training utilities from tinyfold.training
+from tinyfold.training import (
+    load_sample_raw,
+    collate_batch,
 )
 
 # Model imports
@@ -65,111 +69,6 @@ from data_split import (
     DataSplitConfig, get_train_test_indices, get_split_info, save_split, load_split,
 )
 from models.dockq_utils import compute_dockq
-
-
-# Data loading functions: load_sample_raw and collate_batch imported from script_utils
-
-
-# =============================================================================
-# Data Loading
-# =============================================================================
-
-def load_sample_raw(table, i, normalize=True):
-    """Load sample without batching."""
-    coords = torch.tensor(table['atom_coords'][i].as_py(), dtype=torch.float32)
-    atom_types = torch.tensor(table['atom_type'][i].as_py(), dtype=torch.long)
-    seq_res = torch.tensor(table['seq'][i].as_py(), dtype=torch.long)
-    chain_res = torch.tensor(table['chain_id_res'][i].as_py(), dtype=torch.long)
-
-    n_atoms = len(atom_types)
-    n_res = n_atoms // 4
-    coords = coords.reshape(n_atoms, 3)
-
-    # Center coordinates
-    centroid = coords.mean(dim=0, keepdim=True)
-    coords = coords - centroid
-
-    # Compute std
-    original_std = coords.std()
-
-    if normalize:
-        coords = coords / original_std
-        std = original_std
-    else:
-        std = torch.tensor(1.0)
-
-    # Compute residue centroids and reshape
-    coords_res = coords.view(n_res, 4, 3)
-    centroids = coords_res.mean(dim=1)
-
-    return {
-        'coords': coords,           # [N, 3] flat atom coords
-        'coords_res': coords_res,   # [L, 4, 3]
-        'centroids': centroids,     # [L, 3]
-        'atom_types': atom_types,
-        'aa_seq': seq_res,
-        'chain_ids': chain_res,
-        'res_idx': torch.arange(n_res),
-        'std': std.item(),
-        'n_atoms': n_atoms,
-        'n_res': n_res,
-        'sample_id': table['sample_id'][i].as_py(),
-    }
-
-
-def collate_batch(samples, device):
-    """Collate samples into a padded batch."""
-    B = len(samples)
-    max_res = max(s['n_res'] for s in samples)
-    max_atoms = max_res * 4
-
-    # Residue-level tensors
-    centroids = torch.zeros(B, max_res, 3)
-    coords_res = torch.zeros(B, max_res, 4, 3)
-    aa_seq = torch.zeros(B, max_res, dtype=torch.long)
-    chain_ids = torch.zeros(B, max_res, dtype=torch.long)
-    res_idx = torch.zeros(B, max_res, dtype=torch.long)
-    mask_res = torch.zeros(B, max_res, dtype=torch.bool)
-
-    # Atom-level tensors
-    coords = torch.zeros(B, max_atoms, 3)
-    mask_atom = torch.zeros(B, max_atoms, dtype=torch.bool)
-
-    stds = []
-    n_res_list = []
-    n_atoms_list = []
-
-    for i, s in enumerate(samples):
-        L = s['n_res']
-        N = s['n_atoms']
-
-        centroids[i, :L] = s['centroids']
-        coords_res[i, :L] = s['coords_res']
-        aa_seq[i, :L] = s['aa_seq']
-        chain_ids[i, :L] = s['chain_ids']
-        res_idx[i, :L] = s['res_idx']
-        mask_res[i, :L] = True
-
-        coords[i, :N] = s['coords']
-        mask_atom[i, :N] = True
-
-        stds.append(s['std'])
-        n_res_list.append(L)
-        n_atoms_list.append(N)
-
-    return {
-        'centroids': centroids.to(device),
-        'coords_res': coords_res.to(device),
-        'aa_seq': aa_seq.to(device),
-        'chain_ids': chain_ids.to(device),
-        'res_idx': res_idx.to(device),
-        'mask_res': mask_res.to(device),
-        'coords': coords.to(device),
-        'mask_atom': mask_atom.to(device),
-        'stds': stds,
-        'n_res': n_res_list,
-        'n_atoms': n_atoms_list,
-    }
 
 
 # =============================================================================

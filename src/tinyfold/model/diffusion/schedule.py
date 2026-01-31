@@ -160,5 +160,64 @@ class DiffusionSchedule(nn.Module):
             sqrt_1_ab = self.sqrt_one_minus_alpha_bar[t].view(-1, 1)
 
         # Add epsilon for numerical stability when sqrt_ab is very small (near t=0)
-        x0_hat = (x_t - sqrt_1_ab * eps_hat) / (sqrt_ab + 1e-8)
-        return x0_hat
+
+# =============================================================================
+# Karras Schedule (EDM-style continuous sigma)
+# =============================================================================
+
+class KarrasSchedule:
+    """Karras/EDM-style continuous sigma schedule.
+
+    From "Elucidating the Design Space of Diffusion-Based Generative Models"
+    (Karras et al., 2022). Uses continuous sigma values instead of discrete timesteps.
+
+    Schedule: sigma[i] = (sigma_max^(1/rho) + i/(n-1) * (sigma_min^(1/rho) - sigma_max^(1/rho)))^rho
+
+    For normalized coordinates (std=1), use sigma_min=0.002, sigma_max=10.0.
+    """
+
+    def __init__(
+        self,
+        n_steps: int = 200,
+        sigma_min: float = 0.002,
+        sigma_max: float = 10.0,
+        rho: float = 7.0,
+    ):
+        self.n_steps = n_steps
+        self.sigma_min = sigma_min
+        self.sigma_max = sigma_max
+        self.rho = rho
+
+        # Build schedule: decreasing from sigma_max to sigma_min
+        steps = torch.arange(n_steps + 1, dtype=torch.float32) / n_steps
+        inv_rho = 1.0 / rho
+        sigmas = (sigma_max ** inv_rho + steps * (sigma_min ** inv_rho - sigma_max ** inv_rho)) ** rho
+        self.sigmas = sigmas  # [n_steps+1], from high to low
+
+        # For compatibility with VP-style code, create fake alpha_bar
+        # VP: x_t = sqrt(ab) * x0 + sqrt(1-ab) * eps
+        # VE: x_t = x0 + sigma * eps
+        # Mapping: sigma^2 = (1 - ab) / ab  =>  ab = 1 / (1 + sigma^2)
+        self.alpha_bar = 1.0 / (1.0 + sigmas ** 2)
+        self.sqrt_alpha_bar = torch.sqrt(self.alpha_bar)
+        self.sqrt_one_minus_alpha_bar = torch.sqrt(1 - self.alpha_bar)
+
+        # Fake betas/alphas for interface compatibility
+        self.betas = torch.zeros(n_steps + 1)
+        self.alphas = torch.ones(n_steps + 1)
+
+    @property
+    def T(self):
+        return self.n_steps
+
+    def to(self, device):
+        for attr in ['sigmas', 'alpha_bar', 'sqrt_alpha_bar', 'sqrt_one_minus_alpha_bar', 'betas', 'alphas']:
+            setattr(self, attr, getattr(self, attr).to(device))
+        return self
+
+    def sigma_to_t(self, sigma: torch.Tensor) -> torch.Tensor:
+        """Convert sigma to equivalent discrete timestep index."""
+        # Find nearest sigma in schedule
+        dists = (self.sigmas.unsqueeze(0) - sigma.unsqueeze(1)).abs()
+        return dists.argmin(dim=1)
+

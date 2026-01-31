@@ -29,7 +29,7 @@ import os
 import time
 from datetime import datetime
 
-# Shared utilities (consolidates Logger, reproducibility, config)
+# Shared utilities
 from script_utils import (
     Logger,
     set_seed,
@@ -38,18 +38,28 @@ from script_utils import (
     plot_prediction,
 )
 
-# Model imports - use new tinyfold.model paths where available
+# Training utilities from tinyfold.training
+from tinyfold.training import (
+    load_sample_raw,
+    collate_batch,
+    random_rotation_matrix,
+    apply_rigid_augment,
+    get_or_create_split,
+    create_diffusion_components,
+    load_model_checkpoint,
+    create_train_sampler,
+)
+
+# Model imports
 from models import create_schedule, create_noiser, kabsch_align_to_target, create_sampler
 from models.resfold_pipeline import ResFoldPipeline
 from models.dockq_utils import compute_dockq
 from models.training_utils import (
-    random_rigid_augment,
-    random_rotation_matrix,
     MultiCopyTrainer,
     VectorizedMultiCopyTrainer,
 )
 
-# Loss imports - use consolidated losses from tinyfold.model.losses
+# Loss imports
 from tinyfold.model.losses import (
     kabsch_align,
     compute_mse_loss,
@@ -58,10 +68,6 @@ from tinyfold.model.losses import (
     GeometryLoss,
     ContactLoss,
     compute_lddt_metrics,
-)
-from data_split import (
-    DataSplitConfig, get_train_test_indices, get_split_info, save_split, load_split,
-    LengthBucketSampler, DynamicBatchSampler
 )
 
 
@@ -305,135 +311,6 @@ def load_stage1_predictions(path):
     return torch.load(path)
 
 
-# =============================================================================
-# Data Loading
-# =============================================================================
-
-def load_sample_raw(table, i, normalize=True):
-    """Load sample without batching.
-
-    Args:
-        table: PyArrow table
-        i: Sample index
-        normalize: If True, normalize coords to unit variance. If False, keep in Angstroms.
-    """
-    coords = torch.tensor(table['atom_coords'][i].as_py(), dtype=torch.float32)
-    atom_types = torch.tensor(table['atom_type'][i].as_py(), dtype=torch.long)
-    atom_to_res = torch.tensor(table['atom_to_res'][i].as_py(), dtype=torch.long)
-    seq_res = torch.tensor(table['seq'][i].as_py(), dtype=torch.long)
-    chain_res = torch.tensor(table['chain_id_res'][i].as_py(), dtype=torch.long)
-
-    n_atoms = len(atom_types)
-    n_res = n_atoms // 4
-    coords = coords.reshape(n_atoms, 3)
-
-    # Center coordinates
-    centroid = coords.mean(dim=0, keepdim=True)
-    coords = coords - centroid
-
-    # Compute std (always, for reference)
-    original_std = coords.std()
-
-    # Optionally normalize to unit variance
-    if normalize:
-        coords = coords / original_std
-        std = original_std
-    else:
-        std = torch.tensor(1.0)  # No scaling, coords stay in Angstroms
-
-    # Compute residue centroids (mean of 4 backbone atoms)
-    coords_res = coords.view(n_res, 4, 3)
-    centroids = coords_res.mean(dim=1)  # [L, 3]
-
-    # Residue-level features
-    aa_seq = seq_res  # [L]
-    chain_ids = chain_res  # [L]
-    res_idx = torch.arange(n_res)  # [L]
-
-    return {
-        'coords': coords,  # [N_atoms, 3]
-        'coords_res': coords_res,  # [L, 4, 3]
-        'centroids': centroids,  # [L, 3]
-        'atom_types': atom_types,  # [N_atoms]
-        'atom_to_res': atom_to_res,  # [N_atoms]
-        'aa_seq': aa_seq,  # [L]
-        'chain_ids': chain_ids,  # [L]
-        'res_idx': res_idx,  # [L]
-        'std': std.item(),
-        'n_atoms': n_atoms,
-        'n_res': n_res,
-        'sample_id': table['sample_id'][i].as_py(),
-    }
-
-
-def collate_batch(samples, device):
-    """Collate samples into a padded batch."""
-    B = len(samples)
-    max_res = max(s['n_res'] for s in samples)
-    max_atoms = max_res * 4
-
-    # Residue-level tensors
-    centroids = torch.zeros(B, max_res, 3)
-    centroids_pred = torch.zeros(B, max_res, 3)  # Stage 1 predictions (if available)
-    coords_res = torch.zeros(B, max_res, 4, 3)
-    aa_seq = torch.zeros(B, max_res, dtype=torch.long)
-    chain_ids = torch.zeros(B, max_res, dtype=torch.long)
-    res_idx = torch.zeros(B, max_res, dtype=torch.long)
-    mask_res = torch.zeros(B, max_res, dtype=torch.bool)
-
-    # Atom-level tensors (for evaluation)
-    coords = torch.zeros(B, max_atoms, 3)
-    atom_types = torch.zeros(B, max_atoms, dtype=torch.long)
-    mask_atom = torch.zeros(B, max_atoms, dtype=torch.bool)
-
-    stds = []
-    has_predictions = False
-
-    for i, s in enumerate(samples):
-        L = s['n_res']
-        N = s['n_atoms']
-
-        centroids[i, :L] = s['centroids']
-        coords_res[i, :L] = s['coords_res']
-        aa_seq[i, :L] = s['aa_seq']
-        chain_ids[i, :L] = s['chain_ids']
-        res_idx[i, :L] = s['res_idx']
-        mask_res[i, :L] = True
-
-        coords[i, :N] = s['coords']
-        atom_types[i, :N] = s['atom_types']
-        mask_atom[i, :N] = True
-
-        stds.append(s['std'])
-
-        # Stage 1 predictions (if available)
-        if 'centroids_pred' in s:
-            centroids_pred[i, :L] = s['centroids_pred']
-            has_predictions = True
-
-    result = {
-        'centroids': centroids.to(device),
-        'coords_res': coords_res.to(device),
-        'aa_seq': aa_seq.to(device),
-        'chain_ids': chain_ids.to(device),
-        'res_idx': res_idx.to(device),
-        'mask_res': mask_res.to(device),
-        'coords': coords.to(device),
-        'atom_types': atom_types.to(device),
-        'mask_atom': mask_atom.to(device),
-        'stds': stds,
-        'n_res': [s['n_res'] for s in samples],
-        'n_atoms': [s['n_atoms'] for s in samples],
-        'sample_ids': [s['sample_id'] for s in samples],
-    }
-
-    if has_predictions:
-        result['centroids_pred'] = centroids_pred.to(device)
-
-    return result
-
-
-# Visualization: plot_prediction imported from script_utils
 
 
 # =============================================================================
@@ -640,36 +517,7 @@ def main():
     table = pq.read_table(data_path)
 
     # Deterministic split (either load from file or create new)
-    if args.load_split:
-        logger.log(f"Loading split from: {args.load_split}")
-        train_indices, test_indices, loaded_info = load_split(args.load_split)
-        logger.log(f"Data split (loaded from file):")
-        logger.log(f"  Training: {len(train_indices)} samples, atoms {loaded_info['train_atom_range'][0]}-{loaded_info['train_atom_range'][1]}")
-        logger.log(f"  Test: {len(test_indices)} samples, atoms {loaded_info['test_atom_range'][0]}-{loaded_info['test_atom_range'][1]}")
-        split_info = loaded_info
-    else:
-        split_config = DataSplitConfig(
-            n_train=args.n_train,
-            n_test=args.n_test,
-            min_atoms=args.min_atoms,
-            max_atoms=args.max_atoms,
-            select_smallest=args.select_smallest,
-            seed=42,
-        )
-        train_indices, test_indices = get_train_test_indices(table, split_config)
-        split_info = get_split_info(table, split_config)
-
-        logger.log(f"Data split (seed={split_config.seed}):")
-        if args.select_smallest:
-            logger.log(f"  Selected {split_info['eligible_samples']} smallest proteins")
-        else:
-            logger.log(f"  Eligible samples ({args.min_atoms}-{args.max_atoms} atoms): {split_info['eligible_samples']}")
-        logger.log(f"  Training: {len(train_indices)} samples")
-        logger.log(f"  Test: {len(test_indices)} samples")
-
-        # Save split for Stage 2 reuse
-        split_path = os.path.join(args.output_dir, "split.json")
-        save_split(split_info, split_path)
+    train_indices, test_indices, split_info = get_or_create_split(args, table, logger, args.output_dir)
     logger.log("")
 
     # Preload samples
@@ -790,27 +638,7 @@ def main():
 
     # Load checkpoint if provided
     if args.checkpoint:
-        logger.log(f"Loading checkpoint: {args.checkpoint}")
-        ckpt = torch.load(args.checkpoint, map_location=device)
-        state_dict = ckpt['model_state_dict']
-        # Filter out Stage 2 keys if architecture changed (for stage2_only training with new Stage 2)
-        if args.mode == "stage2_only":
-            stage2_keys = [k for k in state_dict.keys() if k.startswith('stage2.')]
-            model_stage2_keys = [k for k in model.state_dict().keys() if k.startswith('stage2.')]
-            # Check if Stage 2 architectures match
-            if len(stage2_keys) > 0 and len(model_stage2_keys) > 0:
-                sample_ckpt = state_dict[stage2_keys[0]].shape
-                sample_model = model.state_dict()[model_stage2_keys[0]].shape
-                if sample_ckpt != sample_model:
-                    logger.log(f"  Stage 2 architecture changed, loading only Stage 1 weights")
-                    state_dict = {k: v for k, v in state_dict.items() if not k.startswith('stage2.')}
-        missing, unexpected = model.load_state_dict(state_dict, strict=False)
-        if missing:
-            logger.log(f"  Missing keys: {len(missing)} (expected for new Stage 2)")
-        if unexpected:
-            logger.log(f"  Unexpected keys: {len(unexpected)}")
-        logger.log(f"  Checkpoint loaded from step {ckpt.get('step', 'unknown')}")
-        logger.log("")
+        load_model_checkpoint(model, args.checkpoint, args.mode, device, logger)
 
     # Set training mode (freeze/unfreeze stages)
     model.set_training_mode(args.mode)
@@ -823,32 +651,7 @@ def main():
     logger.log("")
 
     # Create diffusion components (for Stage 1)
-    if args.continuous_sigma:
-        # AF3-style: VE noise with Karras schedule and continuous sigma
-        from models.diffusion import KarrasSchedule, VENoiser
-        schedule = KarrasSchedule(
-            n_steps=args.T,
-            sigma_min=args.sigma_min,
-            sigma_max=args.sigma_max,
-            rho=7.0,
-        )
-        noiser = VENoiser(schedule, sigma_data=args.sigma_data)
-        noiser = noiser.to(device)
-        logger.log(f"Diffusion:")
-        logger.log(f"  Mode: AF3-style continuous sigma (VE)")
-        logger.log(f"  sigma_data: {args.sigma_data}")
-        logger.log(f"  sigma_range: [{args.sigma_min}, {args.sigma_max}]")
-        logger.log(f"  T: {args.T} (inference steps)")
-        logger.log(f"  self_cond_prob: {args.self_cond_prob}")
-        logger.log(f"  translate_aug: {args.translate_aug}")
-    else:
-        # Standard: VP noise with discrete timesteps
-        schedule = create_schedule(args.schedule, T=args.T)
-        noiser = create_noiser("gaussian", schedule)
-        noiser = noiser.to(device)
-        logger.log(f"Diffusion:")
-        logger.log(f"  Schedule: {args.schedule}")
-        logger.log(f"  Noise type: gaussian (VP, discrete t)")
+    schedule, noiser = create_diffusion_components(args, device, logger)
 
     # Create sampler for evaluation (if specified)
     eval_sampler = None

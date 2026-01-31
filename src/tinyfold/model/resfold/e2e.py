@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from .resfold import ResidueDenoiser
+from .denoiser import ResidueDenoiser
 from .atomrefine_multi_sample import AtomRefinerV2MultiSample
 
 
@@ -348,7 +348,7 @@ def sample_e2e(
     Returns:
         dict with centroids_samples [B, K, L, 3] and atoms_pred [B, L, 4, 3]
     """
-    from .diffusion import kabsch_align_to_target
+    from tinyfold.model.diffusion.utils import kabsch_align_to_target
 
     B, L = aa_seq.shape
     device = aa_seq.device

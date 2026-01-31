@@ -6,6 +6,7 @@ Separates the concept of "what noise looks like" from the schedule.
 - LinearChainFlow: Iterative refinement from extended chain
 """
 
+import math
 import torch
 from torch import Tensor
 from typing import Tuple, Optional
@@ -355,4 +356,167 @@ class LinearChainFlow:
         if self.noise_scale > 0:
             x_t = x_t + torch.randn_like(x_t) * self.noise_scale
 
-        return x_t, x0  # Return x0 as target
+
+# =============================================================================
+# VE Noiser (Variance-Exploding, AF3-style)
+# =============================================================================
+
+class VENoiser:
+    """Variance-Exploding noise process (AF3/EDM style).
+
+    VE diffusion: x_t = x0 + sigma * eps (additive noise)
+
+    Unlike VP (variance-preserving) which blends x0 with noise,
+    VE simply adds noise of increasing magnitude.
+
+    This is the noise process used in AlphaFold3.
+    """
+
+    def __init__(
+        self,
+        schedule,
+        sigma_data: float = 1.0,
+    ):
+        """
+        Args:
+            schedule: KarrasSchedule with sigma values
+            sigma_data: Standard deviation of data (1.0 for normalized coords)
+        """
+        self.schedule = schedule
+        self.sigma_data = sigma_data
+
+    @property
+    def T(self):
+        return self.schedule.T
+
+    @property
+    def sigmas(self):
+        return self.schedule.sigmas
+
+    @property
+    def alpha_bar(self):
+        return self.schedule.alpha_bar
+
+    @property
+    def betas(self):
+        return self.schedule.betas
+
+    @property
+    def alphas(self):
+        return self.schedule.alphas
+
+    def to(self, device):
+        self.schedule = self.schedule.to(device)
+        return self
+
+    def add_noise(
+        self,
+        x0: Tensor,
+        t: Tensor,
+        **kwargs,
+    ) -> Tuple[Tensor, Tensor]:
+        """Add VE noise: x_t = x0 + sigma[t] * eps
+
+        Args:
+            x0: Clean coordinates [B, N, 3]
+            t: Timestep indices [B] (used to look up sigma)
+            **kwargs: Ignored (for API compatibility)
+
+        Returns:
+            x_t: Noisy coordinates [B, N, 3]
+            noise: The noise that was added [B, N, 3]
+        """
+        noise = torch.randn_like(x0)
+        sigma = self.schedule.sigmas[t].view(-1, 1, 1)  # [B, 1, 1]
+        x_t = x0 + sigma * noise
+        return x_t, noise
+
+    def add_noise_continuous(
+        self,
+        x0: Tensor,
+        sigma: Tensor,
+    ) -> Tuple[Tensor, Tensor]:
+        """Add VE noise with continuous sigma (for training).
+
+        Args:
+            x0: Clean coordinates [B, N, 3]
+            sigma: Noise level [B]
+
+        Returns:
+            x_t: Noisy coordinates [B, N, 3]
+            noise: The noise that was added [B, N, 3]
+        """
+        noise = torch.randn_like(x0)
+        sigma_view = sigma.view(-1, 1, 1)
+        x_t = x0 + sigma_view * noise
+        return x_t, noise
+
+    def sample_sigma(self, batch_size: int, device) -> Tensor:
+        """Sample sigma for training (log-normal, like AF3/EDM).
+
+        Returns sigma in [sigma_min, sigma_max] with log-uniform density.
+        """
+        log_sigma = torch.randn(batch_size, device=device) * 1.2  # P_mean=0, P_std=1.2
+        sigma = self.sigma_data * torch.exp(log_sigma)
+        # Clamp to valid range
+        sigma = sigma.clamp(self.schedule.sigma_min, self.schedule.sigma_max)
+        return sigma
+
+    def sample_sigma_af3(self, batch_size: int, device) -> Tensor:
+        """Sample sigma for training using AF3's exact distribution.
+
+        AF3 uses: σ = σ_data * exp(-1.2 + 1.5 * N(0,1))
+
+        This distribution:
+        - Is centered at σ_data * exp(-1.2) ≈ 0.3 * σ_data
+        - Has wider spread than standard log-normal (std=1.5 vs 1.2)
+        - Biases toward lower noise levels (the -1.2 shift)
+
+        For normalized coords (σ_data=1.0), typical range is ~[0.01, 10].
+        """
+        log_sigma = -1.2 + 1.5 * torch.randn(batch_size, device=device)
+        sigma = self.sigma_data * torch.exp(log_sigma)
+        # Clamp to valid range
+        sigma = sigma.clamp(self.schedule.sigma_min, self.schedule.sigma_max)
+        return sigma
+
+    def sample_sigma_stratified(self, batch_size: int, device) -> Tensor:
+        """Sample sigma with stratified buckets for better high-sigma coverage.
+
+        Problem: AF3's log-normal barely samples high sigma (>6 only ~2% of time),
+        but inference starts at sigma_max (10.0). This causes poor denoising.
+
+        Solution: Stratified sampling across log-space buckets:
+        - Bucket 1: [sigma_min, 0.1] - fine detail denoising (25%)
+        - Bucket 2: [0.1, 1.0] - medium noise (25%)
+        - Bucket 3: [1.0, 5.0] - high noise (25%)
+        - Bucket 4: [5.0, sigma_max] - very high noise (25%)
+
+        This ensures the model trains adequately at all noise levels.
+        """
+        sigma_min = self.schedule.sigma_min
+        sigma_max = self.schedule.sigma_max
+
+        # Define bucket boundaries in log-space
+        buckets = [
+            (sigma_min, 0.1),
+            (0.1, 1.0),
+            (1.0, 5.0),
+            (5.0, sigma_max),
+        ]
+
+        # Randomly assign each sample to a bucket
+        bucket_idx = torch.randint(0, len(buckets), (batch_size,), device=device)
+
+        # Sample uniformly in log-space within each bucket
+        sigma = torch.zeros(batch_size, device=device)
+        for i, (lo, hi) in enumerate(buckets):
+            mask = bucket_idx == i
+            n_in_bucket = mask.sum().item()
+            if n_in_bucket > 0:
+                # Uniform in log-space
+                log_lo, log_hi = math.log(lo), math.log(hi)
+                log_sigma = torch.rand(n_in_bucket, device=device) * (log_hi - log_lo) + log_lo
+                sigma[mask] = torch.exp(log_sigma)
+
+        return sigma

@@ -26,82 +26,8 @@ import torch.nn as nn
 from typing import Optional, Callable, Dict, Any, Tuple
 
 
-def random_rotation_matrix(batch_size: int, device: torch.device) -> Tensor:
-    """Generate random rotation matrices using quaternion sampling.
 
-    Args:
-        batch_size: Number of rotation matrices to generate
-        device: torch device
-
-    Returns:
-        R: [B, 3, 3] rotation matrices
-    """
-    # Sample random quaternions
-    q = torch.randn(batch_size, 4, device=device)
-    q = q / q.norm(dim=-1, keepdim=True)
-
-    # Convert to rotation matrices
-    w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
-
-    R = torch.stack([
-        torch.stack([1 - 2*y*y - 2*z*z, 2*x*y - 2*w*z, 2*x*z + 2*w*y], dim=-1),
-        torch.stack([2*x*y + 2*w*z, 1 - 2*x*x - 2*z*z, 2*y*z - 2*w*x], dim=-1),
-        torch.stack([2*x*z - 2*w*y, 2*y*z + 2*w*x, 1 - 2*x*x - 2*y*y], dim=-1),
-    ], dim=1)  # [B, 3, 3]
-
-    return R
-
-
-def random_rigid_augment(
-    x: Tensor,
-    mask: Optional[Tensor] = None,
-    rotation: bool = True,
-    translation_scale: float = 0.0,
-    center_first: bool = True,
-) -> Tensor:
-    """Apply random rigid transformation (rotation + translation).
-
-    This is critical for training SE(3)-equivariant diffusion models.
-    The model should predict the same structure regardless of input orientation.
-
-    Args:
-        x: Coordinates [B, N, 3]
-        mask: Optional valid position mask [B, N]
-        rotation: Apply random rotation
-        translation_scale: Scale of random translation (0 = no translation)
-        center_first: Center coordinates before augmentation
-
-    Returns:
-        x_aug: Augmented coordinates [B, N, 3]
-    """
-    B, N, _ = x.shape
-    device = x.device
-
-    # Center first (optional but recommended)
-    if center_first:
-        if mask is not None:
-            mask_exp = mask.unsqueeze(-1).float()
-            n_valid = mask.sum(dim=1, keepdim=True).unsqueeze(-1).clamp(min=1)
-            centroid = (x * mask_exp).sum(dim=1, keepdim=True) / n_valid
-        else:
-            centroid = x.mean(dim=1, keepdim=True)
-        x = x - centroid
-
-    # Random rotation
-    if rotation:
-        R = random_rotation_matrix(B, device)  # [B, 3, 3]
-        x = torch.bmm(x, R.transpose(1, 2))  # [B, N, 3]
-
-    # Random translation
-    if translation_scale > 0:
-        T = torch.randn(B, 1, 3, device=device) * translation_scale
-        x = x + T
-
-    # Apply mask
-    if mask is not None:
-        x = x * mask.unsqueeze(-1).float()
-
-    return x
+from .augmentation import random_rotation_matrix, apply_rigid_augment as random_rigid_augment
 
 
 def af3_loss_weight(sigma: Tensor, sigma_data: float = 1.0) -> Tensor:

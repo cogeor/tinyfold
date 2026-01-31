@@ -8,9 +8,15 @@ Two-stage architecture for PPI structure prediction:
 from tinyfold.model.resfold.denoiser import ResidueDenoiser
 from tinyfold.model.resfold.pipeline import ResFoldPipeline
 from tinyfold.model.resfold.refiner import AtomRefinerV2
+from tinyfold.model.resfold.assembler import ResFoldAssembler
+from tinyfold.model.resfold.e2e import ResFoldE2E
+from tinyfold.model.resfold.atomrefine_multi_sample import AtomRefinerV2MultiSample
 
 __all__ = [
     "ResidueDenoiser",
     "ResFoldPipeline", 
     "AtomRefinerV2",
+    "ResFoldAssembler",
+    "ResFoldE2E",
+    "AtomRefinerV2MultiSample",
 ]

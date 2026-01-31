@@ -30,20 +30,26 @@ import torch.nn as nn
 import torch.nn.functional as F
 import pyarrow.parquet as pq
 
-# Shared utilities (consolidates Logger, data loading, reproducibility)
+# Shared utilities from script_utils
 from script_utils import (
     Logger,
-    load_sample_residue as load_sample_raw,
-    collate_batch_residue as collate_batch,
     set_seed,
     save_config,
     get_data_path,
     plot_prediction,
 )
 
+# Training utilities from tinyfold.training
+from tinyfold.training import (
+    load_sample_raw,
+    collate_batch,
+    random_rotation_matrix,
+    apply_rigid_augment,
+    apply_rotation_augment,
+)
+
 # Model imports
 from models.iterfold import IterFold
-from models.training_utils import random_rotation_matrix, random_rigid_augment
 from models.dockq_utils import compute_dockq
 from models.clustering import select_next_residues_to_place
 
@@ -58,56 +64,6 @@ from tinyfold.model.losses.geometry import GeometryLoss, pairwise_distance_loss
 from data_split import (
     DataSplitConfig, get_train_test_indices, get_split_info, save_split, load_split,
 )
-
-
-# Data loading functions imported from script_utils:
-# - load_sample_raw (alias for load_sample_residue)
-# - collate_batch (alias for collate_batch_residue)
-
-
-# =============================================================================
-# Augmentation
-# =============================================================================
-
-def apply_rigid_augment(coords_res: torch.Tensor, centroids: torch.Tensor, translation_scale: float = 2.0):
-    """Apply random SE(3) transformation (rotation + translation) to coordinates.
-
-    Args:
-        coords_res: [B, L, 4, 3] atom coordinates
-        centroids: [B, L, 3] residue centroids
-        translation_scale: Scale for random translation (in normalized units)
-
-    Returns:
-        coords_res_aug: [B, L, 4, 3] transformed atom coordinates
-        centroids_aug: [B, L, 3] transformed centroids
-    """
-    B = coords_res.shape[0]
-    device = coords_res.device
-
-    # Generate random rotation matrices
-    R = random_rotation_matrix(B, device)  # [B, 3, 3]
-
-    # Apply rotation to atom coordinates: [B, L, 4, 3] @ [B, 3, 3].T
-    coords_flat = coords_res.view(B, -1, 3)  # [B, L*4, 3]
-    coords_rot = torch.bmm(coords_flat, R.transpose(1, 2))  # [B, L*4, 3]
-    
-    # Apply rotation to centroids
-    centroids_rot = torch.bmm(centroids, R.transpose(1, 2))  # [B, L, 3]
-
-    # Generate random translation
-    translation = torch.randn(B, 1, 3, device=device) * translation_scale  # [B, 1, 3]
-
-    # Apply translation
-    coords_aug = coords_rot + translation  # [B, L*4, 3]
-    centroids_aug = centroids_rot + translation  # [B, L, 3]
-
-    return coords_aug.view_as(coords_res), centroids_aug
-
-
-# Legacy alias for backward compatibility
-def apply_rotation_augment(coords_res: torch.Tensor, centroids: torch.Tensor):
-    """Apply random SO(3) rotation only (no translation). Use apply_rigid_augment instead."""
-    return apply_rigid_augment(coords_res, centroids, translation_scale=0.0)
 
 
 # =============================================================================
