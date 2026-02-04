@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from .resfold import ResidueDenoiser
+from .denoiser import ResidueDenoiser
 
 TrainingMode = Literal['stage1_only', 'stage2_only', 'end_to_end']
 

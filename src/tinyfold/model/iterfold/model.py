@@ -23,10 +23,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from .resfold import ResidueEncoder
-from .clustering import select_next_residues_to_place
-from .atom_decoder import GeometricAtomDecoder
+from tinyfold.model.resfold.denoiser import ResidueEncoder
+from tinyfold.model.resfold.clustering import select_next_residues_to_place
 from .frame_decoder import FrameDecoder
+
+# GeometricAtomDecoder is not implemented yet
+GeometricAtomDecoder = None
 
 
 class FlashSelfAttentionBlock(nn.Module):
@@ -383,14 +385,8 @@ class IterFold(nn.Module):
                 dropout=dropout,
             )
         elif use_geometric_decoder:
-            # Geometric atom decoder with priors
-            self.decoder = GeometricAtomDecoder(
-                c_token=c_token,
-                c_atom=c_atom,
-                n_layers=decoder_layers,
-                n_heads=decoder_heads,
-                dropout=dropout,
-            )
+            # Geometric atom decoder with priors (not yet implemented)
+            raise NotImplementedError("GeometricAtomDecoder is not yet implemented")
         else:
             # Original anchor decoder (centroid-based)
             self.decoder = AnchorDecoder(
