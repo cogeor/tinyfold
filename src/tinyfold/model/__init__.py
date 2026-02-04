@@ -31,7 +31,7 @@ from tinyfold.model.diffusion import (
     GaussianNoise,
     LinearChainNoise,
     LinearChainFlow,
-    DDIMSampler,
+    DeterministicDDIMSampler,
     DDPMSampler,
     TimestepCurriculum,
     generate_extended_chain,
@@ -73,7 +73,7 @@ __all__ = [
     "LinearChainFlow",
     "generate_extended_chain",
     # Diffusion - samplers
-    "DDIMSampler",
+    "DeterministicDDIMSampler",
     "DDPMSampler",
     # Diffusion - curriculum
     "TimestepCurriculum",

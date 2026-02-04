@@ -38,7 +38,7 @@ sys.path.insert(0, str(script_dir.parent / "scripts"))
 sys.path.insert(0, str(script_dir.parent / "src"))
 
 from models import create_model, create_schedule, create_noiser
-from data_split import DataSplitConfig, get_train_test_indices
+from tinyfold.training.data_split import DataSplitConfig, get_train_test_indices
 
 
 # =============================================================================
@@ -306,8 +306,7 @@ def predict_af3(args, table, indices, device):
     # Infer n_timesteps from checkpoint
     for k in checkpoint["model_state_dict"]:
         if "time_embed.weight" in k:
-            embed_size = checkpoint["model_state_dict"][k].shape[0]
-            n_timesteps = embed_size - 1
+            n_timesteps = checkpoint["model_state_dict"][k].shape[0]
             break
     else:
         n_timesteps = 50

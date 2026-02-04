@@ -12,7 +12,7 @@ import numpy as np
 from tinyfold.model.config import ModelConfig
 from tinyfold.model.ppi_model import PPIModel
 from tinyfold.model.diffusion.schedule import DiffusionSchedule
-from tinyfold.model.diffusion.sampler import DDIMSampler
+from tinyfold.model.diffusion.sampler import DeterministicDeterministicDDIMSampler
 from tinyfold.model.denoiser.edges import build_knn_edges, merge_edges, build_edge_attr
 from tinyfold.model.pairformer.attn_pair_bias import AttentionPairBias
 from tinyfold.data.collate import collate_ppi
@@ -111,7 +111,7 @@ def synthetic_sample():
 # ============================================================================
 
 
-class TestDDIMSampler:
+class TestDeterministicDDIMSampler:
     """Tests for DDIM sampling that verify actual denoising."""
 
     def test_sample_calls_denoise_fn_correctly(self):
@@ -120,7 +120,7 @@ class TestDDIMSampler:
         The DDIM sampler should call denoise_fn exactly T times, once per step.
         """
         schedule = DiffusionSchedule(T=8)
-        sampler = DDIMSampler(schedule, eta=0.0)
+        sampler = DeterministicDDIMSampler(schedule, eta=0.0)
 
         call_count = [0]
         timesteps_seen = []
@@ -145,7 +145,7 @@ class TestDDIMSampler:
     def test_trajectory_has_correct_length(self):
         """Trajectory should have T+1 states (initial + each step)."""
         schedule = DiffusionSchedule(T=4)
-        sampler = DDIMSampler(schedule)
+        sampler = DeterministicDDIMSampler(schedule)
 
         def mock_denoise(x_t, t):
             return torch.randn_like(x_t) * 0.1
@@ -161,7 +161,7 @@ class TestDDIMSampler:
     def test_deterministic_with_eta_zero(self):
         """With eta=0, sampling should be deterministic given same noise."""
         schedule = DiffusionSchedule(T=4)
-        sampler = DDIMSampler(schedule, eta=0.0)
+        sampler = DeterministicDDIMSampler(schedule, eta=0.0)
 
         def mock_denoise(x_t, t):
             # Deterministic denoiser
@@ -179,7 +179,7 @@ class TestDDIMSampler:
     def test_stochastic_with_eta_nonzero(self):
         """With eta>0, sampling should have stochasticity."""
         schedule = DiffusionSchedule(T=4)
-        sampler = DDIMSampler(schedule, eta=1.0)
+        sampler = DeterministicDDIMSampler(schedule, eta=1.0)
 
         def mock_denoise(x_t, t):
             return x_t * 0.1

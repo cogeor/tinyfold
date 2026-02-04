@@ -7,7 +7,7 @@ from tinyfold.model.config import ModelConfig
 from tinyfold.model.denoiser.conditioner import AtomConditioner, TimestepEmbedding
 from tinyfold.model.denoiser.edges import build_edge_attr, build_knn_edges, merge_edges
 from tinyfold.model.denoiser.egnn import EGNNDenoiser
-from tinyfold.model.diffusion.sampler import DDIMSampler
+from tinyfold.model.diffusion.sampler import DeterministicDDIMSampler
 from tinyfold.model.diffusion.schedule import DiffusionSchedule
 from tinyfold.model.embeddings import TokenEmbedder
 from tinyfold.model.pairformer import PairformerStack
@@ -248,7 +248,7 @@ class PPIModel(nn.Module):
             return self.denoiser(x_t, h, edge_index, edge_attr)
 
         # Sample using DDIM
-        sampler = DDIMSampler(self.schedule, eta=0.0)
+        sampler = DeterministicDDIMSampler(self.schedule, eta=0.0)
         x0 = sampler.sample(denoise_fn, shape=(n_atom, 3), device=device)
 
         return x0

@@ -400,9 +400,6 @@ class AtomAttentionDecoder(nn.Module):
         # Broadcast: tokens → atoms
         self.broadcast_proj = nn.Linear(c_token, c_atom)
 
-        # Sigma conditioning projection (c_token → c_atom for atom-level)
-        self.sigma_proj = nn.Linear(c_token, c_atom)
-
         # Skip connection projections (one per encoder block)
         self.skip_projs = nn.ModuleList([
             nn.Linear(c_atom, c_atom)
@@ -425,16 +422,8 @@ class AtomAttentionDecoder(nn.Module):
         skip_states: list[Tensor],  # list of [B, L, 4, c_atom]
         atom_types: Tensor,      # [B, L, 4] for positional info
         mask: Optional[Tensor] = None,  # [B, L, 4]
-        sigma_cond: Optional[Tensor] = None,  # [B, L, c_token] sigma embedding
     ) -> Tensor:
         """Decode tokens to atom coordinate updates.
-
-        Args:
-            tokens: Token representations from DiffusionTransformer
-            skip_states: Skip connections from AtomAttentionEncoder
-            atom_types: Atom type indices
-            mask: Valid atom mask
-            sigma_cond: Sigma conditioning (IMPORTANT: tells decoder noise level)
 
         Returns:
             coord_updates: [B, L, 4, 3] per-atom coordinate updates
@@ -444,16 +433,11 @@ class AtomAttentionDecoder(nn.Module):
         # Broadcast tokens to atoms: [B, L, c_token] → [B, L, 4, c_atom]
         h = self.broadcast_proj(tokens).unsqueeze(2).expand(-1, -1, 4, -1)
 
-        # Add sigma conditioning if provided (critical for high noise levels!)
-        # This tells the decoder how to interpret the skip states from noisy coords
-        if sigma_cond is not None:
-            sigma_atom = self.sigma_proj(sigma_cond).unsqueeze(2).expand(-1, -1, 4, -1)
-            h = h + sigma_atom
-
-        # Apply blocks WITHOUT skip connections
-        # Skip connections from encoder carry noisy coord info which hurts at high sigma
-        # TODO: Test if re-enabling with proper scaling helps
-        for i, block in enumerate(self.blocks):
+        # Apply blocks with skip connections (reverse order)
+        for i, (block, skip_proj) in enumerate(zip(self.blocks, self.skip_projs)):
+            skip_idx = self.n_blocks - 1 - i
+            skip = skip_proj(skip_states[skip_idx])
+            h = h + skip
             h = block(h, mask)
 
         # Output projection
@@ -489,13 +473,16 @@ class ResidueEncoder(nn.Module):
         super().__init__()
         self.c_token = c_token
 
-        # Residue embeddings (sequence-only, NO coordinates!)
+        # Residue embeddings
         self.aa_embed = nn.Embedding(n_aa_types, c_token)
         self.chain_embed = nn.Embedding(n_chains, c_token // 4)
 
+        # Atom info aggregation (mean of 4 atoms' positions projected)
+        self.atom_info_proj = nn.Linear(3 * 4, c_token // 2)  # 4 atoms * 3 coords
+
         # Input projection
-        # aa_emb (c_token) + chain_emb (c_token//4) + res_pos (c_token)
-        input_dim = c_token + (c_token // 4) + c_token
+        # aa_emb (c_token) + chain_emb (c_token//4) + res_pos (c_token) + atom_info (c_token//2)
+        input_dim = c_token + (c_token // 4) + c_token + (c_token // 2)
         self.input_proj = nn.Linear(input_dim, c_token)
 
         # Transformer
@@ -515,25 +502,30 @@ class ResidueEncoder(nn.Module):
 
     def forward(
         self,
+        atom_coords: Tensor,     # [B, L, 4, 3]
         aa_seq: Tensor,          # [B, L]
         chain_ids: Tensor,       # [B, L]
         res_idx: Tensor,         # [B, L]
         mask: Optional[Tensor] = None,  # [B, L]
     ) -> Tensor:
-        """Encode residue-level sequence features (NO coordinates).
+        """Encode residue-level features.
 
         Returns:
             tokens: [B, L, c_token] conditioning for denoiser
         """
-        B, L = aa_seq.shape
+        B, L, _, _ = atom_coords.shape
 
-        # Embeddings (sequence-only)
+        # Embeddings
         aa_emb = self.aa_embed(aa_seq)  # [B, L, c_token]
         chain_emb = self.chain_embed(chain_ids)  # [B, L, c_token//4]
         res_emb = sinusoidal_pos_enc(res_idx, self.c_token)  # [B, L, c_token]
 
+        # Aggregate atom positions into residue info
+        atom_info = atom_coords.view(B, L, -1)  # [B, L, 12]
+        atom_emb = self.atom_info_proj(atom_info)  # [B, L, c_token//2]
+
         # Concatenate and project
-        h = torch.cat([aa_emb, chain_emb, res_emb], dim=-1)
+        h = torch.cat([aa_emb, chain_emb, res_emb, atom_emb], dim=-1)
         h = self.input_proj(h)  # [B, L, c_token]
 
         # Apply transformer
@@ -604,15 +596,8 @@ class AF3StyleDecoder(BaseDecoder):
 
         # === DENOISER (runs each step) ===
 
-        # Timestep embedding for conditioning (+1 for t=T in linear_chain)
-        self.time_embed = nn.Embedding(n_timesteps + 1, c_token)
-
-        # Continuous sigma embedding (AF3-style Fourier features + MLP)
-        self.sigma_embed = nn.Sequential(
-            nn.Linear(c_token, c_token),
-            nn.SiLU(),
-            nn.Linear(c_token, c_token),
-        )
+        # Timestep embedding for conditioning
+        self.time_embed = nn.Embedding(n_timesteps, c_token)
 
         # AtomAttentionEncoder
         self.atom_encoder = AtomAttentionEncoder(
@@ -685,29 +670,30 @@ class AF3StyleDecoder(BaseDecoder):
             mask_res = torch.ones(B, N_res, 4, dtype=torch.bool, device=device)
             mask_token = torch.ones(B, N_res, dtype=torch.bool, device=device)
 
-        # === TRUNK (once, sequence-only) ===
-        trunk_tokens = self.trunk(aa_res, chain_res, res_idx, mask_token)  # [B, L, c_token]
+        # === TRUNK (once) ===
+        trunk_tokens = self.trunk(x_res, aa_res, chain_res, res_idx, mask_token)  # [B, L, c_token]
 
         # === DENOISER ===
 
         # Timestep conditioning
         time_cond = self.time_embed(t).unsqueeze(1).expand(-1, N_res, -1)  # [B, L, c_token]
 
-        # AtomAttentionEncoder: atoms → tokens (adds trunk conditioning)
+        # AtomAttentionEncoder: atoms → tokens
         tokens, skip_states = self.atom_encoder(
             x_res, atom_types_res, trunk_tokens, mask_res
         )  # [B, L, c_token], list of [B, L, 4, c_atom]
 
-        # DiffusionTransformer: global token attention with timestep conditioning
+        # DiffusionTransformer: global token attention
         tokens = self.diff_transformer(tokens, time_cond, mask_token)  # [B, L, c_token]
 
-        # AtomAttentionDecoder: tokens → atom coordinates (with timestep conditioning)
-        coords_pred = self.atom_decoder(
-            tokens, skip_states, atom_types_res, mask_res, sigma_cond=time_cond
+        # AtomAttentionDecoder: tokens → atom updates (refinements)
+        coord_updates = self.atom_decoder(
+            tokens, skip_states, atom_types_res, mask_res
         )  # [B, L, 4, 3]
 
-        # Direct x0 prediction (no residual - same as ResFold)
-        x0_pred = coords_pred.view(B, N_atoms, 3)
+        # Residual connection with sqrt noise-level scaling
+        noise_scale = (t.float() / self.n_timesteps).sqrt().view(-1, 1, 1)  # [B, 1, 1]
+        x0_pred = x_t + noise_scale * coord_updates.view(B, N_atoms, 3)
 
         return x0_pred
 
@@ -748,11 +734,11 @@ class AF3StyleDecoder(BaseDecoder):
             mask_token = torch.ones(B, N_res, dtype=torch.bool, device=device)
 
         # Trunk + Denoiser
-        trunk_tokens = self.trunk(aa_res, chain_res, res_idx, mask_token)
+        trunk_tokens = self.trunk(x_res, aa_res, chain_res, res_idx, mask_token)
         time_cond = self.time_embed(t).unsqueeze(1).expand(-1, N_res, -1)
         tokens, skip_states = self.atom_encoder(x_res, atom_types_res, trunk_tokens, mask_res)
         tokens = self.diff_transformer(tokens, time_cond, mask_token)
-        coord_updates = self.atom_decoder(tokens, skip_states, atom_types_res, mask_res, sigma_cond=time_cond)
+        coord_updates = self.atom_decoder(tokens, skip_states, atom_types_res, mask_res)
 
         # Direct prediction - no scaling, just output coordinates
         x0_pred = coord_updates.view(B, N_atoms, 3)
@@ -795,13 +781,13 @@ class AF3StyleDecoder(BaseDecoder):
             mask_token = torch.ones(B, N_res, dtype=torch.bool, device=device)
 
         # === TRUNK (once) ===
-        trunk_tokens = self.trunk(aa_res, chain_res, res_idx, mask_token)
+        trunk_tokens = self.trunk(x_res, aa_res, chain_res, res_idx, mask_token)
 
         # === DENOISER ===
         time_cond = self.time_embed(t).unsqueeze(1).expand(-1, N_res, -1)
         tokens, skip_states = self.atom_encoder(x_res, atom_types_res, trunk_tokens, mask_res)
         tokens = self.diff_transformer(tokens, time_cond, mask_token)
-        coord_updates = self.atom_decoder(tokens, skip_states, atom_types_res, mask_res, sigma_cond=time_cond)
+        coord_updates = self.atom_decoder(tokens, skip_states, atom_types_res, mask_res)
 
         # Direct prediction of x_t (next step) - no residual, no scaling
         x_next = coord_updates.view(B, N_atoms, 3)
@@ -877,8 +863,8 @@ class AF3StyleDecoder(BaseDecoder):
             mask_res = torch.ones(B, N_res, 4, dtype=torch.bool, device=device)
             mask_token = torch.ones(B, N_res, dtype=torch.bool, device=device)
 
-        # === TRUNK (once, sequence-only) ===
-        trunk_tokens = self.trunk(aa_res, chain_res, res_idx, mask_token)  # [B, L, c_token]
+        # === TRUNK (once) ===
+        trunk_tokens = self.trunk(x_res, aa_res, chain_res, res_idx, mask_token)  # [B, L, c_token]
 
         # === DENOISER ===
 
@@ -893,13 +879,12 @@ class AF3StyleDecoder(BaseDecoder):
         # DiffusionTransformer with sigma conditioning
         tokens = self.diff_transformer(tokens, sigma_cond, mask_token)  # [B, L, c_token]
 
-        # AtomAttentionDecoder: tokens → atom coordinates (with sigma conditioning)
+        # AtomAttentionDecoder: tokens → atom coordinates
         coords_pred = self.atom_decoder(
-            tokens, skip_states, atom_types_res, mask_res, sigma_cond=sigma_cond
+            tokens, skip_states, atom_types_res, mask_res
         )  # [B, L, 4, 3]
 
-        # Direct x0 prediction (no residual - same as ResFold)
-        # For high sigma, residual would require predicting large deltas = -sigma*noise
+        # Direct x0 prediction
         x0_pred = coords_pred.view(B, N_atoms, 3)
 
         return x0_pred

@@ -6,24 +6,45 @@ Usage:
     from models import create_schedule, create_noiser, list_schedules, list_noise_types
 """
 
+import warnings
+
 # Import from new locations in src/tinyfold/model/
-from tinyfold.model.attention_v2 import AttentionDiffusionV2
-from tinyfold.model.af3_style import AF3StyleDecoder
-from tinyfold.model.resfold import (
-    ResidueDenoiser,
-    ResFoldPipeline,
-    ResFoldE2E,
-    sample_e2e,
-    ResFoldAssembler,
-    AtomRefinerV2,
-    AtomRefinerV2MultiSample,
-)
-from tinyfold.model.iterfold import IterFold, AnchorDecoder
-from tinyfold.model.resfold import clustering
+from .archive import AttentionDiffusionV2
+from .archive import AF3StyleDecoder
 
 # Archived/Deprecated models
-# (If they were moved to archive/, import from there, or stub them out)
 from .archive import AtomRefiner, HierarchicalDecoder, PairformerDecoder
+
+# These imports may fail if the refactor left broken internal references.
+# Wrap in try/except so the server can still start with af3_style.
+try:
+    from tinyfold.model.resfold import (
+        ResidueDenoiser,
+        ResFoldPipeline,
+        ResFoldE2E,
+        sample_e2e,
+        ResFoldAssembler,
+        AtomRefinerV2,
+        AtomRefinerV2MultiSample,
+    )
+    from tinyfold.model.resfold import clustering
+except ImportError as e:
+    warnings.warn(f"Could not import resfold models: {e}")
+    ResidueDenoiser = None
+    ResFoldPipeline = None
+    ResFoldE2E = None
+    sample_e2e = None
+    ResFoldAssembler = None
+    AtomRefinerV2 = None
+    AtomRefinerV2MultiSample = None
+    clustering = None
+
+try:
+    from tinyfold.model.iterfold import IterFold, AnchorDecoder
+except ImportError as e:
+    warnings.warn(f"Could not import iterfold models: {e}")
+    IterFold = None
+    AnchorDecoder = None
 
 from tinyfold.model.losses import (
     GeometryLoss,
@@ -69,27 +90,35 @@ from tinyfold.training.utils import (
     MultiCopyTrainer,
     VectorizedMultiCopyTrainer,
 )
-from tinyfold.model.self_conditioning import (
+from .archive.self_conditioning import (
     self_conditioning_training_step,
     sample_step_with_self_cond,
     create_self_cond_embedding,
 )
 
 
-# Model registry
+# Model registry - only include models that imported successfully
 _MODELS = {
     "attention_v2": AttentionDiffusionV2,
     "hierarchical": HierarchicalDecoder,
     "pairformer": PairformerDecoder,
     "af3_style": AF3StyleDecoder,
-    "resfold_stage1": ResidueDenoiser,
-    "resfold_stage2": AtomRefiner,
-    "resfold_stage2_multi": AtomRefinerV2MultiSample,
-    "resfold": ResFoldPipeline,
-    "resfold_e2e": ResFoldE2E,
-    "resfold_assembler": ResFoldAssembler,
-    "iterfold": IterFold,
 }
+
+if ResidueDenoiser is not None:
+    _MODELS["resfold_stage1"] = ResidueDenoiser
+if AtomRefiner is not None:
+    _MODELS["resfold_stage2"] = AtomRefiner
+if AtomRefinerV2MultiSample is not None:
+    _MODELS["resfold_stage2_multi"] = AtomRefinerV2MultiSample
+if ResFoldPipeline is not None:
+    _MODELS["resfold"] = ResFoldPipeline
+if ResFoldE2E is not None:
+    _MODELS["resfold_e2e"] = ResFoldE2E
+if ResFoldAssembler is not None:
+    _MODELS["resfold_assembler"] = ResFoldAssembler
+if IterFold is not None:
+    _MODELS["iterfold"] = IterFold
 
 
 def list_models() -> list[str]:

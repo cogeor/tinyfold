@@ -16,7 +16,7 @@ data:
 
 # Optional: pre-computed predictions (set to null or remove to use live inference)
 predictions:
-  cache_path: null  # e.g., "predictions.json"
+  cache_path: "predictions.json"
 
 server:
   host: "127.0.0.1"

@@ -3,13 +3,14 @@
 Provides:
 - Schedules: CosineSchedule, LinearSchedule, DiffusionSchedule
 - Noise types: GaussianNoise, LinearChainNoise, LinearChainFlow
-- Samplers: DDIMSampler, DDPMSampler
+- Samplers: DeterministicDDIMSampler, DDPMSampler
 - Curriculum: TimestepCurriculum
 - Factory functions: create_schedule, create_noiser
 """
 
 from tinyfold.model.diffusion.sampler import (
-    DDIMSampler,
+    BaseSampler,
+    DeterministicDDIMSampler,
     DDPMSampler,
     HeunSampler,
     EDMSampler,
@@ -102,7 +103,8 @@ __all__ = [
     "VENoiser",
     "generate_extended_chain",
     # Samplers
-    "DDIMSampler",
+    "BaseSampler",
+    "DeterministicDDIMSampler",
     "DDPMSampler",
     "HeunSampler",
     "EDMSampler",

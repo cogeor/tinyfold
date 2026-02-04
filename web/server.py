@@ -28,7 +28,7 @@ sys.path.insert(0, str(script_dir.parent / "scripts"))
 sys.path.insert(0, str(script_dir.parent / "src"))
 
 from models import create_model, create_schedule, create_noiser
-from data_split import DataSplitConfig, get_train_test_indices
+from tinyfold.training.data_split import DataSplitConfig, get_train_test_indices
 
 
 # =============================================================================
@@ -315,7 +315,9 @@ def run_inference(sample: dict) -> np.ndarray:
 # FastAPI App
 # =============================================================================
 
-def load_config(path: str = "config.yaml") -> dict:
+def load_config(path: str = None) -> dict:
+    if path is None:
+        path = Path(__file__).parent / "config.yaml"
     with open(path) as f:
         return yaml.safe_load(f)
 
@@ -340,8 +342,7 @@ def init_app():
 
     if time_embed_key:
         embed_size = checkpoint["model_state_dict"][time_embed_key].shape[0]
-        # Models use n_timesteps+1 for embedding, so we pass embed_size-1
-        n_timesteps = embed_size - 1
+        n_timesteps = embed_size
         print(f"Inferred n_timesteps={n_timesteps} from checkpoint (embed_size={embed_size})")
     else:
         n_timesteps = state.config["inference"]["n_timesteps"]
@@ -430,7 +431,10 @@ async def root():
 
 @app.get("/api/samples", response_model=SampleListResponse)
 def list_samples(split: str = "all", search: str = "", page: int = 1, per_page: int = 50):
-    """List samples with optional filtering."""
+    """List samples with optional filtering.
+
+    Only shows samples that have pre-computed predictions.
+    """
     samples = []
 
     # Determine which indices to use
@@ -443,6 +447,12 @@ def list_samples(split: str = "all", search: str = "", page: int = 1, per_page: 
 
     for idx in indices:
         sample_id = state.table['sample_id'][idx].as_py()
+
+        # Only show samples with predictions
+        has_pred = state.predictions_cache is not None and sample_id in state.predictions_cache
+        if not has_pred:
+            continue
+
         if search and search.lower() not in sample_id.lower():
             continue
 
@@ -450,13 +460,12 @@ def list_samples(split: str = "all", search: str = "", page: int = 1, per_page: 
         n_residues = len(state.table['seq'][idx].as_py())
         split_name = state.sample_to_split.get(sample_id, "unknown")
 
-        has_pred = state.predictions_cache is not None and sample_id in state.predictions_cache
         samples.append(SampleMeta(
             sample_id=sample_id,
             split=split_name,
             n_atoms=n_atoms,
             n_residues=n_residues,
-            has_prediction=has_pred,
+            has_prediction=True,
         ))
 
     total = len(samples)
