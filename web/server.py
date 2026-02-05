@@ -27,8 +27,23 @@ script_dir = Path(__file__).parent.absolute()
 sys.path.insert(0, str(script_dir.parent / "scripts"))
 sys.path.insert(0, str(script_dir.parent / "src"))
 
-from models import create_model, create_schedule, create_noiser
-from tinyfold.training.data_split import DataSplitConfig, get_train_test_indices
+try:
+    from models import create_model, create_schedule, create_noiser
+    MODELS_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: Could not import models: {e}")
+    print("Live inference disabled. Using cached predictions only.")
+    create_model = None
+    create_schedule = None
+    create_noiser = None
+    MODELS_AVAILABLE = False
+
+try:
+    from tinyfold.training.data_split import DataSplitConfig, get_train_test_indices
+except ImportError:
+    # Fallback: simple split without the helper
+    DataSplitConfig = None
+    get_train_test_indices = None
 
 
 # =============================================================================
@@ -328,43 +343,46 @@ def init_app():
     state.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {state.device}")
 
-    # Load model
-    print("Loading model...")
-    checkpoint_path = Path(__file__).parent / state.config["model"]["checkpoint"]
-    checkpoint = torch.load(checkpoint_path, map_location=state.device, weights_only=False)
+    # Load model (only if models are available)
+    if MODELS_AVAILABLE:
+        print("Loading model...")
+        checkpoint_path = Path(__file__).parent / state.config["model"]["checkpoint"]
+        checkpoint = torch.load(checkpoint_path, map_location=state.device, weights_only=False)
 
-    # Infer n_timesteps from checkpoint's time_embed shape
-    time_embed_key = None
-    for k in checkpoint["model_state_dict"]:
-        if "time_embed.weight" in k:
-            time_embed_key = k
-            break
+        # Infer n_timesteps from checkpoint's time_embed shape
+        time_embed_key = None
+        for k in checkpoint["model_state_dict"]:
+            if "time_embed.weight" in k:
+                time_embed_key = k
+                break
 
-    if time_embed_key:
-        embed_size = checkpoint["model_state_dict"][time_embed_key].shape[0]
-        n_timesteps = embed_size
-        print(f"Inferred n_timesteps={n_timesteps} from checkpoint (embed_size={embed_size})")
+        if time_embed_key:
+            embed_size = checkpoint["model_state_dict"][time_embed_key].shape[0]
+            n_timesteps = embed_size
+            print(f"Inferred n_timesteps={n_timesteps} from checkpoint (embed_size={embed_size})")
+        else:
+            n_timesteps = state.config["inference"]["n_timesteps"]
+
+        model = create_model(
+            state.config["model"]["architecture"],
+            n_timesteps=n_timesteps,
+        )
+        model.load_state_dict(checkpoint["model_state_dict"])
+        model.to(state.device)
+        model.eval()
+        state.model = model
+        state.config["inference"]["n_timesteps"] = n_timesteps
+        print(f"Loaded model: {state.config['model']['architecture']}")
+
+        # Create noiser
+        state.schedule = create_schedule("cosine", T=n_timesteps)
+        state.noiser = create_noiser(
+            state.config["inference"]["noise_type"],
+            state.schedule,
+        )
+        print(f"Noise type: {state.config['inference']['noise_type']}")
     else:
-        n_timesteps = state.config["inference"]["n_timesteps"]
-
-    model = create_model(
-        state.config["model"]["architecture"],
-        n_timesteps=n_timesteps,
-    )
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.to(state.device)
-    model.eval()
-    state.model = model
-    state.config["inference"]["n_timesteps"] = n_timesteps  # Update config to match
-    print(f"Loaded model: {state.config['model']['architecture']}")
-
-    # Create noiser
-    state.schedule = create_schedule("cosine", T=n_timesteps)
-    state.noiser = create_noiser(
-        state.config["inference"]["noise_type"],
-        state.schedule,
-    )
-    print(f"Noise type: {state.config['inference']['noise_type']}")
+        print("Models not available - using cached predictions only")
 
     # Load data
     print("Loading data...")
@@ -373,13 +391,20 @@ def init_app():
     print(f"Loaded {len(state.table)} samples")
 
     # Get train/test split
-    split_config = DataSplitConfig(
-        n_train=state.config["data"]["n_train"],
-        n_test=state.config["data"]["n_test"],
-        min_atoms=state.config["data"]["min_atoms"],
-        max_atoms=state.config["data"]["max_atoms"],
-    )
-    state.train_indices, state.test_indices = get_train_test_indices(state.table, split_config)
+    if get_train_test_indices is not None:
+        split_config = DataSplitConfig(
+            n_train=state.config["data"]["n_train"],
+            n_test=state.config["data"]["n_test"],
+            min_atoms=state.config["data"]["min_atoms"],
+            max_atoms=state.config["data"]["max_atoms"],
+        )
+        state.train_indices, state.test_indices = get_train_test_indices(state.table, split_config)
+    else:
+        # Fallback: simple sequential split
+        n_train = state.config["data"]["n_train"]
+        n_test = state.config["data"]["n_test"]
+        state.train_indices = list(range(n_train))
+        state.test_indices = list(range(n_train, n_train + n_test))
     print(f"Train: {len(state.train_indices)}, Test: {len(state.test_indices)}")
 
     # Build sample_id -> split mapping
