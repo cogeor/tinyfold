@@ -8,19 +8,112 @@ Usage:
 
 import warnings
 
-# Only import archive models that don't have problematic import chains
-# AF3StyleDecoder and AttentionDiffusionV2 only depend on .base (safe)
-# PairformerDecoder, HierarchicalDecoder import from tinyfold.model which can fail
+# Safe archive imports (only depend on torch, no tinyfold.model)
 from .archive.af3_style import AF3StyleDecoder
 from .archive.attention_v2 import AttentionDiffusionV2
+from .archive.self_conditioning import (
+    self_conditioning_training_step,
+    sample_step_with_self_cond,
+    create_self_cond_embedding,
+)
 
-# These have problematic imports - load lazily only if needed
-AtomRefiner = None
-HierarchicalDecoder = None
-PairformerDecoder = None
+# Model registry - start with safe models
+_MODELS = {
+    "attention_v2": AttentionDiffusionV2,
+    "af3_style": AF3StyleDecoder,
+}
 
-# These imports may fail if the refactor left broken internal references.
-# Wrap in try/except so the server can still start with af3_style.
+# Try to import tinyfold.model components - may fail if not installed properly
+try:
+    from tinyfold.model.losses import (
+        GeometryLoss,
+        bond_length_loss,
+        bond_angle_loss,
+        omega_loss,
+        o_chirality_loss,
+        virtual_cb_loss,
+        dihedral_angle,
+        BOND_LENGTHS_ANGSTROM,
+        get_normalized_bond_lengths,
+        BOND_ANGLES,
+    )
+except ImportError as e:
+    warnings.warn(f"Could not import tinyfold.model.losses: {e}")
+    GeometryLoss = None
+    bond_length_loss = None
+    bond_angle_loss = None
+    omega_loss = None
+    o_chirality_loss = None
+    virtual_cb_loss = None
+    dihedral_angle = None
+    BOND_LENGTHS_ANGSTROM = None
+    get_normalized_bond_lengths = None
+    BOND_ANGLES = None
+
+try:
+    from tinyfold.model.diffusion import (
+        CosineSchedule,
+        LinearSchedule,
+        KarrasSchedule,
+        GaussianNoise,
+        LinearChainNoise,
+        LinearChainFlow,
+        VENoiser,
+        TimestepCurriculum,
+        create_schedule,
+        create_noiser,
+        list_schedules,
+        list_noise_types,
+        generate_extended_chain,
+        kabsch_align_to_target,
+        BaseSampler,
+        DDPMSampler,
+        HeunSampler,
+        DeterministicDDIMSampler,
+        EDMSampler,
+        create_sampler,
+        list_samplers,
+    )
+except ImportError as e:
+    warnings.warn(f"Could not import tinyfold.model.diffusion: {e}")
+    CosineSchedule = None
+    LinearSchedule = None
+    KarrasSchedule = None
+    GaussianNoise = None
+    LinearChainNoise = None
+    LinearChainFlow = None
+    VENoiser = None
+    TimestepCurriculum = None
+    create_schedule = None
+    create_noiser = None
+    list_schedules = None
+    list_noise_types = None
+    generate_extended_chain = None
+    kabsch_align_to_target = None
+    BaseSampler = None
+    DDPMSampler = None
+    HeunSampler = None
+    DeterministicDDIMSampler = None
+    EDMSampler = None
+    create_sampler = None
+    list_samplers = None
+
+try:
+    from tinyfold.training.utils import (
+        random_rigid_augment,
+        random_rotation_matrix,
+        af3_loss_weight,
+        MultiCopyTrainer,
+        VectorizedMultiCopyTrainer,
+    )
+except ImportError as e:
+    warnings.warn(f"Could not import tinyfold.training.utils: {e}")
+    random_rigid_augment = None
+    random_rotation_matrix = None
+    af3_loss_weight = None
+    MultiCopyTrainer = None
+    VectorizedMultiCopyTrainer = None
+
 try:
     from tinyfold.model.resfold import (
         ResidueDenoiser,
@@ -32,6 +125,12 @@ try:
         AtomRefinerV2MultiSample,
     )
     from tinyfold.model.resfold import clustering
+
+    _MODELS["resfold_stage1"] = ResidueDenoiser
+    _MODELS["resfold_stage2_multi"] = AtomRefinerV2MultiSample
+    _MODELS["resfold"] = ResFoldPipeline
+    _MODELS["resfold_e2e"] = ResFoldE2E
+    _MODELS["resfold_assembler"] = ResFoldAssembler
 except ImportError as e:
     warnings.warn(f"Could not import resfold models: {e}")
     ResidueDenoiser = None
@@ -45,164 +144,34 @@ except ImportError as e:
 
 try:
     from tinyfold.model.iterfold import IterFold, AnchorDecoder
+    _MODELS["iterfold"] = IterFold
 except ImportError as e:
     warnings.warn(f"Could not import iterfold models: {e}")
     IterFold = None
     AnchorDecoder = None
 
-from tinyfold.model.losses import (
-    GeometryLoss,
-    bond_length_loss,
-    bond_angle_loss,
-    omega_loss,
-    o_chirality_loss,
-    virtual_cb_loss,
-    dihedral_angle,
-    BOND_LENGTHS_ANGSTROM,
-    get_normalized_bond_lengths,
-    BOND_ANGLES,
-)
-
-from tinyfold.model.diffusion import (
-    CosineSchedule,
-    LinearSchedule,
-    KarrasSchedule,
-    GaussianNoise,
-    LinearChainNoise,
-    LinearChainFlow,
-    VENoiser,
-    TimestepCurriculum,
-    create_schedule,
-    create_noiser,
-    list_schedules,
-    list_noise_types,
-    generate_extended_chain,
-    kabsch_align_to_target,
-    BaseSampler,
-    DDPMSampler,
-    HeunSampler,
-    DeterministicDDIMSampler,
-    EDMSampler,
-    create_sampler,
-    list_samplers,
-)
-
-from tinyfold.training.utils import (
-    random_rigid_augment,
-    random_rotation_matrix,
-    af3_loss_weight,
-    MultiCopyTrainer,
-    VectorizedMultiCopyTrainer,
-)
-from .archive.self_conditioning import (
-    self_conditioning_training_step,
-    sample_step_with_self_cond,
-    create_self_cond_embedding,
-)
+# Deprecated archive models - not loaded by default
+AtomRefiner = None
+HierarchicalDecoder = None
+PairformerDecoder = None
 
 
-# Model registry - only include models that imported successfully
-_MODELS = {
-    "attention_v2": AttentionDiffusionV2,
-    "af3_style": AF3StyleDecoder,
-}
-
-if HierarchicalDecoder is not None:
-    _MODELS["hierarchical"] = HierarchicalDecoder
-if PairformerDecoder is not None:
-    _MODELS["pairformer"] = PairformerDecoder
-
-if ResidueDenoiser is not None:
-    _MODELS["resfold_stage1"] = ResidueDenoiser
-if AtomRefiner is not None:
-    _MODELS["resfold_stage2"] = AtomRefiner
-if AtomRefinerV2MultiSample is not None:
-    _MODELS["resfold_stage2_multi"] = AtomRefinerV2MultiSample
-if ResFoldPipeline is not None:
-    _MODELS["resfold"] = ResFoldPipeline
-if ResFoldE2E is not None:
-    _MODELS["resfold_e2e"] = ResFoldE2E
-if ResFoldAssembler is not None:
-    _MODELS["resfold_assembler"] = ResFoldAssembler
-if IterFold is not None:
-    _MODELS["iterfold"] = IterFold
-
-
-def list_models() -> list[str]:
+def list_models():
     """Return list of available model names."""
     return list(_MODELS.keys())
 
 
-def create_model(name: str, **kwargs):
+def create_model(name, **kwargs):
     """Create a model by name."""
     if name not in _MODELS:
         available = ", ".join(_MODELS.keys())
         raise ValueError(f"Unknown model: {name}. Available: {available}")
-
     return _MODELS[name](**kwargs)
 
 
-def get_model_class(name: str) -> type:
+def get_model_class(name):
     """Get model class by name."""
     if name not in _MODELS:
         available = ", ".join(_MODELS.keys())
         raise ValueError(f"Unknown model: {name}. Available: {available}")
-
     return _MODELS[name]
-
-
-__all__ = [
-    # Models
-    "AttentionDiffusionV2",
-    "HierarchicalDecoder",
-    "PairformerDecoder",
-    "AF3StyleDecoder",
-    "ResidueDenoiser",
-    "AtomRefiner",
-    "AtomRefinerV2",
-    "AtomRefinerV2MultiSample",
-    "ResFoldPipeline",
-    "ResFoldE2E",
-    "sample_e2e",
-    "ResFoldAssembler",
-    "IterFold",
-    "AnchorDecoder",
-    # Clustering utilities
-    "clustering",
-    "GeometryLoss",
-    "create_model",
-    "list_models",
-    "get_model_class",
-    # Diffusion
-    "CosineSchedule",
-    "create_schedule",
-    "list_schedules",
-    "GaussianNoise",
-    "LinearChainNoise",
-    "LinearChainFlow",
-    "create_noiser",
-    "list_noise_types",
-    "generate_extended_chain",
-    "kabsch_align_to_target",
-    "LinearSchedule",
-    "KarrasSchedule",
-    "VENoiser",
-    "TimestepCurriculum",
-    "BaseSampler",
-    "DDPMSampler",
-    "HeunSampler",
-    "DeterministicDDIMSampler",
-    "EDMSampler",
-    "create_sampler",
-    "list_samplers",
-    # Training utilities
-    "random_rigid_augment",
-    "random_rotation_matrix",
-    "af3_loss_weight",
-    "MultiCopyTrainer",
-    "VectorizedMultiCopyTrainer",
-    # Self-conditioning
-    "self_conditioning_training_step",
-    "sample_step_with_self_cond",
-    "create_self_cond_embedding",
-]
