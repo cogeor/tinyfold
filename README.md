@@ -154,6 +154,21 @@ python scripts/predict.py \
     --output prediction.pdb
 ```
 
+### Web Frontend
+
+Launch the interactive visualization frontend:
+
+```bash
+cd web
+../.venv/Scripts/python.exe server.py
+# Open http://127.0.0.1:5001
+```
+
+See [doc/frontend.md](doc/frontend.md) for detailed documentation including:
+- Generating cached predictions
+- Light mode for embedding
+- JavaScript API for integration
+
 ## Dataset
 
 I currently only use the **DIPS-Plus** dataset:
