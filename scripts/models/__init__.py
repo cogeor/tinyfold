@@ -8,12 +8,16 @@ Usage:
 
 import warnings
 
-# Import from new locations in src/tinyfold/model/
-from .archive import AttentionDiffusionV2
-from .archive import AF3StyleDecoder
+# Only import archive models that don't have problematic import chains
+# AF3StyleDecoder and AttentionDiffusionV2 only depend on .base (safe)
+# PairformerDecoder, HierarchicalDecoder import from tinyfold.model which can fail
+from .archive.af3_style import AF3StyleDecoder
+from .archive.attention_v2 import AttentionDiffusionV2
 
-# Archived/Deprecated models
-from .archive import AtomRefiner, HierarchicalDecoder, PairformerDecoder
+# These have problematic imports - load lazily only if needed
+AtomRefiner = None
+HierarchicalDecoder = None
+PairformerDecoder = None
 
 # These imports may fail if the refactor left broken internal references.
 # Wrap in try/except so the server can still start with af3_style.
@@ -100,10 +104,13 @@ from .archive.self_conditioning import (
 # Model registry - only include models that imported successfully
 _MODELS = {
     "attention_v2": AttentionDiffusionV2,
-    "hierarchical": HierarchicalDecoder,
-    "pairformer": PairformerDecoder,
     "af3_style": AF3StyleDecoder,
 }
+
+if HierarchicalDecoder is not None:
+    _MODELS["hierarchical"] = HierarchicalDecoder
+if PairformerDecoder is not None:
+    _MODELS["pairformer"] = PairformerDecoder
 
 if ResidueDenoiser is not None:
     _MODELS["resfold_stage1"] = ResidueDenoiser
