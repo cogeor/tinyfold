@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TinyFold Light Showcase</title>
+    <script src="https://3Dmol.org/build/3Dmol-min.js"></script>
+    <link rel="stylesheet" href="./css/style.css">
+</head>
+<body>
+    <div class="layout">
+        <aside class="sidebar">
+            <h1>TinyFold Light</h1>
+            <p class="subtitle">Latest model showcase</p>
+
+            <div class="filters">
+                <label for="split-filter">Split</label>
+                <select id="split-filter">
+                    <option value="all">All</option>
+                    <option value="train">Train</option>
+                    <option value="test">Test</option>
+                </select>
+            </div>
+
+            <div id="sample-list" class="sample-list"></div>
+            <div id="meta" class="meta"></div>
+        </aside>
+
+        <main class="viewer-area">
+            <div class="controls">
+                <label>Style</label>
+                <button data-style="cartoon" class="active">Cartoon</button>
+                <button data-style="stick">Stick</button>
+                <button data-style="sphere">Sphere</button>
+                <button data-style="line">Line</button>
+                <button id="btn-reset">Reset</button>
+            </div>
+            <div id="viewer" class="viewer"></div>
+            <div id="info" class="info">Select a sample</div>
+        </main>
+    </div>
+
+    <script src="./js/viewer.js"></script>
+    <script src="./js/app.js"></script>
+</body>
+</html>
+

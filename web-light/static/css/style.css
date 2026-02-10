@@ -1,0 +1,142 @@
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: "Segoe UI", Tahoma, sans-serif;
+    background: #f4f7fb;
+    color: #1a1e24;
+}
+
+.layout {
+    display: grid;
+    grid-template-columns: 300px 1fr;
+    min-height: 100vh;
+}
+
+.sidebar {
+    border-right: 1px solid #dde4ef;
+    background: #ffffff;
+    padding: 16px;
+    overflow: auto;
+}
+
+.sidebar h1 {
+    margin: 0;
+    font-size: 1.4rem;
+}
+
+.subtitle {
+    margin: 4px 0 16px;
+    color: #5a6475;
+    font-size: 0.9rem;
+}
+
+.filters {
+    margin-bottom: 12px;
+}
+
+.filters label {
+    display: block;
+    font-size: 0.85rem;
+    color: #5a6475;
+    margin-bottom: 4px;
+}
+
+.filters select {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #c6d2e1;
+    border-radius: 6px;
+}
+
+.sample-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.sample {
+    padding: 10px;
+    border: 1px solid #d6deea;
+    border-radius: 8px;
+    background: #fbfdff;
+    cursor: pointer;
+}
+
+.sample.selected {
+    border-color: #1f6feb;
+    background: #eaf2ff;
+}
+
+.sample .top {
+    font-size: 0.88rem;
+    font-weight: 600;
+}
+
+.sample .bottom {
+    margin-top: 4px;
+    font-size: 0.78rem;
+    color: #5a6475;
+}
+
+.meta {
+    margin-top: 12px;
+    font-size: 0.78rem;
+    color: #5a6475;
+}
+
+.viewer-area {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+.controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 12px 16px;
+    background: #ffffff;
+    border-bottom: 1px solid #dde4ef;
+}
+
+.controls button {
+    border: 1px solid #c6d2e1;
+    background: #ffffff;
+    border-radius: 6px;
+    padding: 6px 10px;
+    cursor: pointer;
+}
+
+.controls button.active {
+    border-color: #1f6feb;
+    background: #eaf2ff;
+}
+
+.viewer {
+    flex: 1;
+    min-height: 450px;
+}
+
+.info {
+    background: #ffffff;
+    border-top: 1px solid #dde4ef;
+    padding: 10px 16px;
+    font-size: 0.9rem;
+}
+
+@media (max-width: 900px) {
+    .layout {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
+    }
+
+    .sidebar {
+        border-right: none;
+        border-bottom: 1px solid #dde4ef;
+        max-height: 35vh;
+    }
+}
+
