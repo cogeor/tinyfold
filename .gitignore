@@ -81,3 +81,7 @@ CLAUDE.md
 
 doc/
 docs/
+
+# Delegate runtime files
+.delegate/
+notes/

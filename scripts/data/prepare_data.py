@@ -6,15 +6,15 @@ Downloads DIPS-Plus dataset, processes structures, and caches to Parquet.
 
 Usage:
     # Full pipeline
-    python scripts/prepare_data.py --output-dir data/processed
+    python scripts/data/prepare_data.py --output-dir data/processed
 
     # Individual steps
-    python scripts/prepare_data.py --output-dir data/processed --only download
-    python scripts/prepare_data.py --output-dir data/processed --only preprocess
-    python scripts/prepare_data.py --output-dir data/processed --only split
+    python scripts/data/prepare_data.py --output-dir data/processed --only download
+    python scripts/data/prepare_data.py --output-dir data/processed --only preprocess
+    python scripts/data/prepare_data.py --output-dir data/processed --only split
 
     # Use local PDB files instead of downloading
-    python scripts/prepare_data.py --output-dir data/processed --input-dir path/to/structures
+    python scripts/data/prepare_data.py --output-dir data/processed --input-dir path/to/structures
 """
 
 import argparse
@@ -30,7 +30,7 @@ import numpy as np
 from tqdm import tqdm
 
 # Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from tinyfold.constants import NUM_ATOM_TYPES
 from tinyfold.data.cache import (
