@@ -1,0 +1,19 @@
+n_train: 80
+n_test: 14
+n_eval_train: 50
+min_atoms: 200
+max_atoms: 600
+n_steps: 5000
+eval_every: 500
+batch_size: 8
+grad_accum: 4
+lr: 0.0001
+min_lr: 1.0e-06
+seed: 42
+rotation_augment: true
+geom_weight: 1.0
+dist_weight: 1.0
+centroid_weight: 0.0
+n_inference_iters: 10
+output_dir: outputs/iterfold
+

@@ -1,0 +1,24 @@
+n_train: 80
+n_test: 14
+n_eval_train: 200
+min_atoms: 200
+max_atoms: 400
+batch_size: 64
+n_steps: 10000
+eval_every: 1000
+lr: 0.001
+min_lr: 1.0e-05
+grad_accum: 1
+T: 50
+seed: 42
+mode: stage1_only
+continuous_sigma: false
+dist_weight: 0.1
+geom_weight: 0.1
+contact_weight: 0.0
+dynamic_batch: false
+use_bucketing: false
+n_buckets: 8
+max_tokens: 30000
+output_dir: outputs/resfold
+
