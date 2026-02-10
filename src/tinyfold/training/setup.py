@@ -56,7 +56,7 @@ def get_or_create_split(
         min_atoms=getattr(args, 'min_atoms', 0),
         max_atoms=getattr(args, 'max_atoms', 1000),
         select_smallest=getattr(args, 'select_smallest', False),
-        seed=42,
+        seed=getattr(args, 'seed', 42),
     )
     train_indices, test_indices = get_train_test_indices(table, split_config)
     split_info = get_split_info(table, split_config)
@@ -180,12 +180,13 @@ def create_train_sampler(args, samples: dict, logger) -> Optional[Any]:
         Sampler or None
     """
     if getattr(args, 'dynamic_batch', False):
+        seed = getattr(args, 'seed', 42)
         sampler = DynamicBatchSampler(
             samples,
             base_batch_size=args.batch_size,
             max_tokens=getattr(args, 'max_tokens', 4096),
             n_buckets=getattr(args, 'n_buckets', 4),
-            seed=42,
+            seed=seed,
         )
         logger.log(f"  Using dynamic batch sampler (max_tokens={args.max_tokens})")
         for info in sampler.get_batch_sizes():
@@ -193,10 +194,11 @@ def create_train_sampler(args, samples: dict, logger) -> Optional[Any]:
         return sampler
     
     if getattr(args, 'use_bucketing', False):
+        seed = getattr(args, 'seed', 42)
         sampler = LengthBucketSampler(
             samples,
             n_buckets=getattr(args, 'n_buckets', 4),
-            seed=42,
+            seed=seed,
         )
         logger.log(f"  Using length bucketing ({args.n_buckets} buckets)")
         return sampler

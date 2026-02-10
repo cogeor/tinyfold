@@ -28,6 +28,7 @@ import argparse
 import os
 import time
 from datetime import datetime
+import yaml
 
 # Shared utilities
 from script_utils import (
@@ -51,10 +52,15 @@ from tinyfold.training import (
 )
 
 # Model imports
-from models import create_schedule, create_noiser, kabsch_align_to_target, create_sampler
-from models.resfold_pipeline import ResFoldPipeline
-from models.dockq_utils import compute_dockq
-from models.training_utils import (
+from tinyfold.model.diffusion import (
+    create_schedule,
+    create_noiser,
+    kabsch_align_to_target,
+    create_sampler,
+)
+from tinyfold.model.resfold import ResFoldPipeline
+from tinyfold.model.metrics import compute_dockq
+from tinyfold.training.utils import (
     MultiCopyTrainer,
     VectorizedMultiCopyTrainer,
 )
@@ -318,6 +324,12 @@ def load_stage1_predictions(path):
 # =============================================================================
 
 def parse_args():
+    # Optional profile config loaded before full arg parse.
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--config", type=str, default=None,
+                            help="YAML config profile for default arguments")
+    pre_args, _ = pre_parser.parse_known_args()
+
     parser = argparse.ArgumentParser(description="ResFold training")
 
     # Training mode
@@ -445,10 +457,20 @@ def parse_args():
 
     # Output
     parser.add_argument("--output_dir", type=str, default="outputs/resfold")
+    parser.add_argument("--config", type=str, default=None,
+                        help="YAML config profile for default arguments")
 
     # Reproducibility
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducibility")
+
+    # Apply defaults from config profile, then parse final args.
+    if pre_args.config:
+        with open(pre_args.config, "r", encoding="utf-8") as f:
+            config_defaults = yaml.safe_load(f) or {}
+        valid_dests = {a.dest for a in parser._actions}
+        filtered = {k: v for k, v in config_defaults.items() if k in valid_dests}
+        parser.set_defaults(**filtered)
 
     return parser.parse_args()
 
@@ -603,25 +625,7 @@ def main():
         logger.log(f"  Injected Stage 1 predictions into samples")
 
     # Create sampler for efficient batching
-    train_sampler = None
-    if args.dynamic_batch:
-        train_sampler = DynamicBatchSampler(
-            train_samples,
-            base_batch_size=args.batch_size,
-            max_tokens=args.max_tokens,
-            n_buckets=args.n_buckets,
-            seed=42,
-        )
-        logger.log(f"  Using dynamic batch sampler (max_tokens={args.max_tokens})")
-        for info in train_sampler.get_batch_sizes():
-            logger.log(f"    Bucket {info['bucket']}: max_res={info['max_res']}, batch_size={info['batch_size']}")
-    elif args.use_bucketing:
-        train_sampler = LengthBucketSampler(
-            train_samples,
-            n_buckets=args.n_buckets,
-            seed=42,
-        )
-        logger.log(f"  Using length bucketing ({args.n_buckets} buckets)")
+    train_sampler = create_train_sampler(args, train_samples, logger)
 
     # Create model (use lightweight mode for stage1_only to save ~14M params)
     model = ResFoldPipeline(

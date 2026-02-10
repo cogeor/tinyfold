@@ -23,6 +23,7 @@ import random
 import time
 from datetime import datetime
 import argparse
+import yaml
 
 import numpy as np
 import torch
@@ -49,9 +50,9 @@ from tinyfold.training import (
 )
 
 # Model imports
-from models.iterfold import IterFold
-from models.dockq_utils import compute_dockq
-from models.clustering import select_next_residues_to_place
+from tinyfold.model.iterfold import IterFold
+from tinyfold.model.metrics import compute_dockq
+from tinyfold.model.resfold.clustering import select_next_residues_to_place
 
 # Loss imports
 from tinyfold.model.losses import (
@@ -61,7 +62,7 @@ from tinyfold.model.losses import (
 )
 from tinyfold.model.losses.geometry import GeometryLoss, pairwise_distance_loss
 
-from data_split import (
+from tinyfold.training.data_split import (
     DataSplitConfig, get_train_test_indices, get_split_info, save_split, load_split,
 )
 
@@ -553,6 +554,11 @@ def evaluate_final(
 # =============================================================================
 
 def parse_args():
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--config", type=str, default=None,
+                            help="YAML config profile for default arguments")
+    pre_args, _ = pre_parser.parse_known_args()
+
     parser = argparse.ArgumentParser(description="IterFold Training")
 
     # Data
@@ -611,10 +617,19 @@ def parse_args():
 
     # Output
     parser.add_argument("--output_dir", type=str, default="outputs/iterfold")
+    parser.add_argument("--config", type=str, default=None,
+                        help="YAML config profile for default arguments")
 
     # Reproducibility
     parser.add_argument("--seed", type=int, default=42,
                         help="Random seed for reproducibility")
+
+    if pre_args.config:
+        with open(pre_args.config, "r", encoding="utf-8") as f:
+            config_defaults = yaml.safe_load(f) or {}
+        valid_dests = {a.dest for a in parser._actions}
+        filtered = {k: v for k, v in config_defaults.items() if k in valid_dests}
+        parser.set_defaults(**filtered)
 
     return parser.parse_args()
 
@@ -692,7 +707,7 @@ def main():
             n_test=args.n_test,
             min_atoms=args.min_atoms,
             max_atoms=args.max_atoms,
-            seed=42,
+            seed=args.seed,
         )
         train_indices, test_indices = get_train_test_indices(table, split_config)
         split_info = get_split_info(table, split_config)

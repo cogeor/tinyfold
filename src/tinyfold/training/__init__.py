@@ -7,6 +7,7 @@ and augmentation utilities across all training scripts.
 from .logger import TrainingLogger
 from .run_naming import generate_run_name
 from .metrics import MetricTracker, LossComponents
+from .objective import LossRegistry, LossComposer, LossTerm
 from .checkpointing import save_checkpoint, load_checkpoint, CheckpointManager
 from .data import load_sample, collate_batch, load_sample_raw
 from .augmentation import (
@@ -27,6 +28,9 @@ __all__ = [
     "generate_run_name",
     "MetricTracker",
     "LossComponents",
+    "LossRegistry",
+    "LossComposer",
+    "LossTerm",
     # Checkpointing
     "save_checkpoint",
     "load_checkpoint",
