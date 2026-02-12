@@ -1,29 +1,48 @@
 """Model factory for TinyFold decoders and diffusion components.
 (Backward compatibility wrapper around tinyfold.model)
 
-Usage:
+DEPRECATED: This module is kept for backward compatibility only.
+New code should import directly from tinyfold.model instead:
+    from tinyfold.model import create_model, list_models
+    from tinyfold.model.archive import AF3StyleDecoder, AttentionDiffusionV2
+
+Usage (legacy):
     from models import create_model, list_models
     from models import create_schedule, create_noiser, list_schedules, list_noise_types
 """
 
 import warnings
 
-# Safe archive imports (only depend on torch, no tinyfold.model)
-from .archive.af3_style import AF3StyleDecoder
-from .archive.attention_v2 import AttentionDiffusionV2
-from .archive.self_conditioning import (
+# Import archive models from tinyfold.model.archive (new location)
+from tinyfold.model.archive import (
+    AF3StyleDecoder,
+    AttentionDiffusionV2,
+    HierarchicalDecoder,
+    PairformerDecoder,
+    AtomRefiner,
+    AtomRefinerContinuous,
+    MultiSampler,
+    aggregate_samples,
+    sample_centroids_multi,
+    IterativeAtomAssembler,
+    GeometricAtomDecoder,
+    GeometricAtomDecoderV2,
+    BaseDecoder,
+    sinusoidal_pos_enc,
     self_conditioning_training_step,
     sample_step_with_self_cond,
     create_self_cond_embedding,
 )
 
-# Model registry - start with safe models
+# Model registry - start with archive models
 _MODELS = {
     "attention_v2": AttentionDiffusionV2,
     "af3_style": AF3StyleDecoder,
+    "hierarchical": HierarchicalDecoder,
+    "pairformer": PairformerDecoder,
 }
 
-# Try to import tinyfold.model components - may fail if not installed properly
+# Import tinyfold.model components
 try:
     from tinyfold.model.losses import (
         GeometryLoss,
@@ -149,11 +168,6 @@ except ImportError as e:
     warnings.warn(f"Could not import iterfold models: {e}")
     IterFold = None
     AnchorDecoder = None
-
-# Deprecated archive models - not loaded by default
-AtomRefiner = None
-HierarchicalDecoder = None
-PairformerDecoder = None
 
 
 def list_models():

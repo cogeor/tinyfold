@@ -2,11 +2,18 @@
 
 This directory contains the core scripts for training, evaluation, and visualization.
 
+## Layout
+
+- `scripts/data/`: dataset preparation
+- `scripts/train/`: training entrypoints (future migration)
+- `scripts/web/`: web/web-light data prep
+- `scripts/dev/`: one-off diagnostics and local tooling
+
 ## Data Pipeline
 
 | Script | Description |
 |--------|-------------|
-| `prepare_data.py` | Download DIPS-Plus dataset, process, and cache to Parquet |
+| `data/prepare_data.py` | Download DIPS-Plus dataset, process, and cache to Parquet |
 | `data_split.py` | Utility module for deterministic train/test splits |
 
 ## Training
