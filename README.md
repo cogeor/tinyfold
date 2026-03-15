@@ -65,9 +65,9 @@ One-shot prediction of 4 backbone atoms per residue:
 - **LocalAtomAttention**: Attention within each residue's 4 atoms predicts offsets from centroid
 - **Output**: Backbone atom positions [L, 4, 3] (N, CA, C, O)
 
-### Auxiliary Losses
+### Auxiliary Losses (Stage 2)
 
-Beyond the primary MSE loss on coordinates, we use geometry-based auxiliary losses to enforce chemically valid structures in the second phase of the prediction:
+Beyond the primary MSE loss on coordinates, Stage 2 (atom refinement) uses geometry-based auxiliary losses to enforce chemically valid backbone structures. These losses operate on the predicted [L, 4, 3] atom coordinates and are not applied during Stage 1 (residue diffusion), which uses only MSE + distance consistency.
 
 #### Bond Length Loss
 Penalizes deviations from ideal backbone bond lengths:
@@ -97,11 +97,13 @@ $$\mathcal{L}_\text{O-chiral} = \text{ReLU}\left( \text{sign}(\vec{n} \cdot \vec
 
 where $\vec{n} = (\text{C}-\text{CA}) \times (\text{N}_\text{next}-\text{C})$ is the peptide plane normal.
 
-**Virtual Cβ Chirality** (optional): Even without side chains, we can enforce L-amino acid handedness by computing a virtual Cβ position and checking its improper dihedral:
+**Virtual Cβ Chirality** (experimental, currently disabled): Even without side chains, L-amino acid handedness can be enforced by computing a virtual Cβ position and checking its improper dihedral:
 
 $$\chi_\text{improper} = \text{dihedral}(\text{N}, \text{CA}, \text{C}, \text{CB}_\text{virtual}) \approx -34°$$
 
-#### Distance Consistency Loss
+This loss is implemented but has not been enabled in any training run (weight=0.0).
+
+#### Distance Consistency Loss (Both Stages)
 Preserves pairwise Cα distances between the prediction and ground truth for contact residues (within 10Å):
 
 $$\mathcal{L}_\text{dist} = \frac{1}{|C|} \sum_{(i,j) \in C} \left( d_{ij}^\text{pred} - d_{ij}^\text{GT} \right)^2$$
@@ -114,7 +116,7 @@ where $C$ is the set of contact pairs. Inter-chain contacts are weighted 2× hig
 |--------|----------|------------|---------|
 | Diffusion target | L residue centroids | All atoms | All atoms |
 | Pair features | Implicit in attention | Explicit Pairformer | Explicit Pairformer |
-| Per-step alignment | No | No | Kabsch |
+| Per-step alignment | Kabsch (optional) | No | Kabsch |
 | Model size | 28M params | 600M+ params | 700M+ params |
 | Training hardware | Single GPU | TPU pod | Multi-GPU cluster |
 
@@ -156,7 +158,12 @@ python scripts/predict.py \
 
 ### Web Frontend
 
-Launch the interactive visualization frontend:
+Two frontend entrypoints:
+
+- `web/`: model evaluation UI (browse samples, run/load predictions)
+- `web-light/`: static lightweight showcase (few train/test GT vs prediction examples)
+
+Launch the model evaluation frontend:
 
 ```bash
 cd web
@@ -164,10 +171,17 @@ cd web
 # Open http://127.0.0.1:5001
 ```
 
+Launch the lightweight showcase (stdlib server, runnable right after clone):
+
+```bash
+cd web-light
+python server.py --port 5002
+# Open http://127.0.0.1:5002
+```
+
 See [doc/frontend.md](doc/frontend.md) for detailed documentation including:
 - Generating cached predictions
-- Light mode for embedding
-- JavaScript API for integration
+- Regenerating `web-light` showcase data from `assets/`
 
 ## Dataset
 
@@ -177,14 +191,13 @@ I currently only use the **DIPS-Plus** dataset:
 
 Download and preprocess:
 ```bash
-python scripts/prepare_data.py --output-dir data/processed
+python scripts/data/prepare_data.py --output-dir data/processed
 ```
 
-## In the works
+## Roadmap
 
-- [ ] Boltz-2 style per-step Kabsch alignment
-- [ ] Energy-based auxiliary losses
-- [ ] Proper benchmarking (DockQ, lDDT)
-- [ ] Extension to small molecules/DNA/other macromolecules
-- [ ] Web frontend for visualization
-
+- [x] Boltz-2 style per-step Kabsch alignment (available in all samplers)
+- [x] Proper benchmarking (DockQ, lDDT, interface metrics)
+- [x] Web frontend for visualization (`web/` and `web-light/`)
+- [ ] Energy-based auxiliary losses (Lennard-Jones, electrostatics)
+- [ ] Extension to small molecules / DNA / other macromolecules
