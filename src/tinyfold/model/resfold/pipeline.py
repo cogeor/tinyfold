@@ -46,7 +46,7 @@ class ResFoldPipeline(nn.Module):
         # Only create Stage 2 if needed (saves ~14M params for stage1_only training)
         self.stage2 = None
         if not stage1_only:
-            from .atomrefine_v2 import AtomRefinerV2
+            from .refiner import AtomRefinerV2
             self.stage2 = AtomRefinerV2(
                 c_token=c_token_s2,
                 n_layers=s2_layers,
