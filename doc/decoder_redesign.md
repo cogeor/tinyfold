@@ -1,3 +1,5 @@
+> ⚠️ STALE — see `notes/NEXT_STEPS.md` for the current plan; this doc will be rewritten in Phase E.
+
 # Decoder Redesign Plan
 
 ## Overview
