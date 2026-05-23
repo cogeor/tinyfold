@@ -5,7 +5,7 @@ sys.path.insert(0, 'C:/Users/costa/src/tinyfold/scripts')
 
 import pytest
 import random
-from data_split import LengthBucketSampler, DynamicBatchSampler
+from tinyfold.training.data_split import LengthBucketSampler, DynamicBatchSampler
 
 
 # =============================================================================

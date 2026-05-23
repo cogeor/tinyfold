@@ -452,6 +452,9 @@ class TestDiffusionSchedule:
             var = x_t.var()
             assert 0.5 < var < 2.0, f"Unexpected variance at t={t}: {var}"
 
+    # TODO(phase-0): DiffusionSchedule.predict_x0 signature changed post-refactor
+    # (now returns or expects None where this test passes a Tensor). Out of scope
+    # for Phase 0 (import-only); rewrite when the new schedule API is finalized.
     def test_predict_x0_roundtrip(self):
         """Test that predict_x0 inverts q_sample given true noise."""
         schedule = DiffusionSchedule(T=16)
@@ -472,6 +475,11 @@ class TestDiffusionSchedule:
 # ============================================================================
 
 
+# TODO(phase-0): PPIModel.forward / .sample API changed post-refactor —
+# `sample_batch` fixture no longer supplies `mask`, so `x0_hat * mask` blows up;
+# `model.sample()` instantiates DeterministicDDIMSampler with the old
+# (schedule, eta=...) positional API. Out of scope for Phase 0 (import-only);
+# update the fixture + sampler call sites together in a later phase.
 class TestPPIModel:
     """Integration tests for full PPIModel."""
 

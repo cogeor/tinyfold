@@ -54,10 +54,9 @@ from tinyfold.training import (
 )
 
 # Model imports
-from models.resfold import ResidueDenoiser
-from models.resfold_assembler import ResFoldAssembler
-from models.diffusion import VENoiser, create_schedule
-from models.samplers import create_sampler
+from tinyfold.model.resfold.denoiser import ResidueDenoiser
+from tinyfold.model.resfold.assembler import ResFoldAssembler
+from tinyfold.model.diffusion import VENoiser, create_schedule, create_sampler
 
 # Loss imports
 from tinyfold.model.losses import (
@@ -68,10 +67,10 @@ from tinyfold.model.losses import (
     GeometryLoss,
 )
 
-from data_split import (
+from tinyfold.data.split import (
     DataSplitConfig, get_train_test_indices, get_split_info, save_split, load_split,
 )
-from models.dockq_utils import compute_dockq
+from tinyfold.model.metrics.dockq import compute_dockq
 
 
 # =============================================================================

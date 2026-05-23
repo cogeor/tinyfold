@@ -6,7 +6,7 @@ sys.path.insert(0, 'C:/Users/costa/src/tinyfold/scripts')
 import pytest
 import torch
 
-from models.geometry_losses import (
+from tinyfold.model.losses.contact import (
     compute_contact_mask,
     contact_loss_centroids,
     contact_loss_atoms,

@@ -12,7 +12,7 @@ import numpy as np
 from tinyfold.model.config import ModelConfig
 from tinyfold.model.ppi_model import PPIModel
 from tinyfold.model.diffusion.schedule import DiffusionSchedule
-from tinyfold.model.diffusion.sampler import DeterministicDeterministicDDIMSampler
+from tinyfold.model.diffusion.sampler import DeterministicDDIMSampler
 from tinyfold.model.denoiser.edges import build_knn_edges, merge_edges, build_edge_attr
 from tinyfold.model.pairformer.attn_pair_bias import AttentionPairBias
 from tinyfold.data.collate import collate_ppi
@@ -111,6 +111,11 @@ def synthetic_sample():
 # ============================================================================
 
 
+# TODO(phase-0): DeterministicDDIMSampler API changed post-refactor (constructor
+# now takes (eta, **kwargs) and .sample() expects (model, shape, model_kwargs,
+# noiser, device, ...) — these tests still call the old (schedule, eta) API and
+# old .sample(denoise_fn, shape, device) signature. Out of scope for Phase 0
+# (import-only); rewrite tests against the new sampler API in a later phase.
 class TestDeterministicDDIMSampler:
     """Tests for DDIM sampling that verify actual denoising."""
 
@@ -376,6 +381,10 @@ class TestEdgeCases:
         assert not torch.isnan(output).any(), \
             "Fully masked attention should not produce NaN"
 
+    # TODO(phase-0): DiffusionSchedule.predict_x0 / q_sample API changed
+    # post-refactor (now returns or expects different signatures involving None).
+    # Out of scope for Phase 0 (import-only); fix alongside the PPIModel API
+    # rewrite in a later phase.
     def test_diffusion_at_t_zero(self):
         """Diffusion operations at t=0 should be numerically stable."""
         schedule = DiffusionSchedule(T=16)
@@ -411,6 +420,11 @@ class TestEdgeCases:
 # ============================================================================
 
 
+# TODO(phase-0): PPIModel.forward / .sample API changed post-refactor — both
+# tests below now hit `x0_hat * mask` where mask is None, and the sampler
+# constructor mismatch (see TestDeterministicDDIMSampler note above). Out of
+# scope for Phase 0 (import-only); rewrite when the new PPIModel + sampler
+# contract is finalized.
 class TestFullPipeline:
     """End-to-end tests of the complete model pipeline."""
 

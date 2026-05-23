@@ -220,6 +220,10 @@ class TestGeometryLossIntegration:
         assert 'total' in losses_with
         assert 'total' in losses_without
 
+    # TODO(phase-0): Flaky / numerical — random offsets occasionally yield total
+    # loss within ~0.01 of GT (e.g. 0.85 vs 0.86). Not an import issue; needs
+    # either a seed, a margin, or a re-think of the assertion. Out of scope for
+    # Phase 0 (import-only).
     def test_random_vs_gt_comparison(self, backbone_coords):
         """Random coords should have higher geometry loss than GT."""
         geom_loss = GeometryLoss(
