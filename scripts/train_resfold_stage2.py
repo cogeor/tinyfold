@@ -715,6 +715,7 @@ def main():
                 config_path=getattr(args, "config", None),
                 final_metric=final_metric,
                 outcome=outcome,
+                output_dir=getattr(args, "output_dir", None),
             )
             print(f"[registry] appended row to {registry_path}")
         except Exception as reg_err:

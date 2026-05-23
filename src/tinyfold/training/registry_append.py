@@ -23,6 +23,7 @@ def append_registry_row(
     final_metric: Optional[float],
     outcome: str,
     registry_path: Optional[Path] = None,
+    output_dir: Optional[str] = None,
 ) -> Path:
     """Append one row to ``experiments/REGISTRY.md`` and return the resolved path.
 
@@ -69,7 +70,14 @@ def append_registry_row(
         outcome_cell = f"test RMSE {final_metric:.4f} A — {outcome_clean}"
     else:
         outcome_cell = outcome_clean
-    files_cell = f"[outputs/{run_str}/](../outputs/{run_str}/)"
+    if output_dir is not None:
+        rel = Path(output_dir).as_posix().lstrip("./")
+        if rel.startswith("outputs/"):
+            files_cell = f"[{rel}/](../{rel}/)"
+        else:
+            files_cell = f"[{rel}/]({rel}/)"
+    else:
+        files_cell = f"[outputs/{run_str}/](../outputs/{run_str}/)"
 
     row = (
         f"| {date_str} | {run_str} | {model_str} | {what_tried} "
