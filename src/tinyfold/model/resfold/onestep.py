@@ -168,12 +168,29 @@ class ResFoldOneStep(BaseDecoder):
             dropout=dropout,
         )
 
-    def _embed_sigma(self, sigma: Tensor) -> Tensor:
-        """AF3-style continuous-sigma embedding via sinusoidal Fourier features."""
-        c_noise = torch.log(sigma / self.sigma_data + 1e-8) / 4.0
+    def _edm_coefficients(self, sigma: Tensor):
+        """Karras (EDM) preconditioning coefficients.
+
+        Returns c_skip, c_out, c_in, c_noise — each shaped [B, 1, 1] so they
+        broadcast over (L, 3). c_noise is shaped [B] (input to embedder).
+
+        At sigma -> 0:  c_skip -> 1, c_out -> 0  (output = x_t + tiny)
+        At sigma -> inf: c_skip -> 0, c_out -> sigma_data (output dominated by F)
+        """
+        sd = self.sigma_data
+        s2 = sigma * sigma
+        denom = s2 + sd * sd
+        c_skip = (sd * sd / denom).view(-1, 1, 1)
+        c_out = (sigma * sd / torch.sqrt(denom)).view(-1, 1, 1)
+        c_in = (1.0 / torch.sqrt(denom)).view(-1, 1, 1)
+        c_noise = 0.25 * torch.log(sigma + 1e-8)  # [B]
+        return c_skip, c_out, c_in, c_noise
+
+    def _embed_c_noise(self, c_noise: Tensor) -> Tensor:
+        """Sinusoidal Fourier embedding of EDM's c_noise = 0.25 * log(sigma)."""
         half_dim = self.c_token // 2
         emb_scale = math.log(10000) / (half_dim - 1)
-        emb = torch.exp(torch.arange(half_dim, device=sigma.device) * -emb_scale)
+        emb = torch.exp(torch.arange(half_dim, device=c_noise.device) * -emb_scale)
         emb = c_noise.unsqueeze(-1) * emb.unsqueeze(0)
         emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
         return self.sigma_embed(emb)
@@ -194,13 +211,24 @@ class ResFoldOneStep(BaseDecoder):
         cond_per_token = cond.unsqueeze(1).expand(-1, L, -1)
         return self.diff_transformer(tokens, cond_per_token, mask)
 
-    def _heads(
-        self, denoiser_tokens: Tensor, mask: Optional[Tensor]
+    def _heads_edm(
+        self,
+        denoiser_tokens: Tensor,
+        x_t: Tensor,
+        c_skip: Tensor,
+        c_out: Tensor,
+        mask: Optional[Tensor],
     ) -> Tuple[Tensor, Tensor]:
-        """Compute centroid + atom predictions from shared denoiser tokens."""
-        centroid_pred = self.centroid_proj(denoiser_tokens)  # [B, L, 3]
-        atom_offsets = self.atom_head(denoiser_tokens, mask)  # [B, L, 4, 3]
-        atoms_pred = centroid_pred.unsqueeze(2) + atom_offsets  # [B, L, 4, 3]
+        """EDM-blended centroid + atom predictions from shared denoiser tokens.
+
+        F_centroid is the raw projection; the EDM blend gives the final centroid.
+        Atom offsets are emitted in the centroid's frame (atoms = centroid + offset),
+        so the atom head does NOT itself need EDM blending — its output is a delta.
+        """
+        F_centroid = self.centroid_proj(denoiser_tokens)              # [B, L, 3]
+        centroid_pred = c_skip * x_t + c_out * F_centroid             # [B, L, 3]
+        atom_offsets = self.atom_head(denoiser_tokens, mask)          # [B, L, 4, 3]
+        atoms_pred = centroid_pred.unsqueeze(2) + atom_offsets        # [B, L, 4, 3]
         return centroid_pred, atoms_pred
 
     def forward_sigma(
@@ -213,14 +241,15 @@ class ResFoldOneStep(BaseDecoder):
         mask: Optional[Tensor] = None,
         x0_prev: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
-        """Continuous-sigma forward pass. Returns (centroid_pred, atoms_pred)."""
+        """Continuous-sigma forward (EDM-preconditioned). Returns (centroid_pred, atoms_pred)."""
         B, L, _ = x_t.shape
         if mask is None:
             mask = torch.ones(B, L, dtype=torch.bool, device=x_t.device)
+        c_skip, c_out, c_in, c_noise = self._edm_coefficients(sigma)
         trunk_tokens = self.trunk(aa_seq, chain_ids, res_idx, mask)
-        cond = self._embed_sigma(sigma)
-        denoiser_tokens = self._denoiser_tokens(x_t, trunk_tokens, cond, mask, x0_prev)
-        return self._heads(denoiser_tokens, mask)
+        cond = self._embed_c_noise(c_noise)
+        denoiser_tokens = self._denoiser_tokens(c_in * x_t, trunk_tokens, cond, mask, x0_prev)
+        return self._heads_edm(denoiser_tokens, x_t, c_skip, c_out, mask)
 
     def forward_sigma_with_trunk(
         self,
@@ -230,13 +259,14 @@ class ResFoldOneStep(BaseDecoder):
         mask: Optional[Tensor] = None,
         x0_prev: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
-        """Continuous-sigma forward with precomputed trunk tokens."""
+        """Continuous-sigma forward with precomputed trunk tokens (EDM-preconditioned)."""
         B, L, _ = x_t.shape
         if mask is None:
             mask = torch.ones(B, L, dtype=torch.bool, device=x_t.device)
-        cond = self._embed_sigma(sigma)
-        denoiser_tokens = self._denoiser_tokens(x_t, trunk_tokens, cond, mask, x0_prev)
-        return self._heads(denoiser_tokens, mask)
+        c_skip, c_out, c_in, c_noise = self._edm_coefficients(sigma)
+        cond = self._embed_c_noise(c_noise)
+        denoiser_tokens = self._denoiser_tokens(c_in * x_t, trunk_tokens, cond, mask, x0_prev)
+        return self._heads_edm(denoiser_tokens, x_t, c_skip, c_out, mask)
 
     def forward(
         self,
@@ -247,14 +277,22 @@ class ResFoldOneStep(BaseDecoder):
         t: Tensor,
         mask: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
-        """Discrete-timestep forward (for backwards compatibility)."""
+        """Discrete-timestep forward (legacy path).
+
+        No EDM here — the discrete timestep -> sigma mapping is not defined in this
+        model. Caller should prefer `forward_sigma` for new code. Output is the
+        raw projection (centroid_pred = F_centroid); atoms = centroid + offsets.
+        """
         B, L, _ = x_t.shape
         if mask is None:
             mask = torch.ones(B, L, dtype=torch.bool, device=x_t.device)
         trunk_tokens = self.trunk(aa_seq, chain_ids, res_idx, mask)
         cond = self.time_embed(t)
         denoiser_tokens = self._denoiser_tokens(x_t, trunk_tokens, cond, mask, None)
-        return self._heads(denoiser_tokens, mask)
+        F_centroid = self.centroid_proj(denoiser_tokens)
+        atom_offsets = self.atom_head(denoiser_tokens, mask)
+        atoms_pred = F_centroid.unsqueeze(2) + atom_offsets
+        return F_centroid, atoms_pred
 
     def get_trunk_tokens(
         self,

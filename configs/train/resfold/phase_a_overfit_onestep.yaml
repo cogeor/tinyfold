@@ -43,6 +43,14 @@ atom_head_heads: 4
 T: 50
 continuous_sigma: true
 
+# --- Eval sampler ---
+# Phase A is an overfit test; the multi-step Euler sampler accumulates drift
+# even when the model is essentially perfect at every individual sigma. One-shot
+# inference at sigma_max recovers the memorized structure directly. For larger
+# training sets (Phase B/C) this flag should usually be off so the full
+# diffusion trajectory is exercised.
+one_shot_sample: true
+
 # --- Augmentation OFF for clean overfit signal ---
 augment_rotation: false
 multi_copy: 0

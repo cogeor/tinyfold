@@ -150,6 +150,38 @@ def sample_centroids(model, batch, noiser, device, clamp_val=3.0,
 
 
 @torch.no_grad()
+def sample_centroids_one_shot(model, batch, noiser, device, is_onestep=False,
+                              sigma_init=None):
+    """Single-forward inference for EDM-preconditioned models.
+
+    At high sigma the EDM model's output is dominated by F (the learned prior).
+    With sigma_data=1 and a well-trained model, one forward at sigma~=sigma_max
+    on pure-noise input recovers the structure directly. This avoids the
+    multi-step trajectory drift that plagues Euler on overfit models, and is
+    appropriate when the science target is "sequence -> structure" (the model
+    learns a regression conditional on noise level).
+
+    For ResFoldOneStep, also returns the atom-head output from the same forward.
+    """
+    B, L = batch['aa_seq'].shape
+    mask = batch['mask_res']
+    sigmas = noiser.sigmas.to(device)
+    if sigma_init is None:
+        sigma_init = sigmas[0]
+    sigma_init = torch.as_tensor(sigma_init, device=device).view(1).expand(B)
+    x = sigma_init.view(B, 1, 1) * torch.randn(B, L, 3, device=device)
+    denoiser = model if is_onestep else model.stage1
+    out = denoiser.forward_sigma(
+        x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
+        sigma_init, mask, x0_prev=None,
+    )
+    if is_onestep:
+        centroid_pred, atoms_pred = out
+        return centroid_pred, atoms_pred
+    return out
+
+
+@torch.no_grad()
 def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
                         align_per_step=True, recenter=True, self_cond=True,
                         is_onestep=False):
@@ -476,6 +508,8 @@ def parse_args():
     parser.add_argument("--sampler", type=str, default=None,
                         choices=["ddpm", "ddpm_kabsch", "ddpm_kabsch_recenter", "heun", "ddim", "edm"],
                         help="Sampler for evaluation (default: use --align_per_step/--recenter flags)")
+    parser.add_argument("--one_shot_sample", action="store_true",
+                        help="Eval with single-forward EDM inference instead of multi-step VE sampling. Useful for overfit checks where the multi-step trajectory accumulates drift but a high-sigma one-shot recovers the memorized structure.")
     parser.add_argument("--align_per_step", action="store_true",
                         help="Kabsch-align x0_pred to x_t each step (fixes drift, Boltz-1 style)")
     parser.add_argument("--recenter", action="store_true",
@@ -1178,13 +1212,17 @@ def _run_training(args, progress):
                     if args.mode == "stage1_only":
                         # For Stage 1: evaluate centroid RMSE via diffusion sampling
                         if args.continuous_sigma:
-                            # Use VE sampling for continuous sigma models
-                            sample_out = sample_centroids_ve(
-                                model, batch, noiser, device,
-                                align_per_step=args.align_per_step,
-                                recenter=args.recenter,
-                                is_onestep=is_onestep,
-                            )
+                            if args.one_shot_sample:
+                                sample_out = sample_centroids_one_shot(
+                                    model, batch, noiser, device, is_onestep=is_onestep,
+                                )
+                            else:
+                                sample_out = sample_centroids_ve(
+                                    model, batch, noiser, device,
+                                    align_per_step=args.align_per_step,
+                                    recenter=args.recenter,
+                                    is_onestep=is_onestep,
+                                )
                             centroids_pred = sample_out[0] if is_onestep else sample_out
                         elif eval_sampler is not None:
                             centroids_pred = sample_centroids_with_sampler(model, batch, noiser, device, eval_sampler)
@@ -1226,13 +1264,17 @@ def _run_training(args, progress):
                     if args.mode == "stage1_only":
                         atoms_pred_onestep = None
                         if args.continuous_sigma:
-                            # Use VE sampling for continuous sigma models
-                            sample_out = sample_centroids_ve(
-                                model, batch, noiser, device,
-                                align_per_step=args.align_per_step,
-                                recenter=args.recenter,
-                                is_onestep=is_onestep,
-                            )
+                            if args.one_shot_sample:
+                                sample_out = sample_centroids_one_shot(
+                                    model, batch, noiser, device, is_onestep=is_onestep,
+                                )
+                            else:
+                                sample_out = sample_centroids_ve(
+                                    model, batch, noiser, device,
+                                    align_per_step=args.align_per_step,
+                                    recenter=args.recenter,
+                                    is_onestep=is_onestep,
+                                )
                             if is_onestep:
                                 centroids_pred, atoms_pred_onestep = sample_out
                             else:
@@ -1343,12 +1385,17 @@ def _run_training(args, progress):
                 if args.mode == "stage1_only":
                     # Plot centroids for Stage 1
                     if args.continuous_sigma:
-                        sample_out = sample_centroids_ve(
-                            model, batch, noiser, device,
-                            align_per_step=args.align_per_step,
-                            recenter=args.recenter,
-                            is_onestep=is_onestep,
-                        )
+                        if args.one_shot_sample:
+                            sample_out = sample_centroids_one_shot(
+                                model, batch, noiser, device, is_onestep=is_onestep,
+                            )
+                        else:
+                            sample_out = sample_centroids_ve(
+                                model, batch, noiser, device,
+                                align_per_step=args.align_per_step,
+                                recenter=args.recenter,
+                                is_onestep=is_onestep,
+                            )
                         centroids_pred = sample_out[0] if is_onestep else sample_out
                     elif eval_sampler is not None:
                         centroids_pred = sample_centroids_with_sampler(model, batch, noiser, device, eval_sampler)
@@ -1407,6 +1454,18 @@ def _run_training(args, progress):
                     }, os.path.join(args.output_dir, 'best_model.pt'))
                     logger.log(f"         >>> New best test RMSE! Saved.")
 
+                # Always save best-on-train (useful for N=1 overfit runs where test
+                # is noise and best_model.pt freezes early).
+                if not hasattr(_run_training, "_best_train") or train_avg < _run_training._best_train:
+                    _run_training._best_train = train_avg
+                    torch.save({
+                        'step': step,
+                        'model_state_dict': model.state_dict(),
+                        'train_rmse': train_avg,
+                        'test_rmse': test_avg,
+                        'args': vars(args),
+                    }, os.path.join(args.output_dir, 'best_train_model.pt'))
+
             model.train()
 
     # Final summary
@@ -1416,6 +1475,16 @@ def _run_training(args, progress):
     logger.log(f"  Total time: {total_time:.0f}s ({total_time/60:.1f} min)")
     logger.log(f"  Best test RMSE: {best_rmse:.4f} A")
     logger.log("")
+    # Save final-step checkpoint regardless of eval outcomes. This is the source of
+    # truth for "what the model looks like at the end of training" — useful when
+    # the eval-tracked best is set early (e.g., N=1 overfit) and then never moves.
+    torch.save({
+        'step': step,
+        'model_state_dict': model.state_dict(),
+        'train_rmse': progress.get("best_rmse", float('inf')),
+        'args': vars(args),
+    }, os.path.join(args.output_dir, 'final_model.pt'))
+    logger.log(f"Saved final-step checkpoint: {os.path.join(args.output_dir, 'final_model.pt')}")
     logger.log(f"Finished: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.close()
 
