@@ -1,0 +1,66 @@
+======================================================================
+IterFold Training (Anchor-Conditioned Structure Prediction)
+======================================================================
+Started: 2026-01-29 22:05:25
+Command: python scripts/train_iterfold.py --n_train 20 --n_test 5 --n_steps 1000 --eval_every 200 --batch_size 8 --use_geometric_decoder --output_dir outputs/iterfold_fix_test
+
+Configuration:
+  c_token:          256
+  trunk_layers:     9
+  decoder_layers:   12
+  n_atom_layers:    8
+  batch_size:       8
+  grad_accum:       4
+  eff_batch:        32
+  n_steps:          1000
+  lr:               0.0001
+
+Masking:
+  mask_ratio:       [0.5, 1.0] (uniform sampling)
+
+Auxiliary losses:
+  geom_weight:      1.0
+  dist_weight:      1.0
+
+Augmentation:
+  rotation_augment: True
+
+Device: cuda
+  GPU: NVIDIA GeForce RTX 4070 Ti SUPER
+
+Data: 20 train, 5 test
+Preloading samples...
+  Loaded 25 samples
+
+Model: IterFold
+  Total params:   9,693,583
+  Trunk params:   7,261,568 (74.9%)
+  Decoder params: 2,432,015 (25.1%)
+
+Optimizer: AdamW, 9,693,583 trainable params
+Geometry loss: GeometryLoss(active=['bond_length', 'bond_angle', 'omega', 'o_chirality'])
+Training for 1000 steps...
+======================================================================
+Step   100 | loss: 5.6076 | mse: 3.3250 | dist: 1.7170 | geom: 0.7343 | m%: 0.93 | lr: 9.76e-05 | 42s
+Step   200 | loss: 5.3080 | mse: 3.5800 | dist: 1.2737 | geom: 0.7336 | m%: 0.62 | lr: 9.05e-05 | 84s
+         >>> Train (20): RMSE=16.56Å
+         >>> Test (5):  RMSE=14.02Å | DockQ=0.309
+         >>> Saved plot: outputs/iterfold_fix_test\plots\step_000200.png
+         >>> New best! Saved., DockQ=0.309
+Step   300 | loss: 5.1949 | mse: 3.6607 | dist: 1.0173 | geom: 0.6547 | m%: 1.00 | lr: 7.96e-05 | 126s
+Step   400 | loss: 5.3290 | mse: 3.2081 | dist: 1.0291 | geom: 0.7064 | m%: 0.66 | lr: 6.58e-05 | 167s
+         >>> Train (20): RMSE=15.58Å
+         >>> Test (5):  RMSE=13.98Å | DockQ=0.301
+         >>> Saved plot: outputs/iterfold_fix_test\plots\step_000400.png
+         >>> New best! Saved., DockQ=0.301
+Step   500 | loss: 5.0029 | mse: 3.1469 | dist: 1.1145 | geom: 0.6928 | m%: 0.72 | lr: 5.05e-05 | 209s
+Step   600 | loss: 4.5051 | mse: 2.5714 | dist: 0.9720 | geom: 0.6099 | m%: 0.78 | lr: 3.52e-05 | 250s
+         >>> Train (20): RMSE=13.82Å
+         >>> Test (5):  RMSE=13.35Å | DockQ=0.298
+         >>> Saved plot: outputs/iterfold_fix_test\plots\step_000600.png
+         >>> New best! Saved., DockQ=0.298
+Step   700 | loss: 3.0740 | mse: 2.1625 | dist: 0.8676 | geom: 0.4766 | m%: 0.74 | lr: 2.14e-05 | 292s
+Step   800 | loss: 2.8418 | mse: 1.6075 | dist: 0.7943 | geom: 0.3738 | m%: 0.84 | lr: 1.05e-05 | 334s
+         >>> Train (20): RMSE=13.54Å
+         >>> Test (5):  RMSE=13.73Å | DockQ=0.195
+         >>> Saved plot: outputs/iterfold_fix_test\plots\step_000800.png

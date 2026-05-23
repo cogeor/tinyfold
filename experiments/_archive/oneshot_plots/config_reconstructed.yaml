@@ -1,0 +1,4 @@
+# Stub config for oneshot_plots: no train.log and no checkpoint
+run_name: oneshot_plots
+model: visualization_only
+note: 'no train.log; visualization run producing PDB/PNG only'

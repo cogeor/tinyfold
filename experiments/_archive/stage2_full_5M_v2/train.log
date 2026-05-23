@@ -1,0 +1,41 @@
+======================================================================
+ResFold Stage 2 Training (Atom Assembly)
+======================================================================
+Started: 2026-01-28 01:08:47
+Command: python scripts/train_resfold_stage2.py --checkpoint outputs/stage1_50k_small/best_model.pt --trunk_layers 9 --denoiser_blocks 7 --load_split outputs/stage1_50k_small/split.json --n_steps 50000 --eval_every 2000 --batch_size 16 --lr 1e-4 --freeze_stage1 --output_dir outputs/stage2_full_5M_v2 --assembler_layers 5
+
+Configuration:
+  checkpoint:       outputs/stage1_50k_small/best_model.pt
+  freeze_stage1:    True
+  assembler_layers: 5
+  n_samples:        5
+  batch_size:       16
+  grad_accum:       4
+  eff_batch:        64
+  n_steps:          50000
+  lr:               0.0001
+
+Loss weights:
+  s1_weight:        1.0 (ignored - frozen)
+  s2_weight:        1.0
+  dist_weight:      0.1
+  geom_weight:      0.1
+
+Device: cuda
+  GPU: NVIDIA GeForce RTX 4070 Ti SUPER
+
+Loading split from: outputs/stage1_50k_small/split.json
+Data: 8600 train, 100 test
+Preloading samples...
+  Loaded 8700 samples
+
+Loading trunk model from: outputs/stage1_50k_small/best_model.pt
+  Trunk params: 13,855,107 (frozen)
+  Assembler params: 5,469,329 (trainable)
+
+Diffusion: n_steps=50, sigma=[0.002, 10.0]
+Geometry loss: bond=1.0, angle=0.5, omega=0.5, chirality=0.5
+
+Optimizer: AdamW, 5,469,329 trainable params
+Training for 50000 steps...
+======================================================================

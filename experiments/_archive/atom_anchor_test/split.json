@@ -1,0 +1,42 @@
+{
+  "train_indices": [
+    6532,
+    23035,
+    22688,
+    23794,
+    14539
+  ],
+  "test_indices": [
+    1433,
+    20107
+  ],
+  "train_ids": [
+    "2bym.pdb1_0",
+    "4pzo.pdb1_3",
+    "4ota.pdb3_0",
+    "4qvd.pdb1_4",
+    "3ld0.pdb3_8"
+  ],
+  "test_ids": [
+    "1guo.pdb1_0",
+    "4ezf.pdb1_0"
+  ],
+  "n_train": 5,
+  "n_test": 2,
+  "train_atom_range": [
+    420,
+    592
+  ],
+  "test_atom_range": [
+    536,
+    568
+  ],
+  "config": {
+    "n_train": 5,
+    "n_test": 2,
+    "min_atoms": 200,
+    "max_atoms": 600,
+    "select_smallest": false,
+    "seed": 42
+  }
+}

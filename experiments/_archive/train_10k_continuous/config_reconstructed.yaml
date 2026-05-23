@@ -1,0 +1,35 @@
+# Reconstructed from outputs/train_10k_continuous/train.log on 2026-05-23
+# Source title: ResFold Training
+run_name: train_10k_continuous
+model: resfold_stage1
+started: '2026-01-24 11:42:18'
+command: 'python scripts/train_resfold.py --mode stage1_only --n_train 8600 --n_test 100 --n_eval_train 50 --n_steps 50000 --eval_every 2000 --batch_size 64 --grad_accum 4 --output_dir outputs/train_10k_continuous --T 50 --augment_rotation --lr 1e-4 --min_lr 1e-6 --min_atoms 200 --max_atoms 1200 --align_per_step --trunk_layers 14 --denoiser_blocks 10 --continuous_sigma'
+configuration:
+  mode: 'stage1_only'
+  output_dir: 'outputs/train_10k_continuous'
+  n_train: '8600'
+  n_test: '100'
+  batch_size: '64'
+  grad_accum: '4'
+  eff_batch: '256'
+  n_steps: '50000'
+  eval_every: '2000'
+  lr: '0.0001'
+  centroid_noise: '0.0'
+  dist_weight: '0.1'
+  geom_weight: '0.1'
+  bond_length: '1.0'
+  bond_angle: '0.1'
+  omega: '0.1'
+  o_chirality: '0.1'
+  cb_chirality: '0.0'
+data_split_seed_42:
+  Training: '8600 samples'
+  Test: '100 samples'
+diffusion:
+  Mode: 'AF3-style continuous sigma (VE)'
+  sigma_data: '1.0'
+  sigma_range: '[0.002, 10.0]'
+  self_cond_prob: '0.5'
+  translate_aug: '0.0'
+  Sampling: 'align_per_step=True, recenter=False'

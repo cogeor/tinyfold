@@ -1,0 +1,144 @@
+======================================================================
+IterFold Training (Anchor-Conditioned Structure Prediction)
+======================================================================
+Started: 2026-01-28 18:30:04
+Command: python scripts/train_iterfold.py --n_train 100 --n_test 20 --n_eval_train 50 --n_steps 5000 --eval_every 500 --batch_size 32 --grad_accum 1 --lr 1e-4 --output_dir outputs/iterfold_geom_v2 --c_token 256 --trunk_layers 6 --decoder_layers 9 --n_atom_layers 4 --min_atoms 100 --max_atoms 600 --rotation_augment --mask_ratio_min 0.5 --mask_ratio_max 1.0 --geom_weight 0.1
+
+Configuration:
+  c_token:          256
+  trunk_layers:     6
+  decoder_layers:   9
+  n_atom_layers:    4
+  batch_size:       32
+  grad_accum:       1
+  eff_batch:        32
+  n_steps:          5000
+  lr:               0.0001
+
+Masking:
+  mask_ratio:       [0.5, 1.0] (uniform sampling)
+
+Geometry loss:
+  geom_weight:      0.1
+
+Augmentation:
+  rotation_augment: True
+
+Device: cuda
+  GPU: NVIDIA GeForce RTX 4070 Ti SUPER
+
+Data: 100 train, 20 test
+Preloading samples...
+  Loaded 120 samples
+
+Model: IterFold
+  Total params:   15,229,059
+  Trunk params:   4,892,288 (32.1%)
+  Decoder params: 10,336,771 (67.9%)
+
+Optimizer: AdamW, 15,229,059 trainable params
+Geometry loss: GeometryLoss(active=['bond_length', 'bond_angle', 'omega', 'o_chirality'])
+Training for 5000 steps...
+======================================================================
+Step   100 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.69 | lr: 9.99e-05 | 21s
+Step   200 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.74 | lr: 9.96e-05 | 42s
+Step   300 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.54 | lr: 9.91e-05 | 61s
+Step   400 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.54 | lr: 9.84e-05 | 81s
+Step   500 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.52 | lr: 9.76e-05 | 102s
+         >>> Train (50): RMSE=nanÅ
+         >>> Test (20):  RMSE=nanÅ | DockQ=0.000
+         >>> Saved plot: outputs/iterfold_geom_v2\plots\step_000500.png
+Step   600 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.70 | lr: 9.65e-05 | 126s
+Step   700 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 1.00 | lr: 9.53e-05 | 147s
+Step   800 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.95 | lr: 9.39e-05 | 166s
+Step   900 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.88 | lr: 9.23e-05 | 187s
+Step  1000 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.94 | lr: 9.05e-05 | 208s
+         >>> Train (50): RMSE=nanÅ
+         >>> Test (20):  RMSE=nanÅ | DockQ=0.000
+         >>> Saved plot: outputs/iterfold_geom_v2\plots\step_001000.png
+Step  1100 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.57 | lr: 8.86e-05 | 233s
+Step  1200 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.88 | lr: 8.66e-05 | 253s
+Step  1300 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.70 | lr: 8.44e-05 | 273s
+Step  1400 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.56 | lr: 8.21e-05 | 293s
+Step  1500 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.65 | lr: 7.96e-05 | 315s
+         >>> Train (50): RMSE=nanÅ
+         >>> Test (20):  RMSE=nanÅ | DockQ=0.000
+         >>> Saved plot: outputs/iterfold_geom_v2\plots\step_001500.png
+Step  1600 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.78 | lr: 7.70e-05 | 340s
+Step  1700 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.89 | lr: 7.43e-05 | 368s
+Step  1800 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.70 | lr: 7.16e-05 | 399s
+Step  1900 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.60 | lr: 6.87e-05 | 430s
+Step  2000 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.57 | lr: 6.58e-05 | 462s
+         >>> Train (50): RMSE=nanÅ
+         >>> Test (20):  RMSE=nanÅ | DockQ=0.000
+         >>> Saved plot: outputs/iterfold_geom_v2\plots\step_002000.png
+Step  2100 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.57 | lr: 6.28e-05 | 499s
+Step  2200 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.54 | lr: 5.98e-05 | 529s
+Step  2300 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.53 | lr: 5.67e-05 | 560s
+Step  2400 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.97 | lr: 5.36e-05 | 592s
+Step  2500 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.61 | lr: 5.05e-05 | 623s
+         >>> Train (50): RMSE=nanÅ
+         >>> Test (20):  RMSE=nanÅ | DockQ=0.000
+         >>> Saved plot: outputs/iterfold_geom_v2\plots\step_002500.png
+Step  2600 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.94 | lr: 4.74e-05 | 660s
+Step  2700 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.91 | lr: 4.43e-05 | 691s
+Step  2800 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.78 | lr: 4.12e-05 | 721s
+Step  2900 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.69 | lr: 3.82e-05 | 753s
+Step  3000 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.78 | lr: 3.52e-05 | 784s
+         >>> Train (50): RMSE=nanÅ
+         >>> Test (20):  RMSE=nanÅ | DockQ=0.000
+         >>> Saved plot: outputs/iterfold_geom_v2\plots\step_003000.png
+Step  3100 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.74 | lr: 3.23e-05 | 821s
+Step  3200 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.87 | lr: 2.94e-05 | 852s
+Step  3300 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.92 | lr: 2.67e-05 | 882s
+Step  3400 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.89 | lr: 2.40e-05 | 913s
+Step  3500 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.78 | lr: 2.14e-05 | 945s
+         >>> Train (50): RMSE=nanÅ
+         >>> Test (20):  RMSE=nanÅ | DockQ=0.000
+         >>> Saved plot: outputs/iterfold_geom_v2\plots\step_003500.png
+Step  3600 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.64 | lr: 1.89e-05 | 980s
+Step  3700 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.98 | lr: 1.66e-05 | 1012s
+Step  3800 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.82 | lr: 1.44e-05 | 1039s
+Step  3900 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.85 | lr: 1.24e-05 | 1059s
+Step  4000 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.61 | lr: 1.05e-05 | 1080s
+         >>> Train (50): RMSE=nanÅ
+         >>> Test (20):  RMSE=nanÅ | DockQ=0.000
+         >>> Saved plot: outputs/iterfold_geom_v2\plots\step_004000.png
+Step  4100 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.64 | lr: 8.71e-06 | 1102s
+Step  4200 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.70 | lr: 7.12e-06 | 1122s
+Step  4300 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.74 | lr: 5.71e-06 | 1146s
+Step  4400 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.59 | lr: 4.48e-06 | 1174s
+Step  4500 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.70 | lr: 3.42e-06 | 1202s
+         >>> Train (50): RMSE=nanÅ
+         >>> Test (20):  RMSE=nanÅ | DockQ=0.000
+         >>> Saved plot: outputs/iterfold_geom_v2\plots\step_004500.png
+Step  4600 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.58 | lr: 2.56e-06 | 1234s
+Step  4700 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.55 | lr: 1.88e-06 | 1262s
+Step  4800 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.72 | lr: 1.39e-06 | 1290s
+Step  4900 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.78 | lr: 1.10e-06 | 1318s
+Step  5000 | loss: nan | mse: nan | geom: nan | bond: nan | angle: nan | m%: 0.95 | lr: 1.00e-06 | 1346s
+         >>> Train (50): RMSE=nanÅ
+         >>> Test (20):  RMSE=nanÅ | DockQ=0.000
+         >>> Saved plot: outputs/iterfold_geom_v2\plots\step_005000.png
+
+======================================================================
+Final Evaluation (one-shot, no anchors)
+======================================================================
+Test set (20 samples):
+  RMSE:  nan +/- nan Å
+  DockQ: 0.000 +/- 0.000
+  Fnat:  0.000
+  iRMS:  inf A
+  LRMS:  inf A
+
+  Quality distribution:
+    Acceptable (>=0.23): 0.0%
+    Medium (>=0.49):     0.0%
+    High (>=0.80):       0.0%
+
+======================================================================
+Training complete
+  Total time: 1353s (22.5 min)
+  Best test RMSE: inf A
+  Best test DockQ: 0.0000
+Finished: 2026-01-28 18:53:01

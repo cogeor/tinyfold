@@ -1,0 +1,30 @@
+# Reconstructed from outputs/af3_15M_gaussian_5K/train.log on 2026-05-23
+# Source title: TinyFold Training
+run_name: af3_15M_gaussian_5K
+model: archive af3_style
+started: '2026-01-20 00:34:18'
+command: 'python scripts/train.py --model af3_style --noise_type gaussian --n_steps 100000 --n_train 5000 --n_test 500 --eval_every 5000 --output_dir outputs/af3_15M_gaussian_5K --h_dim 128 --n_layers 6 --batch_size 32 --grad_accum 4 --lr 1e-3 --min_atoms 320 --max_atoms 1000'
+configuration:
+  output_dir: 'outputs/af3_15M_gaussian_5K'
+  n_train: '5000'
+  n_test: '500'
+  batch_size: '32'
+  grad_accum: '4'
+  eff_batch: '128'
+  n_steps: '100000'
+  eval_every: '5000'
+  lr: '0.001'
+  model: 'af3_style'
+  h_dim: '128'
+  n_layers: '6'
+  schedule: 'linear'
+  noise_type: 'gaussian'
+  noise_scale: '0.1'
+data_split_seed_42:
+  Training: '5000 samples'
+  Test: '500 samples (held out, never seen during training)'
+  Train_IDs: '[''1r4p.pdb1_5'', ''2xf7.pdb1_5'', ''4hi2.pdb1_13'']...'
+  Test_IDs: '[''1dm0.pdb1_8'', ''2wg6.pdb2_2'', ''4qyb.pdb1_0'']...'
+diffusion:
+  Schedule: 'linear'
+  Noise_type: 'gaussian'

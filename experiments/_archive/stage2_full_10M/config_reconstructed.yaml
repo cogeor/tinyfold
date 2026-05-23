@@ -1,0 +1,21 @@
+# Reconstructed from outputs/stage2_full_10M/train.log on 2026-05-23
+# Source title: ResFold Stage 2 Training (Atom Assembly)
+run_name: stage2_full_10M
+model: resfold_stage2
+started: '2026-01-27 23:49:55'
+command: 'python scripts/train_resfold_stage2.py --checkpoint outputs/stage1_50k_small/best_model.pt --trunk_layers 9 --denoiser_blocks 7 --load_split outputs/stage1_50k_small/split.json --n_steps 50000 --eval_every 2000 --batch_size 8 --lr 1e-4 --freeze_stage1 --output_dir outputs/stage2_full_10M --assembler_layers 10'
+configuration:
+  checkpoint: 'outputs/stage1_50k_small/best_model.pt'
+  freeze_stage1: 'True'
+  assembler_layers: '10'
+  n_samples: '5'
+  batch_size: '8'
+  grad_accum: '4'
+  eff_batch: '32'
+  n_steps: '50000'
+  lr: '0.0001'
+loss_weights:
+  s1_weight: '1.0 (ignored - frozen)'
+  s2_weight: '1.0'
+  dist_weight: '0.1'
+  geom_weight: '0.1'

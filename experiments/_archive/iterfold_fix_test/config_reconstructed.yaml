@@ -1,0 +1,23 @@
+# Reconstructed from outputs/iterfold_fix_test/train.log on 2026-05-23
+# Source title: IterFold Training (Anchor-Conditioned Structure Prediction)
+run_name: iterfold_fix_test
+model: iterfold
+started: '2026-01-29 22:05:25'
+command: 'python scripts/train_iterfold.py --n_train 20 --n_test 5 --n_steps 1000 --eval_every 200 --batch_size 8 --use_geometric_decoder --output_dir outputs/iterfold_fix_test'
+configuration:
+  c_token: '256'
+  trunk_layers: '9'
+  decoder_layers: '12'
+  n_atom_layers: '8'
+  batch_size: '8'
+  grad_accum: '4'
+  eff_batch: '32'
+  n_steps: '1000'
+  lr: '0.0001'
+masking:
+  mask_ratio: '[0.5, 1.0] (uniform sampling)'
+auxiliary_losses:
+  geom_weight: '1.0'
+  dist_weight: '1.0'
+augmentation:
+  rotation_augment: 'True'

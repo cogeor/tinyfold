@@ -1,0 +1,64 @@
+======================================================================
+IterFold Training (Anchor-Conditioned Structure Prediction)
+======================================================================
+Started: 2026-01-28 22:17:48
+Command: python scripts/train_iterfold.py --n_train 100 --n_test 20 --n_eval_train 50 --n_steps 5000 --eval_every 500 --batch_size 32 --grad_accum 1 --lr 1e-4 --use_frame_decoder --c_token 352 --c_atom 128 --decoder_layers 4 --trunk_layers 6 --centroid_weight 1.0 --dist_weight 5.0 --geom_weight 0.1 --min_atoms 100 --max_atoms 600 --rotation_augment --mask_ratio_min 0.5 --mask_ratio_max 1.0 --output_dir outputs/frame_decoder_15m
+
+Configuration:
+  c_token:          352
+  trunk_layers:     6
+  decoder_layers:   4
+  n_atom_layers:    8
+  batch_size:       32
+  grad_accum:       1
+  eff_batch:        32
+  n_steps:          5000
+  lr:               0.0001
+
+Masking:
+  mask_ratio:       [0.5, 1.0] (uniform sampling)
+
+Auxiliary losses:
+  geom_weight:      0.1
+  dist_weight:      5.0
+
+Augmentation:
+  rotation_augment: True
+
+Device: cuda
+  GPU: NVIDIA GeForce RTX 4070 Ti SUPER
+
+Data: 100 train, 20 test
+Preloading samples...
+  Loaded 120 samples
+
+Model: IterFold
+  Total params:   15,642,297
+  Trunk params:   9,235,952 (59.0%)
+  Decoder params: 6,406,345 (41.0%)
+
+Optimizer: AdamW, 15,642,297 trainable params
+Geometry loss: GeometryLoss(active=['bond_length', 'bond_angle', 'omega', 'o_chirality'])
+Training for 5000 steps...
+======================================================================
+Step   100 | loss: 10.8849 | mse: 3.9605 | dist: 4.8964 | geom: 0.6634 | m%: 0.56 | lr: 9.99e-05 | 9s
+Step   200 | loss: 7.7106 | mse: 2.5891 | dist: 3.7962 | geom: 0.4635 | m%: 0.56 | lr: 9.96e-05 | 17s
+Step   300 | loss: 5.3218 | mse: 1.7743 | dist: 2.5392 | geom: 0.4985 | m%: 0.82 | lr: 9.91e-05 | 25s
+Step   400 | loss: 4.0824 | mse: 1.4152 | dist: 1.8799 | geom: 0.5030 | m%: 0.96 | lr: 9.84e-05 | 34s
+Step   500 | loss: 2.1856 | mse: 0.7403 | dist: 1.0307 | geom: 0.4415 | m%: 0.80 | lr: 9.76e-05 | 42s
+         >>> Train (50): RMSE=6.54Å
+         >>> Test (20):  RMSE=13.38Å | DockQ=0.052
+         >>> Saved plot: outputs/frame_decoder_15m\plots\step_000500.png
+         >>> New best! Saved., DockQ=0.052
+Step   600 | loss: 2.0513 | mse: 0.7068 | dist: 0.9934 | geom: 0.4378 | m%: 0.96 | lr: 9.65e-05 | 52s
+Step   700 | loss: 1.0536 | mse: 0.4202 | dist: 0.4388 | geom: 0.4172 | m%: 0.77 | lr: 9.53e-05 | 60s
+Step   800 | loss: 0.7739 | mse: 0.2488 | dist: 0.3776 | geom: 0.4015 | m%: 0.70 | lr: 9.39e-05 | 68s
+Step   900 | loss: 0.8155 | mse: 0.3240 | dist: 0.3388 | geom: 0.3953 | m%: 1.00 | lr: 9.23e-05 | 77s
+Step  1000 | loss: 0.6583 | mse: 0.2418 | dist: 0.2856 | geom: 0.4014 | m%: 0.51 | lr: 9.05e-05 | 85s
+         >>> Train (50): RMSE=3.78Å
+         >>> Test (20):  RMSE=12.76Å | DockQ=0.079
+         >>> Saved plot: outputs/frame_decoder_15m\plots\step_001000.png
+         >>> New best! Saved., DockQ=0.079
+Step  1100 | loss: 0.6174 | mse: 0.2271 | dist: 0.2619 | geom: 0.3893 | m%: 0.87 | lr: 8.86e-05 | 95s
+Step  1200 | loss: 0.5873 | mse: 0.2466 | dist: 0.2331 | geom: 0.3960 | m%: 0.63 | lr: 8.66e-05 | 103s
+Step  1300 | loss: 0.4467 | mse: 0.2165 | dist: 0.1496 | geom: 0.3783 | m%: 0.80 | lr: 8.44e-05 | 111s

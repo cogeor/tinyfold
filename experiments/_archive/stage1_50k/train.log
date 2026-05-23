@@ -1,0 +1,97 @@
+======================================================================
+ResFold Training
+======================================================================
+Started: 2026-01-27 13:30:55
+Script: C:\Users\costa\src\tinyfold\scripts\train_resfold.py
+Command: python C:/Users/costa/src/tinyfold/scripts/train_resfold.py --mode stage1_only --n_train 1000 --n_test 100 --min_atoms 320 --max_atoms 1200 --n_steps 50000 --eval_every 2500 --batch_size 16 --grad_accum 8 --lr 1e-3 --continuous_sigma --self_cond_prob 0.5 --align_per_step --recenter --c_token_s1 256 --trunk_layers 9 --denoiser_blocks 7 --T 50 --output_dir outputs/stage1_50k
+
+Configuration:
+  mode:          stage1_only
+  output_dir:    outputs/stage1_50k
+  n_train:       1000
+  n_test:        100
+  batch_size:    16
+  grad_accum:    8
+  eff_batch:     128
+  n_steps:       50000
+  eval_every:    2500
+  lr:            0.001
+  T:             50
+  centroid_noise:0.0
+  dist_weight:   0.1
+  geom_weight:   0.1
+    bond_length: 1.0
+    bond_angle:  0.1
+    omega:       0.1
+    o_chirality: 0.1
+    cb_chirality:0.0
+
+Device: cuda
+  GPU: NVIDIA GeForce RTX 4070 Ti SUPER
+
+Data split (seed=42):
+  Eligible samples (320-1200 atoms): 8722
+  Training: 1000 samples
+  Test: 100 samples
+
+Preloading samples... (normalize=True)
+  Loaded 1000 train, 100 test samples
+Model: ResFold (stage1_only)
+  Stage 1 params: 13,855,107 (100.0%)
+  Stage 2 params: 0 (0.0%)
+  Total params:   13,855,107
+
+Diffusion:
+  Mode: AF3-style continuous sigma (VE)
+  sigma_data: 1.0
+  sigma_range: [0.002, 10.0]
+  T: 50 (inference steps)
+  self_cond_prob: 0.5
+  translate_aug: 0.0
+  Sampling: align_per_step=True, recenter=True
+
+Training for 50000 steps...
+======================================================================
+Step   100 | loss: 1.174841 | mse: 1.2782 | dst: 1.1141 | lr: 1.00e-03 | 50s
+Step   200 | loss: 1.159886 | mse: 0.9024 | dst: 0.8713 | lr: 1.00e-03 | 98s
+Step   300 | loss: 0.998131 | mse: 0.5936 | dst: 0.5475 | lr: 1.00e-03 | 165s
+Step   400 | loss: 0.988045 | mse: 0.8727 | dst: 0.7644 | lr: 1.00e-03 | 228s
+Step   500 | loss: 0.882559 | mse: 0.5648 | dst: 0.4918 | lr: 1.00e-03 | 279s
+Step   600 | loss: 0.849029 | mse: 0.7390 | dst: 0.6539 | lr: 1.00e-03 | 331s
+Step   700 | loss: 0.766805 | mse: 0.7461 | dst: 0.6312 | lr: 1.00e-03 | 384s
+Step   800 | loss: 0.827927 | mse: 0.5684 | dst: 0.4326 | lr: 9.99e-04 | 436s
+Step   900 | loss: 0.858320 | mse: 0.9669 | dst: 0.8473 | lr: 9.99e-04 | 493s
+Step  1000 | loss: 0.969977 | mse: 1.4827 | dst: 1.2497 | lr: 9.99e-04 | 564s
+Step  1100 | loss: 0.962269 | mse: 0.9765 | dst: 0.8096 | lr: 9.99e-04 | 635s
+Step  1200 | loss: 0.827043 | mse: 0.9440 | dst: 0.7740 | lr: 9.99e-04 | 706s
+Step  1300 | loss: 0.757033 | mse: 0.6061 | dst: 0.5174 | lr: 9.98e-04 | 777s
+Step  1400 | loss: 0.805729 | mse: 0.7051 | dst: 0.5166 | lr: 9.98e-04 | 848s
+Step  1500 | loss: 0.828110 | mse: 0.8460 | dst: 0.6834 | lr: 9.98e-04 | 918s
+Step  1600 | loss: 0.731204 | mse: 1.1646 | dst: 0.9110 | lr: 9.98e-04 | 988s
+Step  1700 | loss: 0.780148 | mse: 0.4895 | dst: 0.3790 | lr: 9.97e-04 | 1057s
+Step  1800 | loss: 0.708830 | mse: 0.4130 | dst: 0.3874 | lr: 9.97e-04 | 1130s
+Step  1900 | loss: 0.755071 | mse: 0.9367 | dst: 0.7770 | lr: 9.96e-04 | 1203s
+Step  2000 | loss: 0.662164 | mse: 0.5380 | dst: 0.4005 | lr: 9.96e-04 | 1274s
+Step  2100 | loss: 0.816391 | mse: 0.5425 | dst: 0.4096 | lr: 9.96e-04 | 1343s
+Step  2200 | loss: 0.777563 | mse: 0.9795 | dst: 0.8406 | lr: 9.95e-04 | 1414s
+Step  2300 | loss: 0.813209 | mse: 0.4405 | dst: 0.3648 | lr: 9.95e-04 | 1483s
+Step  2400 | loss: 0.773728 | mse: 0.9729 | dst: 0.7667 | lr: 9.94e-04 | 1553s
+Step  2500 | loss: 0.717365 | mse: 0.6318 | dst: 0.4840 | lr: 9.94e-04 | 1623s
+         >>> Train Centroid RMSE (200): 23.6810 A | Test Centroid RMSE (100): 23.0552 A
+         >>> Saved plot: outputs/stage1_50k\plots\step_002500.png
+         >>> New best test RMSE! Saved.
+Step  2600 | loss: 0.722705 | mse: 0.5859 | dst: 0.4903 | lr: 9.93e-04 | 1901s
+Step  2700 | loss: 0.752757 | mse: 0.9294 | dst: 0.7675 | lr: 9.93e-04 | 1984s
+Step  2800 | loss: 0.787029 | mse: 0.8711 | dst: 0.6168 | lr: 9.92e-04 | 2065s
+Step  2900 | loss: 0.632761 | mse: 0.5499 | dst: 0.4344 | lr: 9.92e-04 | 2145s
+Step  3000 | loss: 0.676816 | mse: 0.5206 | dst: 0.4214 | lr: 9.91e-04 | 2222s
+Step  3100 | loss: 0.827409 | mse: 0.6457 | dst: 0.5120 | lr: 9.91e-04 | 2299s
+Step  3200 | loss: 0.710174 | mse: 0.6827 | dst: 0.5422 | lr: 9.90e-04 | 2371s
+Step  3300 | loss: 0.689310 | mse: 0.4996 | dst: 0.3648 | lr: 9.89e-04 | 2443s
+Step  3400 | loss: 0.703995 | mse: 0.4362 | dst: 0.3128 | lr: 9.89e-04 | 2513s
+Step  3500 | loss: 0.866710 | mse: 0.7415 | dst: 0.5375 | lr: 9.88e-04 | 2587s
+Step  3600 | loss: 0.677168 | mse: 0.6847 | dst: 0.5724 | lr: 9.87e-04 | 2660s
+Step  3700 | loss: 0.771007 | mse: 0.7263 | dst: 0.5538 | lr: 9.87e-04 | 2720s
+Step  3800 | loss: 0.705649 | mse: 0.6549 | dst: 0.5109 | lr: 9.86e-04 | 2790s
+Step  3900 | loss: 0.745846 | mse: 0.8294 | dst: 0.7004 | lr: 9.85e-04 | 2861s
+Step  4000 | loss: 0.684945 | mse: 0.4690 | dst: 0.3858 | lr: 9.84e-04 | 2930s

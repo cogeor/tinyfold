@@ -1,0 +1,295 @@
+======================================================================
+ResFold Training
+======================================================================
+Started: 2026-01-24 11:42:18
+Script: C:\Users\costa\src\tinyfold\scripts\train_resfold.py
+Command: python scripts/train_resfold.py --mode stage1_only --n_train 8600 --n_test 100 --n_eval_train 50 --n_steps 50000 --eval_every 2000 --batch_size 64 --grad_accum 4 --output_dir outputs/train_10k_continuous --T 50 --augment_rotation --lr 1e-4 --min_lr 1e-6 --min_atoms 200 --max_atoms 1200 --align_per_step --trunk_layers 14 --denoiser_blocks 10 --continuous_sigma
+
+Configuration:
+  mode:          stage1_only
+  output_dir:    outputs/train_10k_continuous
+  n_train:       8600
+  n_test:        100
+  batch_size:    64
+  grad_accum:    4
+  eff_batch:     256
+  n_steps:       50000
+  eval_every:    2000
+  lr:            0.0001
+  T:             50
+  centroid_noise:0.0
+  dist_weight:   0.1
+  geom_weight:   0.1
+    bond_length: 1.0
+    bond_angle:  0.1
+    omega:       0.1
+    o_chirality: 0.1
+    cb_chirality:0.0
+
+Device: cuda
+  GPU: NVIDIA GeForce RTX 4070 Ti SUPER
+
+Data split (seed=42):
+  Eligible samples (200-1200 atoms): 8722
+  Training: 8600 samples
+  Test: 100 samples
+
+Preloading samples... (normalize=True)
+  Loaded 8600 train, 100 test samples
+Model: ResFold (stage1_only)
+  Stage 1 params: 20,566,403 (100.0%)
+  Stage 2 params: 0 (0.0%)
+  Total params:   20,566,403
+
+Diffusion:
+  Mode: AF3-style continuous sigma (VE)
+  sigma_data: 1.0
+  sigma_range: [0.002, 10.0]
+  T: 50 (inference steps)
+  self_cond_prob: 0.5
+  translate_aug: 0.0
+  Sampling: align_per_step=True, recenter=False
+
+Training for 50000 steps...
+======================================================================
+Step   100 | loss: 1.158567 | mse: 1.2260 | dst: 1.2113 | lr: 1.00e-04 | 141s
+Step   200 | loss: 1.164380 | mse: 0.9986 | dst: 0.9687 | lr: 1.00e-04 | 280s
+Step   300 | loss: 1.028900 | mse: 0.9850 | dst: 0.9205 | lr: 1.00e-04 | 422s
+Step   400 | loss: 1.076225 | mse: 1.0874 | dst: 1.0278 | lr: 1.00e-04 | 564s
+Step   500 | loss: 0.956139 | mse: 1.0038 | dst: 0.9187 | lr: 1.00e-04 | 704s
+Step   600 | loss: 0.881757 | mse: 0.7618 | dst: 0.6942 | lr: 1.00e-04 | 847s
+Step   700 | loss: 0.766029 | mse: 0.7632 | dst: 0.6308 | lr: 1.00e-04 | 988s
+Step   800 | loss: 0.785709 | mse: 0.5974 | dst: 0.4575 | lr: 9.99e-05 | 1128s
+Step   900 | loss: 0.761785 | mse: 0.6741 | dst: 0.5677 | lr: 9.99e-05 | 1271s
+Step  1000 | loss: 0.713452 | mse: 0.6606 | dst: 0.5294 | lr: 9.99e-05 | 1411s
+Step  1100 | loss: 0.735133 | mse: 0.5981 | dst: 0.4662 | lr: 9.99e-05 | 1552s
+Step  1200 | loss: 0.752158 | mse: 0.6245 | dst: 0.4891 | lr: 9.99e-05 | 1692s
+Step  1300 | loss: 0.681050 | mse: 0.6178 | dst: 0.4909 | lr: 9.98e-05 | 1834s
+Step  1400 | loss: 0.738723 | mse: 0.6660 | dst: 0.4994 | lr: 9.98e-05 | 1975s
+Step  1500 | loss: 0.640618 | mse: 0.4597 | dst: 0.3726 | lr: 9.98e-05 | 2115s
+Step  1600 | loss: 0.589377 | mse: 0.5145 | dst: 0.4279 | lr: 9.98e-05 | 2253s
+Step  1700 | loss: 0.673814 | mse: 0.5186 | dst: 0.3973 | lr: 9.97e-05 | 2394s
+Step  1800 | loss: 0.653849 | mse: 0.5630 | dst: 0.4542 | lr: 9.97e-05 | 2536s
+Step  1900 | loss: 0.571975 | mse: 0.5076 | dst: 0.3739 | lr: 9.96e-05 | 2678s
+Step  2000 | loss: 0.610123 | mse: 0.5789 | dst: 0.4300 | lr: 9.96e-05 | 2819s
+         >>> Train Centroid RMSE (50): 18.0224 A | Test Centroid RMSE (100): 17.9116 A
+         >>> Saved plot: outputs/train_10k_continuous\plots\step_002000.png
+         >>> New best test RMSE! Saved.
+Step  2100 | loss: 0.632155 | mse: 0.6411 | dst: 0.4972 | lr: 9.96e-05 | 3038s
+Step  2200 | loss: 0.556250 | mse: 0.6181 | dst: 0.4489 | lr: 9.95e-05 | 3180s
+Step  2300 | loss: 0.618163 | mse: 0.5324 | dst: 0.4193 | lr: 9.95e-05 | 3322s
+Step  2400 | loss: 0.591345 | mse: 0.5885 | dst: 0.4258 | lr: 9.94e-05 | 3464s
+Step  2500 | loss: 0.551993 | mse: 0.4998 | dst: 0.3671 | lr: 9.94e-05 | 3605s
+Step  2600 | loss: 0.528958 | mse: 0.5045 | dst: 0.3717 | lr: 9.93e-05 | 3746s
+Step  2700 | loss: 0.608301 | mse: 0.6734 | dst: 0.5037 | lr: 9.93e-05 | 3887s
+Step  2800 | loss: 0.445617 | mse: 0.5699 | dst: 0.4252 | lr: 9.92e-05 | 4028s
+Step  2900 | loss: 0.438897 | mse: 0.4930 | dst: 0.3552 | lr: 9.92e-05 | 4171s
+Step  3000 | loss: 0.486645 | mse: 0.4533 | dst: 0.3293 | lr: 9.91e-05 | 4310s
+Step  3100 | loss: 0.501501 | mse: 0.4378 | dst: 0.3127 | lr: 9.91e-05 | 4451s
+Step  3200 | loss: 0.442540 | mse: 0.4371 | dst: 0.3123 | lr: 9.90e-05 | 4592s
+Step  3300 | loss: 0.456790 | mse: 0.4877 | dst: 0.3341 | lr: 9.89e-05 | 4731s
+Step  3400 | loss: 0.372195 | mse: 0.2955 | dst: 0.2120 | lr: 9.89e-05 | 4873s
+Step  3500 | loss: 0.433747 | mse: 0.4596 | dst: 0.3263 | lr: 9.88e-05 | 5013s
+Step  3600 | loss: 0.448150 | mse: 0.4415 | dst: 0.3012 | lr: 9.87e-05 | 5156s
+Step  3700 | loss: 0.386311 | mse: 0.3745 | dst: 0.2613 | lr: 9.87e-05 | 5296s
+Step  3800 | loss: 0.297167 | mse: 0.3289 | dst: 0.2144 | lr: 9.86e-05 | 5436s
+Step  3900 | loss: 0.372520 | mse: 0.3152 | dst: 0.2085 | lr: 9.85e-05 | 5577s
+Step  4000 | loss: 0.364995 | mse: 0.3560 | dst: 0.2288 | lr: 9.84e-05 | 5717s
+         >>> Train Centroid RMSE (50): 11.6819 A | Test Centroid RMSE (100): 14.4580 A
+         >>> Saved plot: outputs/train_10k_continuous\plots\step_004000.png
+         >>> New best test RMSE! Saved.
+Step  4100 | loss: 0.386291 | mse: 0.4161 | dst: 0.2847 | lr: 9.84e-05 | 5939s
+Step  4200 | loss: 0.390419 | mse: 0.3612 | dst: 0.2214 | lr: 9.83e-05 | 6082s
+Step  4300 | loss: 0.334858 | mse: 0.3251 | dst: 0.2124 | lr: 9.82e-05 | 6223s
+Step  4400 | loss: 0.353644 | mse: 0.3613 | dst: 0.2158 | lr: 9.81e-05 | 6362s
+Step  4500 | loss: 0.340751 | mse: 0.3486 | dst: 0.2275 | lr: 9.80e-05 | 6504s
+Step  4600 | loss: 0.282576 | mse: 0.2518 | dst: 0.1585 | lr: 9.79e-05 | 6644s
+Step  4700 | loss: 0.286263 | mse: 0.3094 | dst: 0.1913 | lr: 9.79e-05 | 6785s
+Step  4800 | loss: 0.309051 | mse: 0.2581 | dst: 0.1727 | lr: 9.78e-05 | 6926s
+Step  4900 | loss: 0.299857 | mse: 0.3169 | dst: 0.2027 | lr: 9.77e-05 | 7066s
+Step  5000 | loss: 0.283572 | mse: 0.2248 | dst: 0.1454 | lr: 9.76e-05 | 7206s
+Step  5100 | loss: 0.343150 | mse: 0.3834 | dst: 0.2184 | lr: 9.75e-05 | 7348s
+Step  5200 | loss: 0.278052 | mse: 0.3238 | dst: 0.2046 | lr: 9.74e-05 | 7488s
+Step  5300 | loss: 0.244866 | mse: 0.2272 | dst: 0.1340 | lr: 9.73e-05 | 7629s
+Step  5400 | loss: 0.265675 | mse: 0.2751 | dst: 0.1786 | lr: 9.72e-05 | 7770s
+Step  5500 | loss: 0.302225 | mse: 0.3129 | dst: 0.2008 | lr: 9.71e-05 | 7911s
+Step  5600 | loss: 0.269543 | mse: 0.2044 | dst: 0.1347 | lr: 9.70e-05 | 8051s
+Step  5700 | loss: 0.273490 | mse: 0.2767 | dst: 0.1656 | lr: 9.69e-05 | 8192s
+Step  5800 | loss: 0.252231 | mse: 0.2467 | dst: 0.1631 | lr: 9.67e-05 | 8333s
+Step  5900 | loss: 0.244572 | mse: 0.2150 | dst: 0.1461 | lr: 9.66e-05 | 8474s
+Step  6000 | loss: 0.245263 | mse: 0.2428 | dst: 0.1605 | lr: 9.65e-05 | 8614s
+         >>> Train Centroid RMSE (50): 10.4046 A | Test Centroid RMSE (100): 13.0647 A
+         >>> Saved plot: outputs/train_10k_continuous\plots\step_006000.png
+         >>> New best test RMSE! Saved.
+Step  6100 | loss: 0.251763 | mse: 0.2565 | dst: 0.1666 | lr: 9.64e-05 | 8838s
+Step  6200 | loss: 0.246470 | mse: 0.2605 | dst: 0.1463 | lr: 9.63e-05 | 8979s
+Step  6300 | loss: 0.250466 | mse: 0.2217 | dst: 0.1442 | lr: 9.62e-05 | 9119s
+Step  6400 | loss: 0.261637 | mse: 0.2031 | dst: 0.1294 | lr: 9.61e-05 | 9259s
+Step  6500 | loss: 0.202184 | mse: 0.2304 | dst: 0.1420 | lr: 9.59e-05 | 9398s
+Step  6600 | loss: 0.209625 | mse: 0.1821 | dst: 0.1132 | lr: 9.58e-05 | 9539s
+Step  6700 | loss: 0.212744 | mse: 0.1894 | dst: 0.1250 | lr: 9.57e-05 | 9680s
+Step  6800 | loss: 0.204552 | mse: 0.1492 | dst: 0.0954 | lr: 9.56e-05 | 9821s
+Step  6900 | loss: 0.224588 | mse: 0.2530 | dst: 0.1489 | lr: 9.54e-05 | 9962s
+Step  7000 | loss: 0.187034 | mse: 0.1507 | dst: 0.0976 | lr: 9.53e-05 | 10102s
+Step  7100 | loss: 0.228359 | mse: 0.1825 | dst: 0.1206 | lr: 9.52e-05 | 10244s
+Step  7200 | loss: 0.223660 | mse: 0.1964 | dst: 0.1186 | lr: 9.50e-05 | 10384s
+Step  7300 | loss: 0.206946 | mse: 0.2027 | dst: 0.1258 | lr: 9.49e-05 | 10525s
+Step  7400 | loss: 0.198110 | mse: 0.1968 | dst: 0.1057 | lr: 9.47e-05 | 10667s
+Step  7500 | loss: 0.184505 | mse: 0.1629 | dst: 0.1065 | lr: 9.46e-05 | 10807s
+Step  7600 | loss: 0.196013 | mse: 0.1217 | dst: 0.0789 | lr: 9.45e-05 | 10947s
+Step  7700 | loss: 0.205136 | mse: 0.2324 | dst: 0.1351 | lr: 9.43e-05 | 11086s
+Step  7800 | loss: 0.220704 | mse: 0.2302 | dst: 0.1379 | lr: 9.42e-05 | 11227s
+Step  7900 | loss: 0.211661 | mse: 0.2126 | dst: 0.1117 | lr: 9.40e-05 | 11367s
+Step  8000 | loss: 0.200829 | mse: 0.1837 | dst: 0.1119 | lr: 9.39e-05 | 11508s
+         >>> Train Centroid RMSE (50): 7.9759 A | Test Centroid RMSE (100): 13.3277 A
+         >>> Saved plot: outputs/train_10k_continuous\plots\step_008000.png
+Step  8100 | loss: 0.171940 | mse: 0.1716 | dst: 0.0956 | lr: 9.37e-05 | 11725s
+Step  8200 | loss: 0.182875 | mse: 0.2237 | dst: 0.1359 | lr: 9.36e-05 | 11867s
+Step  8300 | loss: 0.180596 | mse: 0.1750 | dst: 0.1123 | lr: 9.34e-05 | 12009s
+Step  8400 | loss: 0.198963 | mse: 0.1385 | dst: 0.0943 | lr: 9.33e-05 | 12150s
+Step  8500 | loss: 0.207183 | mse: 0.1835 | dst: 0.1145 | lr: 9.31e-05 | 12291s
+Step  8600 | loss: 0.169824 | mse: 0.1620 | dst: 0.0975 | lr: 9.29e-05 | 12431s
+Step  8700 | loss: 0.188025 | mse: 0.1657 | dst: 0.0982 | lr: 9.28e-05 | 12573s
+Step  8800 | loss: 0.181054 | mse: 0.1969 | dst: 0.1209 | lr: 9.26e-05 | 12714s
+Step  8900 | loss: 0.174946 | mse: 0.1958 | dst: 0.1200 | lr: 9.25e-05 | 12854s
+Step  9000 | loss: 0.198719 | mse: 0.2014 | dst: 0.1245 | lr: 9.23e-05 | 12996s
+Step  9100 | loss: 0.169844 | mse: 0.1613 | dst: 0.0995 | lr: 9.21e-05 | 13137s
+Step  9200 | loss: 0.177673 | mse: 0.1393 | dst: 0.0882 | lr: 9.20e-05 | 13278s
+Step  9300 | loss: 0.164463 | mse: 0.1425 | dst: 0.0916 | lr: 9.18e-05 | 13417s
+Step  9400 | loss: 0.170940 | mse: 0.1629 | dst: 0.1100 | lr: 9.16e-05 | 13557s
+Step  9500 | loss: 0.184822 | mse: 0.1909 | dst: 0.1070 | lr: 9.14e-05 | 13698s
+Step  9600 | loss: 0.181726 | mse: 0.1853 | dst: 0.1168 | lr: 9.13e-05 | 13838s
+Step  9700 | loss: 0.174030 | mse: 0.1987 | dst: 0.1217 | lr: 9.11e-05 | 13982s
+Step  9800 | loss: 0.168734 | mse: 0.1864 | dst: 0.1094 | lr: 9.09e-05 | 14122s
+Step  9900 | loss: 0.148541 | mse: 0.1598 | dst: 0.1024 | lr: 9.07e-05 | 14262s
+Step 10000 | loss: 0.175344 | mse: 0.1359 | dst: 0.0828 | lr: 9.05e-05 | 14402s
+         >>> Train Centroid RMSE (50): 7.9533 A | Test Centroid RMSE (100): 12.3692 A
+         >>> Saved plot: outputs/train_10k_continuous\plots\step_010000.png
+         >>> New best test RMSE! Saved.
+Step 10100 | loss: 0.142156 | mse: 0.1443 | dst: 0.0854 | lr: 9.04e-05 | 14618s
+Step 10200 | loss: 0.151547 | mse: 0.1200 | dst: 0.0747 | lr: 9.02e-05 | 14759s
+Step 10300 | loss: 0.140370 | mse: 0.1493 | dst: 0.0876 | lr: 9.00e-05 | 14899s
+Step 10400 | loss: 0.161404 | mse: 0.2041 | dst: 0.1105 | lr: 8.98e-05 | 15040s
+Step 10500 | loss: 0.152807 | mse: 0.1628 | dst: 0.1069 | lr: 8.96e-05 | 15181s
+Step 10600 | loss: 0.160558 | mse: 0.1340 | dst: 0.0842 | lr: 8.94e-05 | 15323s
+Step 10700 | loss: 0.151376 | mse: 0.1429 | dst: 0.0931 | lr: 8.92e-05 | 15465s
+Step 10800 | loss: 0.162233 | mse: 0.1756 | dst: 0.1011 | lr: 8.90e-05 | 15606s
+Step 10900 | loss: 0.138204 | mse: 0.1099 | dst: 0.0702 | lr: 8.88e-05 | 15746s
+Step 11000 | loss: 0.170180 | mse: 0.1724 | dst: 0.1008 | lr: 8.86e-05 | 15887s
+Step 11100 | loss: 0.146094 | mse: 0.1764 | dst: 0.0941 | lr: 8.84e-05 | 16028s
+Step 11200 | loss: 0.155689 | mse: 0.1456 | dst: 0.0879 | lr: 8.82e-05 | 16170s
+Step 11300 | loss: 0.149679 | mse: 0.1475 | dst: 0.0932 | lr: 8.80e-05 | 16310s
+Step 11400 | loss: 0.135309 | mse: 0.1418 | dst: 0.0933 | lr: 8.78e-05 | 16451s
+Step 11500 | loss: 0.165532 | mse: 0.1696 | dst: 0.1045 | lr: 8.76e-05 | 16594s
+Step 11600 | loss: 0.170274 | mse: 0.1334 | dst: 0.0801 | lr: 8.74e-05 | 16733s
+Step 11700 | loss: 0.156441 | mse: 0.1538 | dst: 0.0925 | lr: 8.72e-05 | 16874s
+Step 11800 | loss: 0.165963 | mse: 0.1407 | dst: 0.0775 | lr: 8.70e-05 | 17017s
+Step 11900 | loss: 0.150817 | mse: 0.1478 | dst: 0.0939 | lr: 8.68e-05 | 17157s
+Step 12000 | loss: 0.115204 | mse: 0.1092 | dst: 0.0679 | lr: 8.66e-05 | 17297s
+         >>> Train Centroid RMSE (50): 7.9301 A | Test Centroid RMSE (100): 12.8346 A
+         >>> Saved plot: outputs/train_10k_continuous\plots\step_012000.png
+Step 12100 | loss: 0.156836 | mse: 0.1416 | dst: 0.0833 | lr: 8.64e-05 | 17518s
+Step 12200 | loss: 0.154390 | mse: 0.1570 | dst: 0.0928 | lr: 8.62e-05 | 17661s
+Step 12300 | loss: 0.166841 | mse: 0.1609 | dst: 0.1002 | lr: 8.59e-05 | 17802s
+Step 12400 | loss: 0.132784 | mse: 0.1417 | dst: 0.0908 | lr: 8.57e-05 | 17943s
+Step 12500 | loss: 0.138371 | mse: 0.1348 | dst: 0.0890 | lr: 8.55e-05 | 18083s
+Step 12600 | loss: 0.166474 | mse: 0.1000 | dst: 0.0606 | lr: 8.53e-05 | 18224s
+Step 12700 | loss: 0.140075 | mse: 0.1086 | dst: 0.0731 | lr: 8.51e-05 | 18364s
+Step 12800 | loss: 0.158184 | mse: 0.0903 | dst: 0.0594 | lr: 8.48e-05 | 18504s
+Step 12900 | loss: 0.123286 | mse: 0.1225 | dst: 0.0835 | lr: 8.46e-05 | 18645s
+Step 13000 | loss: 0.156271 | mse: 0.1680 | dst: 0.0992 | lr: 8.44e-05 | 18785s
+Step 13100 | loss: 0.149594 | mse: 0.1720 | dst: 0.0920 | lr: 8.42e-05 | 18927s
+Step 13200 | loss: 0.127597 | mse: 0.1654 | dst: 0.1046 | lr: 8.39e-05 | 19067s
+Step 13300 | loss: 0.121521 | mse: 0.0903 | dst: 0.0605 | lr: 8.37e-05 | 19208s
+Step 13400 | loss: 0.130208 | mse: 0.1657 | dst: 0.1047 | lr: 8.35e-05 | 19347s
+Step 13500 | loss: 0.125402 | mse: 0.1141 | dst: 0.0722 | lr: 8.32e-05 | 19487s
+Step 13600 | loss: 0.102409 | mse: 0.1157 | dst: 0.0747 | lr: 8.30e-05 | 19627s
+Step 13700 | loss: 0.128606 | mse: 0.1106 | dst: 0.0683 | lr: 8.28e-05 | 19767s
+Step 13800 | loss: 0.127314 | mse: 0.1298 | dst: 0.0793 | lr: 8.25e-05 | 19908s
+Step 13900 | loss: 0.135699 | mse: 0.1719 | dst: 0.1023 | lr: 8.23e-05 | 20049s
+Step 14000 | loss: 0.112150 | mse: 0.0948 | dst: 0.0508 | lr: 8.21e-05 | 20191s
+         >>> Train Centroid RMSE (50): 7.5424 A | Test Centroid RMSE (100): 11.8839 A
+         >>> Saved plot: outputs/train_10k_continuous\plots\step_014000.png
+         >>> New best test RMSE! Saved.
+Step 14100 | loss: 0.123167 | mse: 0.1190 | dst: 0.0662 | lr: 8.18e-05 | 20420s
+Step 14200 | loss: 0.121973 | mse: 0.0909 | dst: 0.0626 | lr: 8.16e-05 | 20562s
+Step 14300 | loss: 0.117045 | mse: 0.1121 | dst: 0.0638 | lr: 8.13e-05 | 20708s
+Step 14400 | loss: 0.099783 | mse: 0.0903 | dst: 0.0595 | lr: 8.11e-05 | 20863s
+Step 14500 | loss: 0.110786 | mse: 0.1223 | dst: 0.0711 | lr: 8.08e-05 | 21019s
+Step 14600 | loss: 0.125576 | mse: 0.1433 | dst: 0.0759 | lr: 8.06e-05 | 21180s
+Step 14700 | loss: 0.122326 | mse: 0.1193 | dst: 0.0716 | lr: 8.03e-05 | 21333s
+Step 14800 | loss: 0.128879 | mse: 0.1350 | dst: 0.0744 | lr: 8.01e-05 | 21490s
+Step 14900 | loss: 0.136521 | mse: 0.1080 | dst: 0.0644 | lr: 7.98e-05 | 21647s
+Step 15000 | loss: 0.129605 | mse: 0.1178 | dst: 0.0800 | lr: 7.96e-05 | 21803s
+Step 15100 | loss: 0.125500 | mse: 0.1217 | dst: 0.0737 | lr: 7.93e-05 | 21960s
+Step 15200 | loss: 0.109328 | mse: 0.0852 | dst: 0.0524 | lr: 7.91e-05 | 22118s
+Step 15300 | loss: 0.108480 | mse: 0.1039 | dst: 0.0648 | lr: 7.88e-05 | 22273s
+Step 15400 | loss: 0.111082 | mse: 0.0824 | dst: 0.0519 | lr: 7.86e-05 | 22434s
+Step 15500 | loss: 0.121984 | mse: 0.1072 | dst: 0.0658 | lr: 7.83e-05 | 22587s
+Step 15600 | loss: 0.131827 | mse: 0.1465 | dst: 0.0814 | lr: 7.81e-05 | 22735s
+Step 15700 | loss: 0.134526 | mse: 0.0903 | dst: 0.0584 | lr: 7.78e-05 | 22883s
+Step 15800 | loss: 0.125626 | mse: 0.1160 | dst: 0.0734 | lr: 7.75e-05 | 23031s
+Step 15900 | loss: 0.127397 | mse: 0.1452 | dst: 0.0898 | lr: 7.73e-05 | 23178s
+Step 16000 | loss: 0.119348 | mse: 0.1021 | dst: 0.0590 | lr: 7.70e-05 | 23328s
+         >>> Train Centroid RMSE (50): 7.6738 A | Test Centroid RMSE (100): 10.3073 A
+         >>> Saved plot: outputs/train_10k_continuous\plots\step_016000.png
+         >>> New best test RMSE! Saved.
+Step 16100 | loss: 0.110250 | mse: 0.0988 | dst: 0.0653 | lr: 7.68e-05 | 23677s
+Step 16200 | loss: 0.131742 | mse: 0.1189 | dst: 0.0702 | lr: 7.65e-05 | 23827s
+Step 16300 | loss: 0.127035 | mse: 0.1008 | dst: 0.0635 | lr: 7.62e-05 | 23975s
+Step 16400 | loss: 0.132279 | mse: 0.1194 | dst: 0.0650 | lr: 7.60e-05 | 24125s
+Step 16500 | loss: 0.123667 | mse: 0.1039 | dst: 0.0689 | lr: 7.57e-05 | 24272s
+Step 16600 | loss: 0.097557 | mse: 0.1329 | dst: 0.0758 | lr: 7.54e-05 | 24420s
+Step 16700 | loss: 0.124649 | mse: 0.1532 | dst: 0.0759 | lr: 7.52e-05 | 24571s
+Step 16800 | loss: 0.115205 | mse: 0.1578 | dst: 0.0809 | lr: 7.49e-05 | 24718s
+Step 16900 | loss: 0.108075 | mse: 0.1200 | dst: 0.0647 | lr: 7.46e-05 | 24865s
+Step 17000 | loss: 0.121856 | mse: 0.1384 | dst: 0.0729 | lr: 7.43e-05 | 25012s
+Step 17100 | loss: 0.105374 | mse: 0.1063 | dst: 0.0590 | lr: 7.41e-05 | 25159s
+Step 17200 | loss: 0.100599 | mse: 0.0786 | dst: 0.0454 | lr: 7.38e-05 | 25308s
+Step 17300 | loss: 0.111575 | mse: 0.0971 | dst: 0.0578 | lr: 7.35e-05 | 25456s
+Step 17400 | loss: 0.111045 | mse: 0.0987 | dst: 0.0570 | lr: 7.32e-05 | 25602s
+Step 17500 | loss: 0.095794 | mse: 0.0949 | dst: 0.0577 | lr: 7.30e-05 | 25751s
+Step 17600 | loss: 0.122254 | mse: 0.0914 | dst: 0.0587 | lr: 7.27e-05 | 25899s
+Step 17700 | loss: 0.112263 | mse: 0.0788 | dst: 0.0476 | lr: 7.24e-05 | 26049s
+Step 17800 | loss: 0.105065 | mse: 0.0792 | dst: 0.0511 | lr: 7.21e-05 | 26196s
+Step 17900 | loss: 0.102411 | mse: 0.0864 | dst: 0.0532 | lr: 7.19e-05 | 26343s
+Step 18000 | loss: 0.112240 | mse: 0.0956 | dst: 0.0615 | lr: 7.16e-05 | 26492s
+         >>> Train Centroid RMSE (50): 6.4563 A | Test Centroid RMSE (100): 10.8682 A
+         >>> Saved plot: outputs/train_10k_continuous\plots\step_018000.png
+Step 18100 | loss: 0.104046 | mse: 0.1282 | dst: 0.0670 | lr: 7.13e-05 | 26836s
+Step 18200 | loss: 0.113763 | mse: 0.0924 | dst: 0.0548 | lr: 7.10e-05 | 26986s
+Step 18300 | loss: 0.095799 | mse: 0.0931 | dst: 0.0548 | lr: 7.07e-05 | 27132s
+Step 18400 | loss: 0.092745 | mse: 0.0932 | dst: 0.0525 | lr: 7.04e-05 | 27280s
+Step 18500 | loss: 0.110883 | mse: 0.1341 | dst: 0.0757 | lr: 7.02e-05 | 27428s
+Step 18600 | loss: 0.088198 | mse: 0.0623 | dst: 0.0379 | lr: 6.99e-05 | 27575s
+Step 18700 | loss: 0.097995 | mse: 0.0535 | dst: 0.0347 | lr: 6.96e-05 | 27723s
+Step 18800 | loss: 0.102315 | mse: 0.1195 | dst: 0.0697 | lr: 6.93e-05 | 27871s
+Step 18900 | loss: 0.094650 | mse: 0.0853 | dst: 0.0534 | lr: 6.90e-05 | 28018s
+Step 19000 | loss: 0.123290 | mse: 0.1459 | dst: 0.0805 | lr: 6.87e-05 | 28166s
+Step 19100 | loss: 0.094234 | mse: 0.1086 | dst: 0.0597 | lr: 6.84e-05 | 28313s
+Step 19200 | loss: 0.114408 | mse: 0.0957 | dst: 0.0588 | lr: 6.81e-05 | 28461s
+Step 19300 | loss: 0.098356 | mse: 0.0953 | dst: 0.0553 | lr: 6.79e-05 | 28608s
+Step 19400 | loss: 0.123427 | mse: 0.1670 | dst: 0.0963 | lr: 6.76e-05 | 28756s
+Step 19500 | loss: 0.104287 | mse: 0.0867 | dst: 0.0509 | lr: 6.73e-05 | 28902s
+Step 19600 | loss: 0.097712 | mse: 0.1228 | dst: 0.0647 | lr: 6.70e-05 | 29049s
+Step 19700 | loss: 0.108019 | mse: 0.1246 | dst: 0.0717 | lr: 6.67e-05 | 29194s
+Step 19800 | loss: 0.114150 | mse: 0.0848 | dst: 0.0543 | lr: 6.64e-05 | 29342s
+Step 19900 | loss: 0.126308 | mse: 0.1052 | dst: 0.0679 | lr: 6.61e-05 | 29487s
+Step 20000 | loss: 0.095505 | mse: 0.1096 | dst: 0.0642 | lr: 6.58e-05 | 29634s
+         >>> Train Centroid RMSE (50): 7.3623 A | Test Centroid RMSE (100): 11.4572 A
+         >>> Saved plot: outputs/train_10k_continuous\plots\step_020000.png
+Step 20100 | loss: 0.098449 | mse: 0.0684 | dst: 0.0398 | lr: 6.55e-05 | 29975s
+Step 20200 | loss: 0.102732 | mse: 0.0905 | dst: 0.0552 | lr: 6.52e-05 | 30122s
+Step 20300 | loss: 0.104534 | mse: 0.0610 | dst: 0.0383 | lr: 6.49e-05 | 30271s
+Step 20400 | loss: 0.079475 | mse: 0.0707 | dst: 0.0428 | lr: 6.46e-05 | 30418s
+Step 20500 | loss: 0.109777 | mse: 0.1136 | dst: 0.0621 | lr: 6.43e-05 | 30571s
+Step 20600 | loss: 0.089680 | mse: 0.0909 | dst: 0.0545 | lr: 6.40e-05 | 30723s
+Step 20700 | loss: 0.093622 | mse: 0.1034 | dst: 0.0609 | lr: 6.37e-05 | 30876s
+Step 20800 | loss: 0.105358 | mse: 0.1020 | dst: 0.0596 | lr: 6.34e-05 | 31026s
+Step 20900 | loss: 0.091073 | mse: 0.0803 | dst: 0.0477 | lr: 6.31e-05 | 31175s
+Step 21000 | loss: 0.083617 | mse: 0.0633 | dst: 0.0425 | lr: 6.28e-05 | 31322s
+Step 21100 | loss: 0.080583 | mse: 0.0930 | dst: 0.0508 | lr: 6.25e-05 | 31464s
+Step 21200 | loss: 0.108630 | mse: 0.0890 | dst: 0.0513 | lr: 6.22e-05 | 31607s
+Step 21300 | loss: 0.083587 | mse: 0.0975 | dst: 0.0584 | lr: 6.19e-05 | 31751s
+Step 21400 | loss: 0.095456 | mse: 0.1087 | dst: 0.0623 | lr: 6.16e-05 | 31897s
+Step 21500 | loss: 0.101040 | mse: 0.0628 | dst: 0.0420 | lr: 6.13e-05 | 32039s

@@ -1,0 +1,74 @@
+======================================================================
+IterFold Training (Anchor-Conditioned Structure Prediction)
+======================================================================
+Started: 2026-01-30 00:23:01
+Command: python scripts/train_iterfold.py --n_train 5 --n_test 2 --n_steps 100 --eval_every 50 --batch_size 2 --grad_accum 1 --use_atom_anchor_decoder --output_dir outputs/atom_anchor_test --c_atom 64
+
+Configuration:
+  decoder_type:     atom_anchor
+  c_token:          256
+  trunk_layers:     9
+  decoder_layers:   12
+  n_atom_layers:    8
+  batch_size:       2
+  grad_accum:       1
+  eff_batch:        2
+  n_steps:          100
+  lr:               0.0001
+
+Masking:
+  mask_ratio:       [0.5, 1.0] (uniform sampling)
+
+Auxiliary losses:
+  geom_weight:      1.0
+  dist_weight:      1.0
+
+Augmentation:
+  rotation_augment: True
+
+Device: cuda
+  GPU: NVIDIA GeForce RTX 4070 Ti SUPER
+
+Data: 5 train, 2 test
+Preloading samples...
+  Loaded 7 samples
+
+Model: IterFold
+  Total params:   23,196,227
+  Trunk params:   7,261,568 (31.3%)
+  Decoder params: 15,934,659 (68.7%)
+
+Optimizer: AdamW, 23,196,227 trainable params
+Geometry loss: GeometryLoss(active=['bond_length', 'bond_angle', 'omega', 'o_chirality'])
+Training for 100 steps...
+======================================================================
+         >>> Train (5): 1shot=14.30Å | iter=15.51Å
+         >>> Test (2):  1shot=14.60Å | iter=15.87Å | DockQ=0.387
+         >>> Saved plot: outputs/atom_anchor_test\plots\step_000050.png
+         >>> New best! Saved., DockQ=0.387
+Step   100 | loss: 62.3376 | mse: 56.7712 | dist: 5.4021 | geom: 0.1643 | m%: 0.71 | lr: 1.00e-06 | 22s
+         >>> Train (5): 1shot=13.20Å | iter=15.52Å
+         >>> Test (2):  1shot=13.49Å | iter=15.89Å | DockQ=0.386
+         >>> Saved plot: outputs/atom_anchor_test\plots\step_000100.png
+
+======================================================================
+Final Evaluation (one-shot, no anchors)
+======================================================================
+Test set (2 samples):
+  RMSE:  15.94 +/- 0.70 Å
+  DockQ: 0.386 +/- 0.016
+  Fnat:  1.000
+  iRMS:  13.97 A
+  LRMS:  21.51 A
+
+  Quality distribution:
+    Acceptable (>=0.23): 100.0%
+    Medium (>=0.49):     0.0%
+    High (>=0.80):       0.0%
+
+======================================================================
+Training complete
+  Total time: 29s (0.5 min)
+  Best test RMSE: 15.8733 A
+  Best test DockQ: 0.3868
+Finished: 2026-01-30 00:23:53

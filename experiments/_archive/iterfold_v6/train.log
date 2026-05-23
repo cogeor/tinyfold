@@ -1,0 +1,98 @@
+======================================================================
+IterFold Training (Anchor-Conditioned Structure Prediction)
+======================================================================
+Started: 2026-01-29 23:32:44
+Command: python scripts/train_iterfold.py --n_train 20 --n_test 5 --n_steps 2000 --eval_every 500 --batch_size 8 --lr 1e-3 --use_geometric_decoder --output_dir outputs/iterfold_v6
+
+Configuration:
+  c_token:          256
+  trunk_layers:     9
+  decoder_layers:   12
+  n_atom_layers:    8
+  batch_size:       8
+  grad_accum:       4
+  eff_batch:        32
+  n_steps:          2000
+  lr:               0.001
+
+Masking:
+  mask_ratio:       [0.5, 1.0] (uniform sampling)
+
+Auxiliary losses:
+  geom_weight:      1.0
+  dist_weight:      1.0
+
+Augmentation:
+  rotation_augment: True
+
+Device: cuda
+  GPU: NVIDIA GeForce RTX 4070 Ti SUPER
+
+Data: 20 train, 5 test
+Preloading samples...
+  Loaded 25 samples
+
+Model: IterFold
+  Total params:   9,693,583
+  Trunk params:   7,261,568 (74.9%)
+  Decoder params: 2,432,015 (25.1%)
+
+Optimizer: AdamW, 9,693,583 trainable params
+Geometry loss: GeometryLoss(active=['bond_length', 'bond_angle', 'omega', 'o_chirality'])
+Training for 2000 steps...
+======================================================================
+Step   100 | loss: 6.2544 | mse: 3.4889 | dist: 1.4668 | geom: 0.7430 | m%: 0.54 | lr: 9.94e-04 | 41s
+Step   200 | loss: 2.9254 | mse: 1.7208 | dist: 0.8331 | geom: 0.4807 | m%: 0.54 | lr: 9.76e-04 | 81s
+Step   300 | loss: 2.0255 | mse: 1.0372 | dist: 0.8535 | geom: 0.2103 | m%: 0.90 | lr: 9.46e-04 | 120s
+Step   400 | loss: 1.4068 | mse: 0.5988 | dist: 0.4075 | geom: 0.1828 | m%: 0.73 | lr: 9.05e-04 | 162s
+Step   500 | loss: 1.4653 | mse: 0.8902 | dist: 0.3990 | geom: 0.2855 | m%: 0.67 | lr: 8.54e-04 | 202s
+         >>> Train (20): 1shot=2.20Å | iter=16.12Å
+         >>> Test (5):  1shot=2.14Å | iter=12.79Å | DockQ=0.033
+         >>> Saved plot: outputs/iterfold_v6\plots\step_000500.png
+         >>> New best! Saved., DockQ=0.033
+Step   600 | loss: 1.3115 | mse: 0.7510 | dist: 0.7134 | geom: 0.1847 | m%: 0.87 | lr: 7.94e-04 | 262s
+Step   700 | loss: 1.9170 | mse: 1.1183 | dist: 0.6369 | geom: 0.2058 | m%: 0.87 | lr: 7.27e-04 | 303s
+Step   800 | loss: 1.6200 | mse: 0.7103 | dist: 1.1131 | geom: 0.1482 | m%: 0.92 | lr: 6.55e-04 | 343s
+Step   900 | loss: 1.7748 | mse: 0.8126 | dist: 0.3790 | geom: 0.2129 | m%: 0.53 | lr: 5.79e-04 | 383s
+Step  1000 | loss: 1.5699 | mse: 0.8164 | dist: 1.0871 | geom: 0.1050 | m%: 0.93 | lr: 5.00e-04 | 424s
+         >>> Train (20): 1shot=1.94Å | iter=19.66Å
+         >>> Test (5):  1shot=1.83Å | iter=16.37Å | DockQ=0.021
+         >>> Saved plot: outputs/iterfold_v6\plots\step_001000.png
+Step  1100 | loss: 1.6858 | mse: 0.6409 | dist: 0.3987 | geom: 0.1302 | m%: 0.69 | lr: 4.22e-04 | 484s
+Step  1200 | loss: 1.1104 | mse: 0.5014 | dist: 0.1879 | geom: 0.1387 | m%: 0.52 | lr: 3.46e-04 | 525s
+Step  1300 | loss: 1.4391 | mse: 0.4786 | dist: 0.2915 | geom: 0.1180 | m%: 0.67 | lr: 2.74e-04 | 565s
+Step  1400 | loss: 0.8240 | mse: 0.3604 | dist: 0.2174 | geom: 0.1021 | m%: 0.74 | lr: 2.07e-04 | 605s
+Step  1500 | loss: 1.1725 | mse: 0.3197 | dist: 0.2149 | geom: 0.1188 | m%: 0.65 | lr: 1.47e-04 | 645s
+         >>> Train (20): 1shot=1.70Å | iter=16.19Å
+         >>> Test (5):  1shot=1.73Å | iter=14.81Å | DockQ=0.029
+         >>> Saved plot: outputs/iterfold_v6\plots\step_001500.png
+Step  1600 | loss: 0.5706 | mse: 0.2896 | dist: 0.1369 | geom: 0.1077 | m%: 0.57 | lr: 9.64e-05 | 718s
+Step  1700 | loss: 1.0056 | mse: 0.3729 | dist: 1.3142 | geom: 0.0968 | m%: 0.97 | lr: 5.54e-05 | 759s
+Step  1800 | loss: 0.6965 | mse: 0.3794 | dist: 0.3006 | geom: 0.0984 | m%: 0.75 | lr: 2.54e-05 | 799s
+Step  1900 | loss: 0.5787 | mse: 0.2748 | dist: 0.2097 | geom: 0.1002 | m%: 0.80 | lr: 7.15e-06 | 839s
+Step  2000 | loss: 0.8365 | mse: 0.3214 | dist: 0.2702 | geom: 0.0958 | m%: 0.73 | lr: 1.00e-06 | 880s
+         >>> Train (20): 1shot=1.67Å | iter=16.52Å
+         >>> Test (5):  1shot=1.71Å | iter=15.17Å | DockQ=0.056
+         >>> Saved plot: outputs/iterfold_v6\plots\step_002000.png
+
+======================================================================
+Final Evaluation (one-shot, no anchors)
+======================================================================
+Test set (5 samples):
+  RMSE:  13.26 +/- 0.54 Å
+  DockQ: 0.053 +/- 0.051
+  Fnat:  0.067
+  iRMS:  inf A
+  LRMS:  inf A
+
+  Quality distribution:
+    Acceptable (>=0.23): 0.0%
+    Medium (>=0.49):     0.0%
+    High (>=0.80):       0.0%
+
+======================================================================
+Training complete
+  Total time: 900s (15.0 min)
+  Best test RMSE: 12.7881 A
+  Best test DockQ: 0.0331
+Finished: 2026-01-29 23:48:09

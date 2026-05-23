@@ -1,0 +1,78 @@
+{
+  "train_indices": [
+    6532,
+    23035,
+    22688,
+    23794,
+    14539,
+    1433,
+    20107,
+    8086,
+    14534,
+    4529,
+    22698,
+    12687,
+    1381,
+    12453,
+    13025,
+    13333,
+    5954,
+    2263,
+    14676,
+    2487
+  ],
+  "test_indices": [
+    13339,
+    516,
+    13338,
+    4821,
+    5327
+  ],
+  "train_ids": [
+    "2bym.pdb1_0",
+    "4pzo.pdb1_3",
+    "4ota.pdb3_0",
+    "4qvd.pdb1_4",
+    "3ld0.pdb3_8",
+    "1guo.pdb1_0",
+    "4ezf.pdb1_0",
+    "2ief.pdb1_1",
+    "3ld0.pdb3_47",
+    "1utd.pdb1_0",
+    "4otb.pdb2_0",
+    "3g9p.pdb1_0",
+    "1gtn.pdb2_0",
+    "3f6n.pdb1_2",
+    "3h7x.pdb2_1",
+    "3hsh.pdb1_0",
+    "1zpq.pdb1_0",
+    "1l0n.pdb2_25",
+    "3m06.pdb2_2",
+    "1m8v.pdb1_12"
+  ],
+  "test_ids": [
+    "3hsh.pdb3_0",
+    "1dm0.pdb1_6",
+    "3hsh.pdb2_2",
+    "1vq6.pdb1_19",
+    "1xxc.pdb1_1"
+  ],
+  "n_train": 20,
+  "n_test": 5,
+  "train_atom_range": [
+    420,
+    600
+  ],
+  "test_atom_range": [
+    444,
+    584
+  ],
+  "config": {
+    "n_train": 20,
+    "n_test": 5,
+    "min_atoms": 200,
+    "max_atoms": 600,
+    "select_smallest": false,
+    "seed": 42
+  }
+}
