@@ -1343,11 +1343,13 @@ def _run_training(args, progress):
                 if args.mode == "stage1_only":
                     # Plot centroids for Stage 1
                     if args.continuous_sigma:
-                        centroids_pred = sample_centroids_ve(
+                        sample_out = sample_centroids_ve(
                             model, batch, noiser, device,
                             align_per_step=args.align_per_step,
-                            recenter=args.recenter
+                            recenter=args.recenter,
+                            is_onestep=is_onestep,
                         )
+                        centroids_pred = sample_out[0] if is_onestep else sample_out
                     elif eval_sampler is not None:
                         centroids_pred = sample_centroids_with_sampler(model, batch, noiser, device, eval_sampler)
                     else:
