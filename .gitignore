@@ -54,6 +54,7 @@ data/processed/
 
 # Logs
 *.log
+!experiments/_archive/**/*.log
 logs/
 
 # OS
@@ -85,3 +86,6 @@ docs/
 # Delegate runtime files
 .delegate/
 notes/
+
+# Outputs archive (binaries kept on disk, not in git)
+outputs/_archive/
