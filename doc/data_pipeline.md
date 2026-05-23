@@ -294,7 +294,7 @@ atom_mask: [B, Natom_max] # True for real/valid atoms
 ## Data Preparation Script
 
 ```bash
-python scripts/prepare_data.py --output-dir data/processed
+python scripts/data/prepare_data.py --output-dir data/processed
 ```
 
 This downloads DIPS-Plus from Zenodo and processes it into Parquet format.

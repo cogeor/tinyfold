@@ -6,8 +6,8 @@ The frontend supports two modes:
 
 | Mode | Server | Use Case |
 |------|--------|----------|
-| **Full** | `web/server.py` | Browse samples, run predictions, view cached results |
-| **Light** | `web-light/server.py` | Embed viewer in other apps, load coords via JS API |
+| **Full** | `web/server.py` | Evaluate models: browse dataset, run/load predictions, inspect metrics |
+| **Light** | `web-light/server.py` | Static showcase of a few train/test GT+prediction examples |
 
 ## Quick Start
 
@@ -143,107 +143,23 @@ The light mode provides an embeddable viewer without model loading or sample bro
 
 ```bash
 cd web-light
-../.venv/Scripts/python.exe server.py --port 5002
+python server.py --port 5002
 # Open http://127.0.0.1:5002
 ```
 
-### URL Parameters
+`web-light` uses Python stdlib only (`http.server`) and is runnable right after cloning.
 
-| Parameter | Values | Description |
-|-----------|--------|-------------|
-| `mode` | `embed`, `light` | Force embed mode (auto-detected from server) |
-| `minimal` | `true` | Hide all controls, show only viewer |
+### Showcase Data
 
-Examples:
-- `http://localhost:5002/` - Embed mode with controls
-- `http://localhost:5002/?minimal=true` - Viewer only
+`web-light` reads `/assets/showcase_samples.json`.
+The simplified flow uses fixed predictions in `assets/`:
 
-### JavaScript API
+- `assets/showcase_predictions.json`
 
-For same-origin usage, the `window.tinyfold` API is available:
-
-```javascript
-// Load structures from coordinate arrays
-window.tinyfold.load({
-    groundTruth: [[x, y, z], ...],  // Nx3 array
-    prediction: [[x, y, z], ...],   // Nx3 array (optional)
-    atomTypes: ['N', 'CA', 'C', 'O'],  // Optional, defaults to backbone
-    sequence: ['ALA', 'GLY', ...]      // Optional residue names
-});
-
-// Other methods
-window.tinyfold.clear();              // Clear all models
-window.tinyfold.setStyle('cartoon');  // 'cartoon', 'stick', 'sphere', 'line'
-window.tinyfold.setColorScheme('chain');  // 'chain', 'spectrum', 'ss'
-window.tinyfold.resetView();          // Reset camera
+```bash
+python scripts/web/prepare_web_light_showcase.py
 ```
 
-### postMessage API (for iframes)
-
-For cross-origin iframe embedding:
-
-```html
-<iframe id="viewer" src="http://localhost:5002/?minimal=true"></iframe>
-
-<script>
-const viewer = document.getElementById('viewer');
-
-// Wait for iframe to load
-viewer.onload = () => {
-    // Load structures
-    viewer.contentWindow.postMessage({
-        type: 'load',
-        groundTruth: [[0, 0, 0], [1.46, 0, 0], ...],
-        prediction: [[0, 0.1, 0], [1.5, 0, 0], ...],
-    }, '*');
-
-    // Other commands
-    viewer.contentWindow.postMessage({ type: 'setStyle', style: 'stick' }, '*');
-    viewer.contentWindow.postMessage({ type: 'clear' }, '*');
-    viewer.contentWindow.postMessage({ type: 'resetView' }, '*');
-};
-</script>
-```
-
-### Integration Example
-
-```html
-<!DOCTYPE html>
-<html>
-<head>
-    <title>My App with TinyFold Viewer</title>
-</head>
-<body>
-    <div style="display: flex; height: 100vh;">
-        <!-- Your app content -->
-        <div style="flex: 1; padding: 20px;">
-            <h1>Protein Analysis</h1>
-            <button onclick="loadExample()">Load Example</button>
-        </div>
-
-        <!-- Embedded TinyFold viewer -->
-        <iframe
-            id="tinyfold"
-            src="http://localhost:5002/"
-            style="flex: 1; border: none;"
-        ></iframe>
-    </div>
-
-    <script>
-    function loadExample() {
-        // Example: backbone coords for 3 residues (12 atoms)
-        const coords = [
-            [0, 0, 0], [1.46, 0, 0], [2.5, 1.2, 0], [2.4, 2.3, 0],      // Res 1
-            [3.8, 0.8, 0], [5.2, 1.1, 0], [6.3, 0.1, 0], [6.2, -1.1, 0], // Res 2
-            [7.6, 0.5, 0], [9.0, 0.3, 0], [10.1, 1.4, 0], [10.0, 2.6, 0] // Res 3
-        ];
-
-        document.getElementById('tinyfold').contentWindow.postMessage({
-            type: 'load',
-            groundTruth: coords
-        }, '*');
-    }
-    </script>
-</body>
-</html>
-```
+This script reads prediction IDs from `assets/showcase_predictions.json`,
+pulls matching ground truth directly from `data/processed/samples.parquet`,
+and writes `assets/showcase_samples.json`.

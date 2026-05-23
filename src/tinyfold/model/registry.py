@@ -18,13 +18,19 @@ import importlib
 
 # Lazy imports to avoid circular dependencies
 _MODEL_CLASSES: Dict[str, str] = {
-    "attention_v2": "models.attention_v2.AttentionDiffusionV2",
-    "hierarchical": "models.hierarchical.HierarchicalDecoder",
-    "pairformer": "models.pairformer_decoder.PairformerDecoder",
-    "af3_style": "models.af3_style.AF3StyleDecoder",
-    "resfold_stage1": "models.resfold.ResidueDenoiser",
-    "resfold_stage2": "models.atomrefine.AtomRefiner",
-    "resfold": "models.resfold_pipeline.ResFoldPipeline",
+    # Archive models (deprecated but kept for backward compatibility)
+    "attention_v2": "tinyfold.model.archive.attention_v2.AttentionDiffusionV2",
+    "hierarchical": "tinyfold.model.archive.hierarchical.HierarchicalDecoder",
+    "pairformer": "tinyfold.model.archive.pairformer_decoder.PairformerDecoder",
+    "af3_style": "tinyfold.model.archive.af3_style.AF3StyleDecoder",
+    # Current models
+    "resfold_stage1": "tinyfold.model.resfold.denoiser.ResidueDenoiser",
+    "resfold_stage2": "tinyfold.model.resfold.refiner.AtomRefinerV2",
+    "resfold_stage2_multi": "tinyfold.model.resfold.atomrefine_multi_sample.AtomRefinerV2MultiSample",
+    "resfold": "tinyfold.model.resfold.pipeline.ResFoldPipeline",
+    "resfold_e2e": "tinyfold.model.resfold.e2e.ResFoldE2E",
+    "resfold_assembler": "tinyfold.model.resfold.assembler.ResFoldAssembler",
+    "iterfold": "tinyfold.model.iterfold.model.IterFold",
 }
 
 _SCHEDULE_CLASSES: Dict[str, str] = {
