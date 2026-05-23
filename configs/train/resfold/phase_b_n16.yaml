@@ -1,17 +1,15 @@
-# Phase B — scaling sweep at N=16. n_steps follows 4000 * sqrt(N).
-# Model knobs return to script defaults (c_token_s1=256, trunk_layers=9,
-# denoiser_blocks=7), matching the stage1_10M lineage.
-#
-# TODO(loop-08): output_dir below is a per-phase base; Loop 08's auto-append hook
-# should append a generate_run_name() timestamped subdir before makedirs.
+# Phase B (ResFoldOneStep) — scaling sweep at N=16. n_steps follows 4000 * sqrt(N).
+# Same Phase A architecture (held fixed until N=256 per NEXT_STEPS.md §3.1).
+
+model_kind: onestep
 
 # --- Data ---
 n_train: 16
 n_test: 14
-n_eval_train: 200
+n_eval_train: 16
 min_atoms: 200
 max_atoms: 400
-batch_size: 64
+batch_size: 16
 dynamic_batch: false
 use_bucketing: false
 n_buckets: 8
@@ -19,7 +17,7 @@ max_tokens: 30000
 
 # --- Training ---
 n_steps: 16000
-eval_every: 1000
+eval_every: 2000
 lr: 0.001
 min_lr: 1.0e-05
 grad_accum: 1
@@ -28,14 +26,34 @@ seed: 42
 # --- Mode ---
 mode: stage1_only
 
+# --- Model (Phase A architecture, held fixed) ---
+c_token_s1: 128
+trunk_layers: 4
+denoiser_blocks: 4
+atom_head_layers: 2
+atom_head_heads: 4
+
 # --- Diffusion ---
 T: 50
 continuous_sigma: true
+
+# --- Augmentation OFF (Phase A discipline) ---
+augment_rotation: false
+multi_copy: 0
+translate_aug: 0.0
+self_cond_prob: 0.0
 
 # --- Loss weights ---
 dist_weight: 0.1
 geom_weight: 0.1
 contact_weight: 0.0
+atom_weight: 0.5
+atom_warmup_steps: 500
+
+# --- Eval sampler ---
+# N=4 confirmed multi-step Euler still drifts even with diverse training data
+# (architecture is sigma-conditional regression in practice). Use one-shot.
+one_shot_sample: true
 
 # --- Output ---
 output_dir: outputs/resfold/phase_b_n16
