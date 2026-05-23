@@ -1,0 +1,53 @@
+# Phase A — overfit on a single sample to validate the wiring.
+# Smallest possible model + no augmentation + no self-conditioning so any failure
+# is the trunk/denoiser, not regularization.
+#
+# TODO(loop-08): output_dir below is a per-phase base; Loop 08's auto-append hook
+# should call tinyfold.training.generate_run_name("resfold", vars(args)) and append
+# the resulting timestamped name as a subdir before makedirs.
+
+# --- Data ---
+n_train: 1
+n_test: 14
+n_eval_train: 1
+min_atoms: 200
+max_atoms: 400
+batch_size: 1
+dynamic_batch: false
+use_bucketing: false
+n_buckets: 8
+max_tokens: 30000
+
+# --- Training ---
+n_steps: 5000
+eval_every: 500
+lr: 0.001
+min_lr: 1.0e-05
+grad_accum: 1
+seed: 42
+
+# --- Mode ---
+mode: stage1_only
+
+# --- Model (smaller than defaults) ---
+c_token_s1: 128
+trunk_layers: 4
+denoiser_blocks: 4
+
+# --- Diffusion ---
+T: 50
+continuous_sigma: true
+
+# --- Augmentation OFF for clean overfit signal ---
+augment_rotation: false
+multi_copy: 0
+translate_aug: 0.0
+self_cond_prob: 0.0
+
+# --- Loss weights ---
+dist_weight: 0.1
+geom_weight: 0.1
+contact_weight: 0.0
+
+# --- Output ---
+output_dir: outputs/resfold/phase_a_overfit

@@ -1,0 +1,45 @@
+# Phase C — data scaling endpoint. Mirrors the configuration used for the live
+# stage1_10M reference run (n_steps=50000, n_train=8600, continuous_sigma=true,
+# stage1_only). N is a placeholder of 8600 (~8.6K); override at run time via
+# --n_train if a different subset is desired:
+#
+#   python scripts/train_resfold.py --config configs/train/resfold/phase_c_data.yaml \
+#       --n_train <N>
+#
+# TODO(loop-08): output_dir below is a per-phase base; Loop 08's auto-append hook
+# should append a generate_run_name() timestamped subdir before makedirs.
+
+# --- Data ---
+n_train: 8600
+n_test: 14
+n_eval_train: 200
+min_atoms: 200
+max_atoms: 400
+batch_size: 64
+dynamic_batch: false
+use_bucketing: false
+n_buckets: 8
+max_tokens: 30000
+
+# --- Training ---
+n_steps: 50000
+eval_every: 2000
+lr: 0.001
+min_lr: 1.0e-05
+grad_accum: 1
+seed: 42
+
+# --- Mode ---
+mode: stage1_only
+
+# --- Diffusion ---
+T: 50
+continuous_sigma: true
+
+# --- Loss weights ---
+dist_weight: 0.1
+geom_weight: 0.1
+contact_weight: 0.0
+
+# --- Output ---
+output_dir: outputs/resfold/phase_c_data
