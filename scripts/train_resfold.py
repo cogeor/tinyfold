@@ -39,6 +39,9 @@ from script_utils import (
     plot_prediction,
 )
 
+from tinyfold.training.run_naming import generate_run_name
+from tinyfold.training.registry_append import append_registry_row
+
 # Training utilities from tinyfold.training
 from tinyfold.training import (
     load_sample_raw,
@@ -475,12 +478,14 @@ def parse_args():
     return parser.parse_args()
 
 
-def main():
-    args = parse_args()
+def _run_training(args, progress):
+    """Body of the training run.
 
-    # Reproducibility: set seed before anything else
-    set_seed(args.seed)
-
+    ``progress`` is a mutable dict whose ``"best_rmse"`` key is updated every
+    time a new best test RMSE is recorded. ``main()`` reads ``progress`` from
+    the surrounding ``finally:`` block so that a crash mid-training still
+    surfaces the last metric we reached.
+    """
     # Setup output directory
     os.makedirs(args.output_dir, exist_ok=True)
     plots_dir = os.path.join(args.output_dir, 'plots')
@@ -701,6 +706,7 @@ def main():
     logger.log("=" * 70)
 
     best_rmse = float('inf')
+    progress["best_rmse"] = best_rmse
     start_time = time.time()
 
     model.train()
@@ -1242,6 +1248,7 @@ def main():
                 # Save best model
                 if test_avg < best_rmse:
                     best_rmse = test_avg
+                    progress["best_rmse"] = best_rmse
                     torch.save({
                         'step': step,
                         'model_state_dict': model.state_dict(),
@@ -1262,6 +1269,47 @@ def main():
     logger.log("")
     logger.log(f"Finished: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.close()
+
+    return best_rmse
+
+
+def main():
+    args = parse_args()
+
+    # Reproducibility: set seed before anything else
+    set_seed(args.seed)
+
+    # Loop 08: never overwrite a prior run — timestamped subdir.
+    run_name = generate_run_name("resfold", vars(args))
+    args.output_dir = os.path.join(args.output_dir, run_name)
+
+    # Track best metric across the try/except so finally: can write to REGISTRY.md.
+    progress = {"best_rmse": float('inf')}
+    outcome = "crashed: NoExitReached"
+    try:
+        _run_training(args, progress)
+        outcome = "converged"
+    except KeyboardInterrupt:
+        outcome = "killed by user"
+        raise
+    except Exception as e:
+        outcome = f"crashed: {type(e).__name__}"
+        raise
+    finally:
+        best = progress.get("best_rmse", float('inf'))
+        final_metric = best if best != float('inf') else None
+        try:
+            registry_path = append_registry_row(
+                run_name=run_name,
+                model="resfold",
+                config_path=getattr(args, "config", None),
+                final_metric=final_metric,
+                outcome=outcome,
+            )
+            print(f"[registry] appended row to {registry_path}")
+        except Exception as reg_err:
+            # Registry write must never mask the real failure.
+            print(f"[registry] WARNING: failed to append row: {reg_err}")
 
 
 if __name__ == "__main__":
