@@ -30,6 +30,7 @@ _MODEL_CLASSES: Dict[str, str] = {
     "resfold": "tinyfold.model.resfold.pipeline.ResFoldPipeline",
     "resfold_e2e": "tinyfold.model.resfold.e2e.ResFoldE2E",
     "resfold_assembler": "tinyfold.model.resfold.assembler.ResFoldAssembler",
+    "resfold_onestep": "tinyfold.model.resfold.onestep.ResFoldOneStep",
     "iterfold": "tinyfold.model.iterfold.model.IterFold",
 }
 

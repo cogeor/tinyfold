@@ -151,14 +151,20 @@ def sample_centroids(model, batch, noiser, device, clamp_val=3.0,
 
 @torch.no_grad()
 def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
-                        align_per_step=True, recenter=True, self_cond=True):
+                        align_per_step=True, recenter=True, self_cond=True,
+                        is_onestep=False):
     """VE (variance-exploding) sampling for continuous sigma models.
 
     Uses AF3-style Euler sampling with the Karras sigma schedule.
     Model must have been trained with continuous sigma (forward_sigma).
 
+    When ``is_onestep`` is True the model's forward_sigma is expected to return
+    a (centroid, atoms) tuple; sampling uses only the centroid for the
+    diffusion update, and at the end of the loop a final forward at sigma_min
+    is run to read the atom-head output for downstream visualization.
+
     Args:
-        model: ResFoldPipeline model (trained with continuous_sigma)
+        model: ResFoldPipeline (or ResFoldOneStep when is_onestep=True)
         batch: Batch dict with aa_seq, chain_ids, res_idx, mask_res
         noiser: VENoiser with KarrasSchedule (has .sigmas attribute)
         device: torch device
@@ -166,9 +172,10 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
         align_per_step: Kabsch-align x0_pred to x each step
         recenter: Re-center coordinates each step
         self_cond: Use self-conditioning (pass previous x0_pred to model)
+        is_onestep: Set True for ResFoldOneStep (tuple return, atom output)
 
     Returns:
-        centroids: [B, L, 3] predicted centroids
+        centroids if is_onestep is False, else (centroids, atoms)
     """
     B, L = batch['aa_seq'].shape
     mask = batch['mask_res']
@@ -182,6 +189,9 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
     # Track previous x0_pred for self-conditioning
     x0_prev = None
 
+    # OneStep models expose forward_sigma directly; pipeline exposes it on .stage1
+    denoiser = model if is_onestep else model.stage1
+
     # Euler sampling loop
     for i in range(len(sigmas) - 1):
         sigma = sigmas[i]
@@ -191,10 +201,11 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
         sigma_batch = sigma.expand(B)
 
         # Predict x0 using continuous sigma conditioning (with self-conditioning)
-        x0_pred = model.stage1.forward_sigma(
+        out = denoiser.forward_sigma(
             x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
             sigma_batch, mask, x0_prev=x0_prev if self_cond else None
         )
+        x0_pred = out[0] if is_onestep else out
         x0_pred = torch.clamp(x0_pred, -clamp_val, clamp_val)
 
         # Kabsch-align x0_pred to current x
@@ -219,6 +230,15 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
             else:
                 centroid = x.mean(dim=1, keepdim=True)
             x = x - centroid
+
+    if is_onestep:
+        # One extra forward at sigma_min to read the atom-head output.
+        sigma_min_batch = sigmas[-1].expand(B)
+        _, atoms_pred = denoiser.forward_sigma(
+            x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
+            sigma_min_batch, mask, x0_prev=x0_prev if self_cond else None,
+        )
+        return x, atoms_pred
 
     return x
 
@@ -369,10 +389,26 @@ def parse_args():
     parser.add_argument("--min_lr", type=float, default=1e-5, help="Minimum LR for cosine schedule")
     parser.add_argument("--grad_accum", type=int, default=1)
 
+    # Model selection (resfold = original two-stage pipeline; onestep = single
+    # network with parallel centroid + atom heads, trained end-to-end)
+    parser.add_argument("--model_kind", type=str, default="resfold",
+                        choices=["resfold", "onestep"],
+                        help="Model architecture: 'resfold' (ResFoldPipeline) or 'onestep' (ResFoldOneStep)")
+
     # Model - Stage 1
     parser.add_argument("--c_token_s1", type=int, default=256)
     parser.add_argument("--trunk_layers", type=int, default=9)
     parser.add_argument("--denoiser_blocks", type=int, default=7)
+
+    # Model - OneStep atom head (only used when model_kind=onestep)
+    parser.add_argument("--atom_head_layers", type=int, default=2,
+                        help="Number of transformer layers in the atom head (onestep only)")
+    parser.add_argument("--atom_head_heads", type=int, default=4,
+                        help="Number of attention heads in the atom head (onestep only)")
+    parser.add_argument("--atom_weight", type=float, default=0.5,
+                        help="Weight on atom-MSE loss (onestep only)")
+    parser.add_argument("--atom_warmup_steps", type=int, default=500,
+                        help="Linear warmup steps for the atom-MSE weight (onestep only)")
 
     # Model - Stage 2 (AtomRefinerV2: ~15M params with defaults)
     parser.add_argument("--c_token_s2", type=int, default=256)
@@ -632,32 +668,64 @@ def _run_training(args, progress):
     # Create sampler for efficient batching
     train_sampler = create_train_sampler(args, train_samples, logger)
 
-    # Create model (use lightweight mode for stage1_only to save ~14M params)
-    model = ResFoldPipeline(
-        c_token_s1=args.c_token_s1,
-        trunk_layers=args.trunk_layers,
-        denoiser_blocks=args.denoiser_blocks,
-        c_token_s2=args.c_token_s2,
-        s2_layers=args.s2_layers,
-        s2_heads=args.s2_heads,
-        n_timesteps=args.T,
-        dropout=0.0,
-        stage1_only=(args.mode == "stage1_only"),
-    ).to(device)
+    # Create model. Two architectures share this script:
+    #   resfold  -> ResFoldPipeline (Stage 1 + optional Stage 2)
+    #   onestep  -> ResFoldOneStep  (centroid diffusion + parallel atom head)
+    is_onestep = (args.model_kind == "onestep")
+    if is_onestep:
+        from tinyfold.model.resfold.onestep import ResFoldOneStep
+        if args.mode != "stage1_only":
+            raise ValueError("model_kind=onestep requires --mode stage1_only")
+        if args.multi_copy and args.multi_copy > 0:
+            raise ValueError("model_kind=onestep does not yet support --multi_copy training")
+        model = ResFoldOneStep(
+            c_token=args.c_token_s1,
+            trunk_layers=args.trunk_layers,
+            denoiser_blocks=args.denoiser_blocks,
+            atom_head_layers=args.atom_head_layers,
+            atom_head_heads=args.atom_head_heads,
+            n_timesteps=args.T,
+            dropout=0.0,
+        ).to(device)
+        # In OneStep the model itself is the "stage 1" denoiser; alias for forward calls.
+        stage1_module = model
+        if args.checkpoint:
+            load_model_checkpoint(model, args.checkpoint, args.mode, device, logger)
+        pc = model.count_parameters()
+        logger.log(f"Model: ResFoldOneStep ({args.mode})")
+        logger.log(f"  Trunk params:     {pc['trunk']:,} ({pc['trunk_pct']:.1f}%)")
+        logger.log(f"  Denoiser params:  {pc['denoiser']:,} ({pc['denoiser_pct']:.1f}%)")
+        logger.log(f"  Atom-head params: {pc['atom_head']:,} ({pc['atom_head_pct']:.1f}%)")
+        logger.log(f"  Total params:     {pc['total']:,}")
+        logger.log("")
+    else:
+        # Original two-stage path.
+        model = ResFoldPipeline(
+            c_token_s1=args.c_token_s1,
+            trunk_layers=args.trunk_layers,
+            denoiser_blocks=args.denoiser_blocks,
+            c_token_s2=args.c_token_s2,
+            s2_layers=args.s2_layers,
+            s2_heads=args.s2_heads,
+            n_timesteps=args.T,
+            dropout=0.0,
+            stage1_only=(args.mode == "stage1_only"),
+        ).to(device)
+        stage1_module = model.stage1
 
-    # Load checkpoint if provided
-    if args.checkpoint:
-        load_model_checkpoint(model, args.checkpoint, args.mode, device, logger)
+        # Load checkpoint if provided
+        if args.checkpoint:
+            load_model_checkpoint(model, args.checkpoint, args.mode, device, logger)
 
-    # Set training mode (freeze/unfreeze stages)
-    model.set_training_mode(args.mode)
+        # Set training mode (freeze/unfreeze stages)
+        model.set_training_mode(args.mode)
 
-    param_counts = model.count_parameters()
-    logger.log(f"Model: ResFold ({args.mode})")
-    logger.log(f"  Stage 1 params: {param_counts['stage1']:,} ({param_counts['stage1_pct']:.1f}%)")
-    logger.log(f"  Stage 2 params: {param_counts['stage2']:,} ({param_counts['stage2_pct']:.1f}%)")
-    logger.log(f"  Total params:   {param_counts['total']:,}")
-    logger.log("")
+        param_counts = model.count_parameters()
+        logger.log(f"Model: ResFold ({args.mode})")
+        logger.log(f"  Stage 1 params: {param_counts['stage1']:,} ({param_counts['stage1_pct']:.1f}%)")
+        logger.log(f"  Stage 2 params: {param_counts['stage2']:,} ({param_counts['stage2_pct']:.1f}%)")
+        logger.log(f"  Total params:   {param_counts['total']:,}")
+        logger.log("")
 
     # Create diffusion components (for Stage 1)
     schedule, noiser = create_diffusion_components(args, device, logger)
@@ -671,9 +739,9 @@ def _run_training(args, progress):
         logger.log(f"  Sampling: align_per_step={args.align_per_step}, recenter={args.recenter}")
     logger.log("")
 
-    # Geometry loss (for Stage 2 only - not used in stage1_only)
+    # Geometry loss (Stage 2 atoms, or onestep atom head)
     geom_loss_fn = None
-    if args.geom_weight > 0 and args.mode != "stage1_only":
+    if args.geom_weight > 0 and (args.mode != "stage1_only" or is_onestep):
         geom_loss_fn = GeometryLoss(
             bond_length_weight=args.bond_length_weight,
             bond_angle_weight=args.bond_angle_weight,
@@ -837,22 +905,36 @@ def _run_training(args, progress):
                         x0_prev = None
                         if args.self_cond_prob > 0 and torch.rand(1).item() < args.self_cond_prob:
                             with torch.no_grad():
-                                x0_prev = model.stage1.forward_sigma(
+                                sc_out = stage1_module.forward_sigma(
                                     x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
                                     sigma, batch['mask_res'], x0_prev=None
-                                ).detach()
+                                )
+                                # OneStep returns (centroid, atoms); self-conditioning only uses centroids.
+                                x0_prev = (sc_out[0] if is_onestep else sc_out).detach()
 
                         # Main forward pass (with or without self-conditioning)
-                        centroids_pred = model.stage1.forward_sigma(
+                        fwd_out = stage1_module.forward_sigma(
                             x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
                             sigma, batch['mask_res'], x0_prev=x0_prev
                         )
+                        if is_onestep:
+                            centroids_pred, atoms_pred = fwd_out
+                        else:
+                            centroids_pred = fwd_out
+                            atoms_pred = None
                     else:
                         # Original behavior with discrete timesteps
-                        centroids_pred = model.forward_stage1(
-                            x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
-                            t, batch['mask_res']
-                        )
+                        if is_onestep:
+                            centroids_pred, atoms_pred = stage1_module(
+                                x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
+                                t, batch['mask_res']
+                            )
+                        else:
+                            centroids_pred = model.forward_stage1(
+                                x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
+                                t, batch['mask_res']
+                            )
+                            atoms_pred = None
                     # Loss: MSE on centroids + distance consistency
                     # Use centroids_target which may be rotated by augmentation
                     loss_mse = compute_mse_loss(centroids_pred, centroids_target, batch['mask_res'])
@@ -863,6 +945,41 @@ def _run_training(args, progress):
 
                     # Apply AF3-style loss weighting (if enabled)
                     loss = loss * loss_weight
+
+                    # OneStep: add atom-MSE (with warmup) and geometry losses on atoms_pred.
+                    loss_atom = 0.0
+                    loss_geom = 0.0
+                    loss_bond = 0.0
+                    loss_angle = 0.0
+                    loss_omega = 0.0
+                    alpha_atom = 0.0
+                    if is_onestep and atoms_pred is not None:
+                        B, L = centroids_pred.shape[:2]
+                        atoms_target_BL43 = batch['coords_res']  # [B, L, 4, 3]
+                        # Flatten to [B, L*4, 3] for compute_mse_loss with mask_atom.
+                        atoms_pred_flat = atoms_pred.reshape(B, L * 4, 3)
+                        atoms_target_flat = atoms_target_BL43.reshape(B, L * 4, 3)
+                        atom_mse_tensor = compute_mse_loss(
+                            atoms_pred_flat, atoms_target_flat, batch['mask_atom']
+                        )
+                        # Linear warmup so the atom head doesn't poison the trunk early.
+                        warmup = args.atom_warmup_steps
+                        ramp = min(1.0, float(step) / float(warmup)) if warmup > 0 else 1.0
+                        alpha_atom = ramp * args.atom_weight
+                        loss = loss + alpha_atom * atom_mse_tensor
+                        loss_atom = atom_mse_tensor.item()
+
+                        if geom_loss_fn is not None and args.geom_weight > 0:
+                            geom_losses = geom_loss_fn(
+                                atoms_pred,
+                                batch['mask_res'],
+                                gt_coords=batch['coords_res'],
+                            )
+                            loss = loss + args.geom_weight * geom_losses['total']
+                            loss_geom = geom_losses['total'].item()
+                            loss_bond = geom_losses['bond_length'].item()
+                            loss_angle = geom_losses['bond_angle'].item()
+                            loss_omega = geom_losses['omega'].item()
 
                     # Contact loss for Stage 1
                     loss_contact = 0.0
@@ -884,6 +1001,15 @@ def _run_training(args, progress):
                             'contact': loss_contact,
                             'loss_weight': loss_weight if isinstance(loss_weight, float) else loss_weight.item(),
                         }
+                        if is_onestep:
+                            loss_components.update({
+                                'atom_mse': loss_atom,
+                                'alpha_atom': alpha_atom,
+                                'geom': loss_geom,
+                                'bond': loss_bond,
+                                'angle': loss_angle,
+                                'omega': loss_omega,
+                            })
 
             elif args.mode == "stage2_only":
                 # Only Stage 2
@@ -1053,11 +1179,13 @@ def _run_training(args, progress):
                         # For Stage 1: evaluate centroid RMSE via diffusion sampling
                         if args.continuous_sigma:
                             # Use VE sampling for continuous sigma models
-                            centroids_pred = sample_centroids_ve(
+                            sample_out = sample_centroids_ve(
                                 model, batch, noiser, device,
                                 align_per_step=args.align_per_step,
-                                recenter=args.recenter
+                                recenter=args.recenter,
+                                is_onestep=is_onestep,
                             )
+                            centroids_pred = sample_out[0] if is_onestep else sample_out
                         elif eval_sampler is not None:
                             centroids_pred = sample_centroids_with_sampler(model, batch, noiser, device, eval_sampler)
                         else:
@@ -1090,18 +1218,25 @@ def _run_training(args, progress):
                 test_dockq_scores = []
                 test_lddt_scores = []
                 test_ilddt_scores = []
+                test_atom_rmses = []  # OneStep only
                 for idx in test_indices:
                     s = test_samples[idx]
                     batch = collate_batch([s], device)
 
                     if args.mode == "stage1_only":
+                        atoms_pred_onestep = None
                         if args.continuous_sigma:
                             # Use VE sampling for continuous sigma models
-                            centroids_pred = sample_centroids_ve(
+                            sample_out = sample_centroids_ve(
                                 model, batch, noiser, device,
                                 align_per_step=args.align_per_step,
-                                recenter=args.recenter
+                                recenter=args.recenter,
+                                is_onestep=is_onestep,
                             )
+                            if is_onestep:
+                                centroids_pred, atoms_pred_onestep = sample_out
+                            else:
+                                centroids_pred = sample_out
                         elif eval_sampler is not None:
                             centroids_pred = sample_centroids_with_sampler(model, batch, noiser, device, eval_sampler)
                         else:
@@ -1111,6 +1246,15 @@ def _run_training(args, progress):
                                 recenter=args.recenter
                             )
                         rmse = compute_rmse(centroids_pred, batch['centroids'], batch['mask_res']).item() * s['std']
+                        if is_onestep and atoms_pred_onestep is not None:
+                            # Atom RMSE in Angstroms (Kabsch-aligned).
+                            B_, L_ = centroids_pred.shape[:2]
+                            atom_rmse = compute_rmse(
+                                atoms_pred_onestep.reshape(B_, L_ * 4, 3),
+                                batch['coords_res'].reshape(B_, L_ * 4, 3),
+                                batch['mask_atom'],
+                            ).item() * s['std']
+                            test_atom_rmses.append(atom_rmse)
                     elif args.mode == "stage2_only" and 'centroids_pred' in batch:
                         # For Stage 2 with cached predictions: use Stage 1 predictions directly
                         atoms_pred = model.forward_stage2(
@@ -1187,6 +1331,9 @@ def _run_training(args, progress):
                 if test_ilddt_scores:
                     ilddt_avg = sum(test_ilddt_scores) / len(test_ilddt_scores)
                     log_msg += f" | ilDDT: {ilddt_avg:.4f}"
+                if test_atom_rmses:
+                    atom_avg = sum(test_atom_rmses) / len(test_atom_rmses)
+                    log_msg += f" | Atom RMSE: {atom_avg:.4f}"
                 logger.log(log_msg)
 
                 # Plot first sample
