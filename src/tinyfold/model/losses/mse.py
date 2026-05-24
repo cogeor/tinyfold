@@ -8,6 +8,8 @@ import torch
 from torch import Tensor
 from typing import Optional, Tuple
 
+from tinyfold.model.geometry import kabsch_rigid
+
 
 def kabsch_align(
     pred: Tensor,
@@ -19,44 +21,36 @@ def kabsch_align(
     Computes optimal rotation to align pred to target using SVD.
     Both tensors are centered before alignment.
 
+    Adapter over :func:`tinyfold.model.geometry.kabsch_rigid`: that helper
+    returns ``aligned`` in target's TRANSLATED frame (i.e. ``+ target_mean``),
+    while the historical ``kabsch_align`` contract returns BOTH ``pred_aligned``
+    and ``target_centered`` in the ORIGIN-CENTRED frame. We subtract
+    ``target_mean`` from the helper's output to restore that convention.
+
     Args:
         pred: Predicted coordinates [B, N, 3]
         target: Target coordinates [B, N, 3]
         mask: Optional mask for valid positions [B, N]
 
     Returns:
-        pred_aligned: Aligned predicted coordinates [B, N, 3]
-        target_centered: Centered target coordinates [B, N, 3]
+        pred_aligned: Aligned predicted coordinates [B, N, 3] (origin-centred)
+        target_centered: Centered target coordinates [B, N, 3] (origin-centred)
     """
-    B = pred.shape[0]
-
     if mask is not None:
-        mask_exp = mask.unsqueeze(-1).float()
-        n_valid = mask.sum(dim=1, keepdim=True).unsqueeze(-1).clamp(min=1)
-        pred_mean = (pred * mask_exp).sum(dim=1, keepdim=True) / n_valid
+        mask_exp = mask.unsqueeze(-1).to(target.dtype)
+        n_valid = mask.sum(dim=1, keepdim=True).unsqueeze(-1).clamp(min=1).to(target.dtype)
         target_mean = (target * mask_exp).sum(dim=1, keepdim=True) / n_valid
     else:
-        pred_mean = pred.mean(dim=1, keepdim=True)
         target_mean = target.mean(dim=1, keepdim=True)
 
-    pred_c = pred - pred_mean
+    _, _, aligned = kabsch_rigid(pred, target, mask)
+    # Helper returned aligned in target's translated frame; subtract target_mean
+    # to put it back in the origin-centred frame the old contract used.
+    pred_aligned = aligned - target_mean
     target_c = target - target_mean
-
     if mask is not None:
-        pred_c = pred_c * mask_exp
+        pred_aligned = pred_aligned * mask_exp
         target_c = target_c * mask_exp
-
-    # SVD for optimal rotation
-    H = torch.bmm(pred_c.transpose(1, 2), target_c)
-    U, S, Vt = torch.linalg.svd(H)
-
-    # Handle reflection case
-    d = torch.det(torch.bmm(Vt.transpose(1, 2), U.transpose(1, 2)))
-    D = torch.eye(3, device=pred.device).unsqueeze(0).expand(B, -1, -1).clone()
-    D[:, 2, 2] = d
-
-    R = torch.bmm(torch.bmm(Vt.transpose(1, 2), D), U.transpose(1, 2))
-    pred_aligned = torch.bmm(pred_c, R.transpose(1, 2))
 
     return pred_aligned, target_c
 

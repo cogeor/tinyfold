@@ -61,6 +61,7 @@ from tinyfold.model.diffusion import (
     kabsch_align_to_target,
     create_sampler,
 )
+from tinyfold.model.geometry import kabsch_rigid
 from tinyfold.model.resfold import ResFoldPipeline
 from tinyfold.model.metrics import compute_dockq, cluster_poses, interface_mask_from_gt
 from tinyfold.training.utils import (
@@ -187,8 +188,8 @@ def sample_centroids_one_shot(model, batch, noiser, device, is_onestep=False,
 
 @torch.no_grad()
 def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
-                        align_per_step=True, recenter=True, self_cond=True,
-                        is_onestep=False, generator=None):
+                        align_per_step=True, recenter=True, kabsch_interp=False,
+                        self_cond=True, is_onestep=False, generator=None):
     """VE (variance-exploding) sampling for continuous sigma models.
 
     Uses AF3-style Euler sampling with the Karras sigma schedule.
@@ -207,6 +208,12 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
         clamp_val: Value to clamp predictions
         align_per_step: Kabsch-align x0_pred to x each step
         recenter: Re-center coordinates each step
+        kabsch_interp: Boltz Kabsch-interpolation sampler. When True, after
+            each Euler step the freshly-updated ``x`` is rigid-aligned onto
+            the previous step's ``x``, so consecutive denoiser inputs share a
+            rigid frame. Orthogonal to ``align_per_step`` (different line,
+            different anchor); the two can coexist. See
+            ``.delegate/work/20260524-051951-prio01-retrain/03/PLAN.md`` D2.
         self_cond: Use self-conditioning (pass previous x0_pred to model)
         is_onestep: Set True for ResFoldOneStep (tuple return, atom output)
 
@@ -236,6 +243,12 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
         # Create sigma tensor for batch
         sigma_batch = sigma.expand(B)
 
+        # Snapshot x BEFORE the denoiser forward — clone is required because
+        # x is rebound by the Euler step below. Used by the kabsch_interp
+        # branch to align the freshly-stepped x onto the pre-step frame
+        # (Boltz trajectory-frame trick; see PLAN D2).
+        x_prev = x.clone() if kabsch_interp else None
+
         # Predict x0 using continuous sigma conditioning (with self-conditioning)
         out = denoiser.forward_sigma(
             x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
@@ -248,7 +261,9 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
         if align_per_step:
             x0_pred = kabsch_align_to_target(x0_pred, x, mask)
 
-        # Store for self-conditioning in next iteration
+        # Store for self-conditioning in next iteration. Note: we intentionally
+        # store x0_pred in the PRE-kabsch_interp frame — self-cond is about
+        # giving the denoiser a structural hint, not a frame-consistency one.
         x0_prev = x0_pred.detach()
 
         # Euler step: x_next = x + (sigma_next - sigma) * (x - x0_pred) / sigma
@@ -256,6 +271,13 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
         d = (x - x0_pred) / sigma  # Direction toward x0
         dt = sigma_next - sigma    # Negative (decreasing sigma)
         x = x + d * dt
+
+        # Boltz Kabsch-interpolation: rigid-align the freshly-stepped x onto
+        # the pre-step x_prev so consecutive denoiser inputs share a frame.
+        # Applied BEFORE the optional recenter (which becomes a no-op anyway
+        # since R, t already match x_prev's centroid). See PLAN D2/D3.
+        if kabsch_interp:
+            _, _, x = kabsch_rigid(x, x_prev, mask)
 
         # Re-center
         if recenter:
@@ -269,6 +291,11 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
 
     if is_onestep:
         # One extra forward at sigma_min to read the atom-head output.
+        # NOTE: `x` here is the terminal Euler-step value, already kabsch-
+        # aligned if kabsch_interp=True. The atom head emits per-residue
+        # [L, 4, 3] offsets in this centroid frame, so atoms automatically
+        # follow the aligned centroids — no extra Kabsch on atoms needed.
+        # See PLAN D5.
         sigma_min_batch = sigmas[-1].expand(B)
         _, atoms_pred = denoiser.forward_sigma(
             x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
@@ -292,6 +319,7 @@ def sample_k_centroids(
     one_shot: bool,
     align_per_step: bool = False,
     recenter: bool = False,
+    kabsch_interp: bool = False,
     self_cond: bool = True,
 ):
     """Draw K reproducible centroid samples for one target.
@@ -318,6 +346,8 @@ def sample_k_centroids(
         one_shot: True for single-forward EDM inference (fast path).
         align_per_step: forwarded to the VE sampler.
         recenter: forwarded to the VE sampler.
+        kabsch_interp: forwarded to the VE sampler (Boltz trajectory-frame
+            alignment). Ignored on the one_shot fast path.
         self_cond: forwarded to the VE sampler.
 
     Returns:
@@ -363,6 +393,7 @@ def sample_k_centroids(
                 out = sample_centroids_ve(
                     model, batch, noiser, device,
                     align_per_step=align_per_step, recenter=recenter,
+                    kabsch_interp=kabsch_interp,
                     self_cond=self_cond, is_onestep=is_onestep, generator=gen,
                 )
             if is_onestep:
@@ -619,6 +650,11 @@ def parse_args():
                         help="Kabsch-align x0_pred to x_t each step (fixes drift, Boltz-1 style)")
     parser.add_argument("--recenter", action="store_true",
                         help="Re-center coordinates each step (avoids translation drift)")
+    parser.add_argument("--kabsch_interp", action="store_true",
+                        help="Boltz Kabsch-interpolation sampler: after each Euler step, "
+                             "rigid-align x_new onto the previous step's x. Targets the "
+                             "+2 A multi-step drift documented in notes/phase_a_findings.md. "
+                             "Orthogonal to --align_per_step (different anchor).")
 
     # Multi-sample inference (HDOCK-style cluster-then-rank). K=1 (default) is
     # the legacy single-sample path and produces byte-identical eval output.
@@ -727,6 +763,7 @@ def _run_test_eval(
                         K=args.n_samples, base_seed=args.seed, target_idx=target_pos,
                         is_onestep=is_onestep, one_shot=args.one_shot_sample,
                         align_per_step=args.align_per_step, recenter=args.recenter,
+                        kabsch_interp=args.kabsch_interp,
                     )
                     n_res = s['n_res']
                     # Per-sample RMSE vs GT (Kabsch-aligned by compute_rmse).
@@ -770,6 +807,7 @@ def _run_test_eval(
                             model, batch, noiser, device,
                             align_per_step=args.align_per_step,
                             recenter=args.recenter,
+                            kabsch_interp=args.kabsch_interp,
                             is_onestep=is_onestep,
                         )
                     if is_onestep:
@@ -1155,6 +1193,8 @@ def _run_training(args, progress):
         logger.log(f"  Sampler: {args.sampler}")
     elif args.align_per_step or args.recenter:
         logger.log(f"  Sampling: align_per_step={args.align_per_step}, recenter={args.recenter}")
+    if args.kabsch_interp:
+        logger.log(f"  kabsch_interp: True (Boltz trajectory-frame alignment)")
     logger.log("")
 
     # Geometry loss (Stage 2 atoms, or onestep atom head)
@@ -1632,6 +1672,7 @@ def _run_training(args, progress):
                                     model, batch, noiser, device,
                                     align_per_step=args.align_per_step,
                                     recenter=args.recenter,
+                                    kabsch_interp=args.kabsch_interp,
                                     is_onestep=is_onestep,
                                 )
                             centroids_pred = sample_out[0] if is_onestep else sample_out
@@ -1685,6 +1726,7 @@ def _run_training(args, progress):
                                 model, batch, noiser, device,
                                 align_per_step=args.align_per_step,
                                 recenter=args.recenter,
+                                kabsch_interp=args.kabsch_interp,
                                 is_onestep=is_onestep,
                             )
                         centroids_pred = sample_out[0] if is_onestep else sample_out

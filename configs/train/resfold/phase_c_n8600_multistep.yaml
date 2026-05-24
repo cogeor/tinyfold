@@ -1,0 +1,62 @@
+# Phase C N=8600 — MULTISTEP override.
+#
+# This config is identical to phase_c_n8600.yaml EXCEPT it sets
+# `one_shot_sample: false` so eval exercises the full T=50 Euler trajectory
+# rather than the single-forward EDM fast path. Required for the Loop 03
+# Kabsch-interpolation re-eval (Row A / Row B) because the headline
+# `phase_c_n8600.yaml` defaults `one_shot_sample: true` which short-circuits
+# `sample_centroids_ve` entirely — `--kabsch_interp` has no effect on the
+# one-shot path.
+#
+# See PLAN .delegate/work/20260524-051951-prio01-retrain/03/PLAN.md Task 5
+# "Notes for the runner" for context.
+
+model_kind: onestep
+
+# --- Data ---
+n_train: 8600
+n_test: 100
+n_eval_train: 200
+min_atoms: 200
+max_atoms: 1200
+batch_size: 32
+dynamic_batch: false
+use_bucketing: false
+n_buckets: 8
+max_tokens: 30000
+
+# --- Training ---
+n_steps: 50000
+eval_every: 5000
+lr: 1.0e-04
+min_lr: 1.0e-05
+grad_accum: 1
+seed: 42
+
+mode: stage1_only
+
+c_token_s1: 256
+trunk_layers: 6
+denoiser_blocks: 6
+atom_head_layers: 2
+atom_head_heads: 4
+
+T: 50
+continuous_sigma: true
+
+augment_rotation: true
+multi_copy: 0
+translate_aug: 0.0
+self_cond_prob: 0.0
+
+dist_weight: 0.1
+geom_weight: 0.1
+contact_weight: 0.0
+atom_weight: 0.5
+atom_warmup_steps: 500
+
+# THIS is the only diff vs phase_c_n8600.yaml: multi-step VE sampling, so
+# `--kabsch_interp` actually reaches `sample_centroids_ve`.
+one_shot_sample: false
+
+output_dir: outputs/resfold/phase_c_n8600_multistep
