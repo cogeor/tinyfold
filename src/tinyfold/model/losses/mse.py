@@ -145,6 +145,79 @@ def compute_rmse(
     return rmse
 
 
+def compute_c_rmsd(
+    pred_ca: Tensor,        # [B, L, 3] predicted CA (or centroid) coords
+    gt_ca: Tensor,          # [B, L, 3] ground-truth CA coords
+    chain_ids: Tensor,      # [B, L] long, values in {0, 1}; 0 == chain A
+    mask: Optional[Tensor] = None,  # [B, L] bool, valid residues
+) -> Tensor:
+    """Complex-RMSD: Kabsch-align pred chain A onto GT chain A, apply that
+    SINGLE rigid transform to the full prediction (both chains), then return
+    RMSD over all valid CA.
+
+    This measures inter-chain placement: identical to per-chain RMSD if
+    chain B sits where GT says it does after chain A is aligned, and large
+    when the predicted complex has the right chains but the wrong relative
+    pose.
+
+    Implementation notes:
+        - Reuses the same SVD recipe as ``kabsch_align`` but keeps ``R`` and
+          ``t`` explicit so we can apply the chain-A transform to the WHOLE
+          complex (chain B included).
+        - Requires at least 3 valid chain-A CA per batch element (asserted).
+    """
+    assert pred_ca.shape == gt_ca.shape, \
+        f"shape mismatch {pred_ca.shape} vs {gt_ca.shape}"
+    assert chain_ids.shape == pred_ca.shape[:2], \
+        f"chain_ids shape {chain_ids.shape} != {pred_ca.shape[:2]}"
+
+    B, L, _ = pred_ca.shape
+    device = pred_ca.device
+
+    # Chain A mask (chain id == 0), AND'd with validity mask.
+    chain_a = (chain_ids == 0)
+    if mask is not None:
+        chain_a = chain_a & mask.bool()
+        full_mask = mask.bool()
+    else:
+        full_mask = torch.ones(B, L, dtype=torch.bool, device=device)
+
+    # Guard: need >=3 chain-A residues per batch element for a stable Kabsch.
+    n_a = chain_a.sum(dim=1)
+    assert (n_a >= 3).all(), \
+        f"compute_c_rmsd needs >=3 chain-A residues per sample, got {n_a.tolist()}"
+
+    # --- Per-batch chain-A Kabsch fit (R, t) ---
+    # Centroids over chain-A only.
+    chain_a_f = chain_a.unsqueeze(-1).float()
+    n_a_exp = chain_a_f.sum(dim=1, keepdim=True).clamp(min=1.0)  # [B,1,1]
+    pred_a_mean = (pred_ca * chain_a_f).sum(dim=1, keepdim=True) / n_a_exp
+    gt_a_mean   = (gt_ca   * chain_a_f).sum(dim=1, keepdim=True) / n_a_exp
+
+    pred_a_c = (pred_ca - pred_a_mean) * chain_a_f
+    gt_a_c   = (gt_ca   - gt_a_mean)   * chain_a_f
+
+    # H = pred_a_c^T @ gt_a_c  -> SVD -> R that maps pred onto gt.
+    H = torch.bmm(pred_a_c.transpose(1, 2), gt_a_c)
+    U, S, Vt = torch.linalg.svd(H)
+    d = torch.det(torch.bmm(Vt.transpose(1, 2), U.transpose(1, 2)))
+    D = torch.eye(3, device=device).unsqueeze(0).expand(B, -1, -1).clone()
+    D[:, 2, 2] = d
+    R = torch.bmm(torch.bmm(Vt.transpose(1, 2), D), U.transpose(1, 2))  # [B,3,3]
+    # Translation so that R @ pred_a_mean + t = gt_a_mean.
+    t = gt_a_mean.squeeze(1) - torch.bmm(pred_a_mean, R.transpose(1, 2)).squeeze(1)  # [B,3]
+
+    # --- Apply (R, t) to FULL prediction (both chains) ---
+    pred_aligned = torch.bmm(pred_ca, R.transpose(1, 2)) + t.unsqueeze(1)  # [B,L,3]
+
+    # --- RMSD over all valid CA (both chains) ---
+    sq_diff = ((pred_aligned - gt_ca) ** 2).sum(dim=-1)  # [B,L]
+    full_mask_f = full_mask.float()
+    n_valid = full_mask_f.sum().clamp(min=1.0)
+    rmsd = torch.sqrt((sq_diff * full_mask_f).sum() / n_valid)
+    return rmsd
+
+
 def compute_relative_distance_loss(
     pred_coords: Tensor,       # [B, K, 3] predicted coordinates
     gt_coords: Tensor,         # [B, K, 3] ground truth for target atoms

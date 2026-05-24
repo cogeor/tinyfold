@@ -73,6 +73,7 @@ from tinyfold.model.losses import (
     kabsch_align,
     compute_mse_loss,
     compute_rmse,
+    compute_c_rmsd,
     compute_distance_consistency_loss,
     GeometryLoss,
     ContactLoss,
@@ -503,6 +504,9 @@ def parse_args():
     # Checkpoint
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Path to checkpoint to load (e.g., Stage 1 checkpoint for Stage 2 training)")
+    parser.add_argument("--eval_only", action="store_true",
+                        help="Skip training; load --checkpoint and run one eval pass on "
+                             "the test split, then write a REGISTRY row with the metrics.")
 
     # Sampling (evaluation)
     parser.add_argument("--sampler", type=str, default=None,
@@ -546,6 +550,205 @@ def parse_args():
         parser.set_defaults(**filtered)
 
     return parser.parse_args()
+
+
+def _run_test_eval(
+    model,
+    test_samples,
+    test_indices,
+    noiser,
+    eval_sampler,
+    device,
+    args,
+    is_onestep,
+    logger,
+    train_avg=None,
+    n_eval=None,
+):
+    """Run one full eval pass over ``test_indices`` and log the summary line.
+
+    This is the body originally inlined inside ``if step % args.eval_every == 0:``
+    in the training loop. Factored out so the ``--eval_only`` re-eval path can
+    invoke the exact same code without re-running training.
+
+    Pure function w.r.t. the ``progress`` dict — caller is responsible for
+    storing returned metrics if they want them surfaced to REGISTRY.md.
+
+    Returns:
+        tuple ``(test_avg, dockq_avg, dockq_success_pct, c_rmsd_avg)``. Each
+        of the last three may be ``None`` if the corresponding metric was not
+        collected (e.g., DockQ is None for non-onestep stage1_only modes).
+    """
+    model.eval()
+    with torch.no_grad():
+        # Evaluate on test set
+        test_rmses = []
+        test_dockq_scores = []
+        test_lddt_scores = []
+        test_ilddt_scores = []
+        test_atom_rmses = []  # OneStep only
+        test_c_rmsds = []  # Complex-RMSD (chain-A-aligned, all CA)
+        for idx in test_indices:
+            s = test_samples[idx]
+            batch = collate_batch([s], device)
+
+            if args.mode == "stage1_only":
+                atoms_pred_onestep = None
+                if args.continuous_sigma:
+                    if args.one_shot_sample:
+                        sample_out = sample_centroids_one_shot(
+                            model, batch, noiser, device, is_onestep=is_onestep,
+                        )
+                    else:
+                        sample_out = sample_centroids_ve(
+                            model, batch, noiser, device,
+                            align_per_step=args.align_per_step,
+                            recenter=args.recenter,
+                            is_onestep=is_onestep,
+                        )
+                    if is_onestep:
+                        centroids_pred, atoms_pred_onestep = sample_out
+                    else:
+                        centroids_pred = sample_out
+                elif eval_sampler is not None:
+                    centroids_pred = sample_centroids_with_sampler(model, batch, noiser, device, eval_sampler)
+                else:
+                    centroids_pred = sample_centroids(
+                        model, batch, noiser, device,
+                        align_per_step=args.align_per_step,
+                        recenter=args.recenter
+                    )
+                rmse = compute_rmse(centroids_pred, batch['centroids'], batch['mask_res']).item() * s['std']
+                if is_onestep and atoms_pred_onestep is not None:
+                    # Atom RMSE in Angstroms (Kabsch-aligned).
+                    B_, L_ = centroids_pred.shape[:2]
+                    atom_rmse = compute_rmse(
+                        atoms_pred_onestep.reshape(B_, L_ * 4, 3),
+                        batch['coords_res'].reshape(B_, L_ * 4, 3),
+                        batch['mask_atom'],
+                    ).item() * s['std']
+                    test_atom_rmses.append(atom_rmse)
+
+                # --- DockQ + C-RMSD for stage1_only onestep ---
+                # C-RMSD only needs centroids + chain IDs (works regardless of is_onestep).
+                n_res = s['n_res']
+                c_rmsd = compute_c_rmsd(
+                    pred_ca=centroids_pred[:, :n_res],
+                    gt_ca=batch['centroids'][:, :n_res],
+                    chain_ids=batch['chain_ids'][:, :n_res],
+                    mask=batch['mask_res'][:, :n_res],
+                ).item() * s['std']
+                test_c_rmsds.append(c_rmsd)
+
+                # DockQ only when we have atom-level predictions (i.e. onestep).
+                if is_onestep and atoms_pred_onestep is not None:
+                    pred_coords_res = atoms_pred_onestep[0, :n_res]   # [L, 4, 3]
+                    gt_coords_res   = batch['coords_res'][0, :n_res]
+                    dockq_result = compute_dockq(
+                        pred_coords_res, gt_coords_res,
+                        batch['aa_seq'][0, :n_res], batch['chain_ids'][0, :n_res],
+                        std=s['std'],
+                    )
+                    if dockq_result['dockq'] is not None:
+                        test_dockq_scores.append(dockq_result['dockq'])
+            elif args.mode == "stage2_only" and 'centroids_pred' in batch:
+                # For Stage 2 with cached predictions: use Stage 1 predictions directly
+                atoms_pred = model.forward_stage2(
+                    batch['centroids_pred'], batch['aa_seq'], batch['chain_ids'],
+                    batch['res_idx'], batch['mask_res']
+                )
+                atoms_pred_flat = atoms_pred.view(1, -1, 3)
+                rmse = compute_rmse(atoms_pred_flat, batch['coords'], batch['mask_atom']).item() * s['std']
+
+                # Compute DockQ, lDDT/ilDDT for Stage 2
+                n_res = s['n_res']
+                pred_coords_res = atoms_pred[:, :n_res]  # [1, L, 4, 3]
+                gt_coords_res = batch['coords_res'][:, :n_res]
+
+                # DockQ
+                dockq_result = compute_dockq(
+                    pred_coords_res[0], gt_coords_res[0],
+                    batch['aa_seq'][0, :n_res], batch['chain_ids'][0, :n_res],
+                    std=s['std']
+                )
+                if dockq_result['dockq'] is not None:
+                    test_dockq_scores.append(dockq_result['dockq'])
+
+                # lDDT/ilDDT
+                lddt_result = compute_lddt_metrics(
+                    pred_coords_res, gt_coords_res,
+                    batch['chain_ids'][:, :n_res],
+                    batch['mask_res'][:, :n_res],
+                    coord_scale=s['std']
+                )
+                test_lddt_scores.append(lddt_result['lddt'])
+                if lddt_result['n_interface'] > 0:
+                    test_ilddt_scores.append(lddt_result['ilddt'])
+            else:
+                # For end_to_end or stage2 without cached: full sampling
+                atoms_pred = model.sample(
+                    batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
+                    noiser, batch['mask_res']
+                )
+                rmse = compute_rmse(atoms_pred, batch['coords'], batch['mask_atom']).item() * s['std']
+
+                # Compute DockQ and lDDT/ilDDT for Stage 2 / end-to-end
+                n_res = s['n_res']
+                pred_coords_res = atoms_pred[0].view(n_res, 4, 3)
+                gt_coords_res = batch['coords_res'][0, :n_res]
+                aa_seq = batch['aa_seq'][0, :n_res]
+                chain_ids = batch['chain_ids'][0, :n_res]
+                dockq_result = compute_dockq(pred_coords_res, gt_coords_res, aa_seq, chain_ids, std=s['std'])
+                if dockq_result['dockq'] is not None:
+                    test_dockq_scores.append(dockq_result['dockq'])
+
+                # lDDT/ilDDT
+                lddt_result = compute_lddt_metrics(
+                    pred_coords_res.unsqueeze(0), gt_coords_res.unsqueeze(0),
+                    chain_ids.unsqueeze(0),
+                    batch['mask_res'][:, :n_res],
+                    coord_scale=s['std']
+                )
+                test_lddt_scores.append(lddt_result['lddt'])
+                if lddt_result['n_interface'] > 0:
+                    test_ilddt_scores.append(lddt_result['ilddt'])
+
+            test_rmses.append(rmse)
+        test_avg = sum(test_rmses) / len(test_rmses)
+
+        metric_name = "Centroid RMSE" if args.mode == "stage1_only" else "Atom RMSE"
+        if train_avg is not None and n_eval is not None:
+            log_msg = (
+                f"         >>> Train {metric_name} ({n_eval}): {train_avg:.4f} A "
+                f"| Test {metric_name} ({len(test_indices)}): {test_avg:.4f} A"
+            )
+        else:
+            # --eval_only: no train-side numbers to print.
+            log_msg = f"         >>> Test {metric_name} ({len(test_indices)}): {test_avg:.4f} A"
+        dockq_avg = None
+        dockq_success_pct = None
+        c_rmsd_avg = None
+        if test_dockq_scores:
+            dockq_avg = sum(test_dockq_scores) / len(test_dockq_scores)
+            dockq_success_pct = 100.0 * sum(
+                1 for d in test_dockq_scores if d >= 0.23
+            ) / len(test_dockq_scores)
+            log_msg += f" | DockQ: {dockq_avg:.4f} (succ {dockq_success_pct:.1f}%)"
+        if test_lddt_scores:
+            lddt_avg = sum(test_lddt_scores) / len(test_lddt_scores)
+            log_msg += f" | lDDT: {lddt_avg:.4f}"
+        if test_ilddt_scores:
+            ilddt_avg = sum(test_ilddt_scores) / len(test_ilddt_scores)
+            log_msg += f" | ilDDT: {ilddt_avg:.4f}"
+        if test_atom_rmses:
+            atom_avg = sum(test_atom_rmses) / len(test_atom_rmses)
+            log_msg += f" | Atom RMSE: {atom_avg:.4f}"
+        if test_c_rmsds:
+            c_rmsd_avg = sum(test_c_rmsds) / len(test_c_rmsds)
+            log_msg += f" | C-RMSD: {c_rmsd_avg:.4f} A"
+        logger.log(log_msg)
+
+        return test_avg, dockq_avg, dockq_success_pct, c_rmsd_avg
 
 
 def _run_training(args, progress):
@@ -797,6 +1000,31 @@ def _run_training(args, progress):
         )
         logger.log(f"Contact loss: {contact_loss_fn}")
         logger.log("")
+
+    # --- Re-eval mode: skip training entirely and run one test pass ---
+    # Loaded checkpoint is already in ``model`` above (the load_model_checkpoint
+    # call at the top of _run_training). We just need to drive the test split
+    # through the same eval body the in-loop check uses.
+    if args.eval_only:
+        assert args.checkpoint is not None, "--eval_only requires --checkpoint"
+        logger.log("=" * 70)
+        logger.log(f"Eval-only: scoring {args.checkpoint} on test split (N={len(test_indices)})")
+        logger.log("=" * 70)
+        test_avg, dockq_avg, dockq_success_pct, c_rmsd_avg = _run_test_eval(
+            model, test_samples, test_indices, noiser, eval_sampler,
+            device, args, is_onestep, logger,
+        )
+        # Surface the metrics for the outer finally: -> REGISTRY append.
+        progress["best_rmse"] = test_avg
+        if dockq_avg is not None:
+            progress["dockq_avg"] = dockq_avg
+        if dockq_success_pct is not None:
+            progress["dockq_success_pct"] = dockq_success_pct
+        if c_rmsd_avg is not None:
+            progress["c_rmsd"] = c_rmsd_avg
+        logger.log(f"Finished: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.close()
+        return test_avg
 
     # Optimizer (only on trainable params)
     trainable_params = [p for p in model.parameters() if p.requires_grad]
@@ -1251,132 +1479,12 @@ def _run_training(args, progress):
                     train_rmses.append(rmse)
                 train_avg = sum(train_rmses) / len(train_rmses)
 
-                # Evaluate on test set
-                test_rmses = []
-                test_dockq_scores = []
-                test_lddt_scores = []
-                test_ilddt_scores = []
-                test_atom_rmses = []  # OneStep only
-                for idx in test_indices:
-                    s = test_samples[idx]
-                    batch = collate_batch([s], device)
-
-                    if args.mode == "stage1_only":
-                        atoms_pred_onestep = None
-                        if args.continuous_sigma:
-                            if args.one_shot_sample:
-                                sample_out = sample_centroids_one_shot(
-                                    model, batch, noiser, device, is_onestep=is_onestep,
-                                )
-                            else:
-                                sample_out = sample_centroids_ve(
-                                    model, batch, noiser, device,
-                                    align_per_step=args.align_per_step,
-                                    recenter=args.recenter,
-                                    is_onestep=is_onestep,
-                                )
-                            if is_onestep:
-                                centroids_pred, atoms_pred_onestep = sample_out
-                            else:
-                                centroids_pred = sample_out
-                        elif eval_sampler is not None:
-                            centroids_pred = sample_centroids_with_sampler(model, batch, noiser, device, eval_sampler)
-                        else:
-                            centroids_pred = sample_centroids(
-                                model, batch, noiser, device,
-                                align_per_step=args.align_per_step,
-                                recenter=args.recenter
-                            )
-                        rmse = compute_rmse(centroids_pred, batch['centroids'], batch['mask_res']).item() * s['std']
-                        if is_onestep and atoms_pred_onestep is not None:
-                            # Atom RMSE in Angstroms (Kabsch-aligned).
-                            B_, L_ = centroids_pred.shape[:2]
-                            atom_rmse = compute_rmse(
-                                atoms_pred_onestep.reshape(B_, L_ * 4, 3),
-                                batch['coords_res'].reshape(B_, L_ * 4, 3),
-                                batch['mask_atom'],
-                            ).item() * s['std']
-                            test_atom_rmses.append(atom_rmse)
-                    elif args.mode == "stage2_only" and 'centroids_pred' in batch:
-                        # For Stage 2 with cached predictions: use Stage 1 predictions directly
-                        atoms_pred = model.forward_stage2(
-                            batch['centroids_pred'], batch['aa_seq'], batch['chain_ids'],
-                            batch['res_idx'], batch['mask_res']
-                        )
-                        atoms_pred_flat = atoms_pred.view(1, -1, 3)
-                        rmse = compute_rmse(atoms_pred_flat, batch['coords'], batch['mask_atom']).item() * s['std']
-
-                        # Compute DockQ, lDDT/ilDDT for Stage 2
-                        n_res = s['n_res']
-                        pred_coords_res = atoms_pred[:, :n_res]  # [1, L, 4, 3]
-                        gt_coords_res = batch['coords_res'][:, :n_res]
-
-                        # DockQ
-                        dockq_result = compute_dockq(
-                            pred_coords_res[0], gt_coords_res[0],
-                            batch['aa_seq'][0, :n_res], batch['chain_ids'][0, :n_res],
-                            std=s['std']
-                        )
-                        if dockq_result['dockq'] is not None:
-                            test_dockq_scores.append(dockq_result['dockq'])
-
-                        # lDDT/ilDDT
-                        lddt_result = compute_lddt_metrics(
-                            pred_coords_res, gt_coords_res,
-                            batch['chain_ids'][:, :n_res],
-                            batch['mask_res'][:, :n_res],
-                            coord_scale=s['std']
-                        )
-                        test_lddt_scores.append(lddt_result['lddt'])
-                        if lddt_result['n_interface'] > 0:
-                            test_ilddt_scores.append(lddt_result['ilddt'])
-                    else:
-                        # For end_to_end or stage2 without cached: full sampling
-                        atoms_pred = model.sample(
-                            batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
-                            noiser, batch['mask_res']
-                        )
-                        rmse = compute_rmse(atoms_pred, batch['coords'], batch['mask_atom']).item() * s['std']
-
-                        # Compute DockQ and lDDT/ilDDT for Stage 2 / end-to-end
-                        n_res = s['n_res']
-                        pred_coords_res = atoms_pred[0].view(n_res, 4, 3)
-                        gt_coords_res = batch['coords_res'][0, :n_res]
-                        aa_seq = batch['aa_seq'][0, :n_res]
-                        chain_ids = batch['chain_ids'][0, :n_res]
-                        dockq_result = compute_dockq(pred_coords_res, gt_coords_res, aa_seq, chain_ids, std=s['std'])
-                        if dockq_result['dockq'] is not None:
-                            test_dockq_scores.append(dockq_result['dockq'])
-
-                        # lDDT/ilDDT
-                        lddt_result = compute_lddt_metrics(
-                            pred_coords_res.unsqueeze(0), gt_coords_res.unsqueeze(0),
-                            chain_ids.unsqueeze(0),
-                            batch['mask_res'][:, :n_res],
-                            coord_scale=s['std']
-                        )
-                        test_lddt_scores.append(lddt_result['lddt'])
-                        if lddt_result['n_interface'] > 0:
-                            test_ilddt_scores.append(lddt_result['ilddt'])
-
-                    test_rmses.append(rmse)
-                test_avg = sum(test_rmses) / len(test_rmses)
-
-                metric_name = "Centroid RMSE" if args.mode == "stage1_only" else "Atom RMSE"
-                log_msg = f"         >>> Train {metric_name} ({n_eval}): {train_avg:.4f} A | Test {metric_name} ({len(test_indices)}): {test_avg:.4f} A"
-                if test_dockq_scores:
-                    dockq_avg = sum(test_dockq_scores) / len(test_dockq_scores)
-                    log_msg += f" | DockQ: {dockq_avg:.4f}"
-                if test_lddt_scores:
-                    lddt_avg = sum(test_lddt_scores) / len(test_lddt_scores)
-                    log_msg += f" | lDDT: {lddt_avg:.4f}"
-                if test_ilddt_scores:
-                    ilddt_avg = sum(test_ilddt_scores) / len(test_ilddt_scores)
-                    log_msg += f" | ilDDT: {ilddt_avg:.4f}"
-                if test_atom_rmses:
-                    atom_avg = sum(test_atom_rmses) / len(test_atom_rmses)
-                    log_msg += f" | Atom RMSE: {atom_avg:.4f}"
-                logger.log(log_msg)
+                # Evaluate on test set (delegated; see _run_test_eval).
+                test_avg, dockq_avg, dockq_success_pct, c_rmsd_avg = _run_test_eval(
+                    model, test_samples, test_indices, noiser, eval_sampler,
+                    device, args, is_onestep, logger,
+                    train_avg=train_avg, n_eval=n_eval,
+                )
 
                 # Plot first sample
                 s = train_samples[train_indices[0]]
@@ -1445,6 +1553,14 @@ def _run_training(args, progress):
                 if test_avg < best_rmse:
                     best_rmse = test_avg
                     progress["best_rmse"] = best_rmse
+                    # Stash the latest auxiliary metrics from the best-eval step
+                    # so the outer finally: block can write them into REGISTRY.md.
+                    if dockq_avg is not None:
+                        progress["dockq_avg"] = dockq_avg
+                    if dockq_success_pct is not None:
+                        progress["dockq_success_pct"] = dockq_success_pct
+                    if c_rmsd_avg is not None:
+                        progress["c_rmsd"] = c_rmsd_avg
                     torch.save({
                         'step': step,
                         'model_state_dict': model.state_dict(),
@@ -1524,6 +1640,9 @@ def main():
                 final_metric=final_metric,
                 outcome=outcome,
                 output_dir=getattr(args, "output_dir", None),
+                dockq_avg=progress.get("dockq_avg"),
+                dockq_success_pct=progress.get("dockq_success_pct"),
+                c_rmsd=progress.get("c_rmsd"),
             )
             print(f"[registry] appended row to {registry_path}")
         except Exception as reg_err:

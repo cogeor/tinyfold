@@ -24,6 +24,9 @@ def append_registry_row(
     outcome: str,
     registry_path: Optional[Path] = None,
     output_dir: Optional[str] = None,
+    dockq_avg: Optional[float] = None,
+    dockq_success_pct: Optional[float] = None,
+    c_rmsd: Optional[float] = None,
 ) -> Path:
     """Append one row to ``experiments/REGISTRY.md`` and return the resolved path.
 
@@ -41,6 +44,15 @@ def append_registry_row(
         registry_path: Override path to the registry. Defaults to
             ``<repo_root>/experiments/REGISTRY.md`` where ``repo_root`` is
             resolved as ``Path(__file__).resolve().parents[3]``.
+        dockq_avg: Optional mean DockQ across the test split. When supplied,
+            appended to the Outcome cell as ``DockQ X.XXX`` (optionally with
+            success rate if ``dockq_success_pct`` is also set).
+        dockq_success_pct: Optional percentage of test samples with DockQ
+            >= 0.23 ("acceptable" threshold). Only used when ``dockq_avg`` is
+            also supplied.
+        c_rmsd: Optional mean Complex-RMSD across the test split (chain-A
+            Kabsch alignment then RMSD over all CA). When supplied, appended
+            to the Outcome cell as ``C-RMSD X.XXXX A``.
 
     Returns:
         Resolved ``Path`` to the registry file that was written to.
@@ -70,6 +82,20 @@ def append_registry_row(
         outcome_cell = f"test RMSE {final_metric:.4f} A — {outcome_clean}"
     else:
         outcome_cell = outcome_clean
+
+    # Append Loop-01 metrics if provided. Old callers pass None and the cell
+    # looks identical to today's rows (back-compat).
+    extras = []
+    if c_rmsd is not None:
+        extras.append(f"C-RMSD {c_rmsd:.4f} A")
+    if dockq_avg is not None:
+        succ = f" succ {dockq_success_pct:.1f}%" if dockq_success_pct is not None else ""
+        extras.append(f"DockQ {dockq_avg:.3f}{succ}")
+    if extras:
+        # NOTE: use "; " not " | " — bare pipes inside an outcome cell are
+        # parsed as new markdown columns, which would break the table layout.
+        outcome_cell = outcome_cell + "; " + "; ".join(extras)
+
     if output_dir is not None:
         rel = Path(output_dir).as_posix().lstrip("./")
         if rel.startswith("outputs/"):

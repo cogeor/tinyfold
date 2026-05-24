@@ -1,0 +1,189 @@
+loops:
+  - id: "01"
+    title: "Wire DockQ + C-RMSD metrics into eval (Tasks A + B)"
+    scope: |
+      - MODIFY src/tinyfold/model/losses/mse.py: add compute_c_rmsd(pred_ca, gt_ca, chain_ids)
+        that Kabsch-aligns predicted chain A onto GT chain A, applies that single rigid
+        transform to the full prediction (both chains), and returns RMSD over all CA.
+      - MODIFY scripts/train_resfold.py (or whatever eval loop owns Phase C re-eval):
+        import compute_dockq from tinyfold.model.metrics.dockq and compute_c_rmsd from
+        tinyfold.model.losses.mse; compute per-target, accumulate avg DockQ + success
+        rate (>=0.23) and mean C-RMSD across the eval set.
+      - MODIFY src/tinyfold/model/registry.py: extend the outcome row schema with
+        dockq_avg, dockq_success_pct, c_rmsd columns (NaN/None tolerant for old rows).
+      - Re-eval outputs/resfold/phase_c_n8600/.../best_model.pt against N=8600 test
+        split and append the new metrics row to REGISTRY.
+    test_strategy: |
+      - Unit-ish: pytest test that feeds a synthetic 2-chain CA tensor (chain B rigidly
+        offset by a known rotation+translation) through compute_c_rmsd and asserts
+        result < 1e-4.
+      - Integration: run eval on a 4-target slice; confirm DockQ avg, success%, and
+        C-RMSD all appear in the printed summary and in the REGISTRY row (open the
+        registry file/df and check column presence + finite values).
+    risk: |
+      Low. Both helpers exist or are 30 LOC. Main risk is chain_id convention mismatch
+      (DIPS uses 0/1) when slicing chain A — guard with an assertion.
+    depends_on: []
+
+  - id: "02"
+    title: "Multi-sample inference with cluster-then-rank (Task C)"
+    scope: |
+      - MODIFY scripts/train_resfold.py eval CLI: add --n_samples K (default 1) and
+        --cluster_radius (default 5.0 A interface-RMSD).
+      - MODIFY/ADD src/tinyfold/model/resfold/sampling.py (or onestep.py): per target
+        draw K seeds, call the existing sampler K times at sigma_max, stack outputs.
+      - ADD src/tinyfold/model/metrics/cluster.py: HDOCK-style greedy clusterer on
+        interface CA-RMSD (5 A threshold), returns cluster representatives ordered by
+        cluster size.
+      - REPORT in eval summary: oracle_best_RMSD@K, mean_RMSD@K, ranked_RMSD@K (cluster
+        rep) for K in {1, 5, 40}. Append to REGISTRY.
+      - Oracle ranking = pick min-RMSD sample vs GT (G will later replace with
+        confidence head).
+    test_strategy: |
+      - Smoke: run eval with --n_samples 5 on 2 targets; assert (a) 5 distinct outputs
+        per target (seed plumbing works), (b) oracle@5 <= mean@5 <= worst, (c) cluster
+        rep count <= K.
+      - Unit: feed cluster.py 6 hand-crafted poses (3 within 2 A, 3 within 2 A of a
+        second pose, the two groups >10 A apart) and assert it returns exactly 2
+        representatives.
+    risk: |
+      Medium. K=40 x N=8600 evals can blow GPU memory if batched naively — chunk by
+      target. Seed plumbing through DataLoader workers is the usual gotcha.
+    depends_on: ["01"]
+
+  - id: "03"
+    title: "Boltz Kabsch-interpolation sampler (Task D)"
+    scope: |
+      - MODIFY src/tinyfold/model/resfold/sampling.py sample_centroids_ve: add
+        kabsch_interp: bool = False arg. When True, after each Euler step compute
+        rigid alignment of x_new onto x_prev (Kabsch on the centroid set itself, no
+        masking) and replace x_new with the aligned version before the next step.
+      - Reuse the Kabsch helper from losses/mse.py (or factor into a shared util in
+        src/tinyfold/model/geometry/kabsch.py if not already shared).
+      - Expose --kabsch_interp flag in scripts/train_resfold.py eval path.
+      - Re-eval Phase C best_model.pt with sample_centroids_ve + kabsch_interp=True on
+        full N=8600 test; record centroid RMSE in REGISTRY (target: <10.5 A vs 10.59 A
+        one-shot baseline).
+    test_strategy: |
+      - Unit: assert that with kabsch_interp=True and a perfectly trained identity
+        denoiser (mock), successive steps do not drift (||x_new - x_prev|| stays small).
+      - Integration: run sample_centroids_ve on 50 targets with and without kabsch_interp,
+        log the two centroid RMSEs side by side. Tester verifies the flag actually
+        changes the trajectory (RMSEs differ).
+    risk: |
+      Medium. The known multi-step +2 A drift suggests the denoiser is biased; Kabsch
+      align may or may not paper over it. If RMSE >= one-shot, fall back to one-shot
+      in the Phase D config (loop 07) and document under "what didn't work".
+    depends_on: ["01"]
+
+  - id: "04"
+    title: "EDM lambda(sigma) loss weighting audit + fix (Task E)"
+    scope: |
+      - READ existing --loss_weighting implementation in scripts/train_resfold.py and
+        the loss module it dispatches to (src/tinyfold/model/losses/mse.py or a
+        dedicated weighting helper).
+      - Verify formula equals (sigma**2 + sigma_data**2) / (sigma * sigma_data)**2. If
+        off (common bugs: missing square, swapped numerator/denominator, sigma_data
+        hardcoded wrong), patch it.
+      - ADD docstring with the EDM paper reference and the closed-form derivation in
+        a comment so future drift is catchable.
+    test_strategy: |
+      - Unit test: instantiate the weighting fn, feed sigma in {0.1, 1.0, 10.0} with
+        sigma_data=0.5; assert output matches a hand-computed reference to 1e-6.
+      - Edge case: sigma -> 0 should not divide by zero (clamp or eps guard).
+      - Smoke: run 50 training steps with the (possibly fixed) weighting and confirm
+        loss is finite and on the same OOM as before (no 100x regression).
+    risk: |
+      Low-to-medium. If formula was already correct this loop is a no-op + test; if
+      wrong, retraining gradients shift and downstream metrics in loop 07 will move
+      under us. Document the diff either way.
+    depends_on: ["01"]
+
+  - id: "05"
+    title: "ESM-2 frozen embeddings + projection (Task F)"
+    scope: |
+      - ADD scripts/prepare_esm2_embeddings.py: load ESM-2 (35M and 150M variants) via
+        fair-esm or HF; iterate DIPS sequences from the parquet cache; save per-chain
+        embeddings to data/processed/esm2_{35M,150M}/{pdb_id}_{chain}.npy (or a single
+        per-target .npz). Cache once, never rerun.
+      - MODIFY dataset loader (src/tinyfold/data/...): when aa_embed in
+        {esm2_35M, esm2_150M}, mmap-load the cached embedding instead of one-hot.
+      - MODIFY src/tinyfold/model/resfold/onestep.py: add a Linear(esm_dim -> c_token)
+        projection at the token-embedding entry point; gate on cfg.aa_embed.
+      - EXTEND config schema (configs/train/resfold/*.yaml) and CLI to support
+        aa_embed: {learned, esm2_35M, esm2_150M}.
+    test_strategy: |
+      - Unit: load one cached embedding, assert shape == (seq_len, esm_dim) and dtype
+        is float16/float32 as written.
+      - Integration: run 10 training steps with aa_embed=esm2_35M on a 4-target subset;
+        assert loss is finite, gradients flow only into projection + downstream layers
+        (ESM params remain frozen — check requires_grad), and VRAM stays under the
+        4070 Ti SUPER budget.
+      - Tester verifies the cache exists (or is generated on demand) before the smoke
+        run, otherwise the loop fails.
+    risk: |
+      HIGH. Biggest blockers: (a) ESM-2 download size / network — pre-stage weights;
+      (b) 150M may not fit alongside the trunk at batch size N — start with 35M;
+      (c) dtype mismatch (bf16 ESM out vs fp32 trunk) needs an explicit cast in the
+      projection; (d) variable-length sequences need careful padding/mask plumbing
+      through the cached path.
+    depends_on: ["01"]
+
+  - id: "06"
+    title: "Confidence head for multi-sample ranking (Task G)"
+    scope: |
+      - ADD src/tinyfold/model/resfold/confidence_head.py: small MLP (2-3 layers)
+        operating on pooled denoiser tokens (mean-pool over residues, concat both
+        chains or sum) -> scalar predicted lDDT.
+      - MODIFY ResFoldOneStep forward to optionally return pooled denoiser features
+        and confidence prediction.
+      - ADD lDDT-vs-GT computation in src/tinyfold/model/metrics/ (or reuse if
+        present); add an auxiliary regression loss (smooth_l1) on confidence, gated
+        by --confidence_head_weight (default 0).
+      - MODIFY eval ranking in loop 02's multi-sample path: when --rank_by=confidence,
+        rank K samples by predicted lDDT instead of oracle.
+    test_strategy: |
+      - Unit: forward pass with confidence_head enabled returns a scalar per target,
+        shape () or (B,). Gradient flows into MLP params only when
+        confidence_head_weight > 0.
+      - Smoke: train 50 steps with the head enabled; assert aux loss decreases (not
+        strict, just not NaN/exploding) and that --rank_by=confidence path selects
+        a sample (any sample) end-to-end on 2 eval targets.
+      - Tester confirms predicted lDDT vs oracle min-RMSD shows non-zero Spearman on
+        a tiny subset (sanity, not accuracy gate).
+    risk: |
+      HIGH. lDDT-as-regression target is noisy at training-from-scratch with only 8600
+      complexes — the head may learn the dataset mean and rank no better than random.
+      Mitigation: start with confidence_head_weight low (0.1) so a bad head can't
+      tank the main centroid objective; allow Phase D config to fall back to oracle
+      ranking if Spearman < 0.1 on val.
+    depends_on: ["02", "05"]
+
+  - id: "07"
+    title: "Phase D full retrain + REGISTRY + spec update"
+    scope: |
+      - ADD configs/train/resfold/phase_d_n8600_full.yaml: aa_embed=esm2_35M, EDM
+        weighting on, atom head on, confidence head on (weight 0.1), eval K in {1,5,40},
+        sampler = sample_centroids_ve+kabsch_interp if loop 03 beat one-shot else
+        sample_centroids_one_shot.
+      - Launch full N=8600 retrain (~2.5h on the 4070 Ti SUPER); save best ckpt to a
+        new outputs/resfold/phase_d_n8600_full/... dir (do NOT touch Phase C ckpt).
+      - Re-run eval with all metrics from loops 01-06: centroid RMSE, atom RMSE,
+        C-RMSD, DockQ avg, DockQ success%, oracle@5, oracle@40, ranked@5, ranked@40.
+      - Append the row to REGISTRY.
+      - UPDATE notes/post_compact_spec.md: headline number + per-task delta table vs
+        9.87 A baseline; add "what didn't work" entries for anything that regressed.
+    test_strategy: |
+      - Tester only needs to verify (a) `python scripts/train_resfold.py
+        --config configs/train/resfold/phase_d_n8600_full.yaml` starts cleanly (first
+        50 steps run, loss finite, all new modules instantiated, no missing-key
+        errors on the config), (b) on a 4-target dry-run eval the new metric columns
+        all appear in REGISTRY with finite values.
+      - Full 2.5h run is launched and left to complete; the commit gate does NOT
+        block on the final RMSE number — that lands in the spec update.
+    risk: |
+      Composite. Anything broken in loops 03/05/06 detonates here. Mitigation: the
+      config has fallback flags (kabsch_interp -> false, aa_embed -> learned,
+      confidence_head_weight -> 0) so the loop is salvageable as a smaller retrain
+      even if upstream loops underperformed.
+    depends_on: ["01", "02", "03", "04", "05", "06"]

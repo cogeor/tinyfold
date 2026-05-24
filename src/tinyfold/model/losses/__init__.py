@@ -12,6 +12,7 @@ from .mse import (
     kabsch_align,
     compute_mse_loss,
     compute_rmse,
+    compute_c_rmsd,
     compute_relative_distance_loss,
     compute_distance_consistency_loss,
 )
@@ -45,6 +46,7 @@ __all__ = [
     "kabsch_align",
     "compute_mse_loss",
     "compute_rmse",
+    "compute_c_rmsd",
     "compute_relative_distance_loss",
     "compute_distance_consistency_loss",
     # Geometry
