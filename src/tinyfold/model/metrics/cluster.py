@@ -160,3 +160,84 @@ def cluster_poses(
 
     clusters.sort(key=lambda c: (-len(c["members"]), c["mean_intra_rmsd"]))
     return clusters
+
+
+def score_self_consistency(
+    poses: Tensor,
+    interface_mask: Tensor,
+) -> Tensor:
+    """Per-sample mean interface-RMSD to the other K-1 samples.
+
+    Treats the K-pool as a posterior; the sample closest to the rest of
+    the pool (lowest mean distance) is the "consensus" pose. Picks the
+    sample with the lowest returned score. No model, no training, no GT.
+
+    Args:
+        poses: ``[K, L, 3]`` CA coordinates.
+        interface_mask: ``[L]`` bool mask of interface residues.
+
+    Returns:
+        ``[K]`` float tensor; lower is better.
+    """
+    K = poses.shape[0]
+    if K == 1:
+        return torch.zeros(1, device=poses.device)
+    rmsd = pairwise_interface_rmsd(poses, interface_mask)  # [K, K], diag=0
+    # Sum each row, drop the diagonal-zero (subtract 0 is a no-op), divide
+    # by K-1 to get mean distance to other samples.
+    return rmsd.sum(dim=1) / (K - 1)
+
+
+def score_geometric_energy(
+    atom_coords: Tensor,
+    chain_ids: Tensor,
+    valid: Tensor,
+    clash_cutoff: float = 4.0,
+    contact_cutoff: float = 10.0,
+    contact_weight: float = 0.1,
+) -> Tensor:
+    """Heuristic per-sample energy: cross-chain clashes minus contacts.
+
+    For each pose:
+      - clashes = count of cross-chain CA-CA pairs strictly closer than
+        ``clash_cutoff`` (default 4 A; CA atoms shouldn't get this close
+        unless sidechains overlap).
+      - contacts = count of cross-chain CA-CA pairs in
+        ``[clash_cutoff, contact_cutoff]`` (default [4, 10] A; the typical
+        interface CA-CA distance range).
+      - energy = clashes - contact_weight * contacts.
+
+    Lower is better. A pose with no clashes and many interface contacts
+    scores very negative; a pose with chains flying apart (no contacts)
+    or interpenetrating (high clashes) scores high.
+
+    Args:
+        atom_coords: ``[K, L, 4, 3]`` predicted backbone atoms (N, CA, C, O).
+            Only the CA index (1) is used.
+        chain_ids: ``[L]`` long tensor in {0, 1}.
+        valid: ``[L]`` bool mask.
+        clash_cutoff: Distance below which a cross-chain CA pair is a clash.
+        contact_cutoff: Distance above which a pair is not a contact.
+        contact_weight: Weight on the contact bonus (negative term).
+
+    Returns:
+        ``[K]`` float tensor; lower is better.
+    """
+    assert atom_coords.dim() == 4 and atom_coords.shape[-2:] == (4, 3), \
+        "atom_coords must be [K, L, 4, 3]"
+    K, L = atom_coords.shape[0], atom_coords.shape[1]
+    assert chain_ids.shape == (L,) and valid.shape == (L,)
+
+    ca = atom_coords[:, :, 1, :]  # [K, L, 3]
+    chain_a = (chain_ids == 0) & valid
+    chain_b = (chain_ids == 1) & valid
+    if not chain_a.any() or not chain_b.any():
+        return torch.zeros(K, device=atom_coords.device)
+
+    ca_a = ca[:, chain_a, :]  # [K, Na, 3]
+    ca_b = ca[:, chain_b, :]  # [K, Nb, 3]
+    dists = torch.cdist(ca_a, ca_b)  # [K, Na, Nb]
+
+    clashes = (dists < clash_cutoff).sum(dim=(1, 2)).float()
+    contacts = ((dists >= clash_cutoff) & (dists < contact_cutoff)).sum(dim=(1, 2)).float()
+    return clashes - contact_weight * contacts

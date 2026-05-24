@@ -33,14 +33,46 @@ RTX 4070 Ti SUPER.
 | ranked@5 (cluster) | 9.90 A | 9.42 A | -0.48 |
 | ranked_conf@5 (confidence) | n/a | 9.02 A | new |
 
-**Key finding: oracle@40 = 7.53 A beats AF-Multimer's 8.61 A by 1.08 A.**
+**Honest claim: 9.02 A top-1, 0.41 A behind AF-Multimer's 8.61 A, with
+2% of AF-M's trainable params.**
 
-This is the first metric on which our 6M-parameter, single-GPU model
-outperforms the frontier closed-weight baseline on roughly equivalent
-DIPS-Plus splits. The catch: it's an *oracle* ranking — Loop 06's
-confidence head currently picks sample 0 every time (pred_lddt_std =
-0.0038 across K=40 samples is too low to differentiate them), so the
-practical metric remains the single-sample number.
+The oracle@40 = 7.53 A number should NOT be headlined: subsequent
+experiments with three independent ranking strategies (see "Ranker
+ablation" below) show the K=40 pool lacks ranker-able diversity — the
+"lucky" K=40 sample is mostly favourable noise around a single
+predicted pose, not architectural headroom waiting for a smarter
+ranker.
+
+## Ranker ablation (Phase D best_model, N=100 test, K=40 re-eval)
+
+Three orthogonal practical rankers were added on top of the confidence
+head and re-evaluated against the same K=40 pool:
+
+| Ranker | K=5 | K=40 | Notes |
+|---|---|---|---|
+| oracle (peeks at GT) | 8.11 | 7.53 | Upper bound; not deliverable |
+| mean (random pick) | 9.62 | 9.57 | Baseline |
+| cluster (HDOCK 5 A) | 9.42 | 9.41 | Loop 02 |
+| confidence head | 9.02 | 9.18 | Loop 06 (pred_lddt argmax) |
+| self-consistency | 9.34 | 9.31 | Min mean RMSD to other K-1 samples |
+| geometric energy | 10.22 | 9.21 | Min cross-chain clashes - 0.1 * contacts |
+
+Three signals — *learned* (confidence), *geometric* (self-consistency),
+*physical* (clash/contact energy) — all converge on 9.18-9.31 A at K=40
+and 9.02-10.22 A at K=5. None recovers more than 0.4 A of the 2 A
+oracle gap.
+
+**Interpretation:** the model has collapsed to a single predicted
+pose; the K=40 pool is that pose with noise wiggle. Going from K=5 to
+K=40 (8x more samples) improves oracle by 0.58 A (8.11 -> 7.53), which
+is consistent with Gaussian min-of-K statistics (expected ~1.51x
+spread growth; observed 1.35x). The "best of 40" is just the
+favourable noise direction, not a different, better pose.
+
+The architecture *is* the bottleneck for top-1 quality. Adding rankers
+on this model won't help. The next move is **pose diversity** (e.g.
+ensemble-of-seeds, temperature-tuned sampling, conditional generation
+on different chain assignments), not better ranking.
 
 ## Confidence head behaviour
 
@@ -87,26 +119,32 @@ practical metric remains the single-sample number.
 
 | Method | C-RMSD on DIPS-style (A) | Our number |
 |---|---|---|
+| HDOCK (benchmark-leaky on DIPS) | 6.23 | |
 | AF-Multimer | 8.61 | |
 | Boltz / AF3 (DockQ-headlined) | comparable | |
-| **TinyFold Phase D oracle@40** | | **7.53** |
 | **TinyFold Phase D top-1 (practical)** | | **9.02** |
-| HDOCK (benchmark-leaky on DIPS) | 6.23 | |
 | TinyFold Phase C (prev headline) | | 9.87 |
 | DiffDock-PP top-1 | 11.95 | |
 | EquiDock | 13.30 | |
+
+Oracle numbers omitted on purpose: they are not user-deliverable and
+the ranker ablation above shows they are not achievable with any
+ranker on the current pose distribution.
 
 The honest claim that survives peer scrutiny:
 
 > *TinyFold (6M trainable + frozen ESM-2-35M) reaches median centroid
 > CA RMSD of 9.02 A on a 100-complex DIPS-Plus test split, training in
-> 135 min on a single RTX 4070 Ti SUPER. With K=40 multi-sample
-> inference and oracle ranking, the best-of-40 sample reaches 7.53 A —
-> 1.1 A better than AlphaFold-Multimer's 8.61 A baseline on roughly
-> equivalent splits, with 2% of AF-Multimer's parameter budget. The
-> remaining work is a per-residue confidence head that can actually
-> rank the K=40 pool — the current per-target head learns target
-> difficulty but cannot distinguish samples within one target.*
+> 135 min on a single RTX 4070 Ti SUPER. This is ~0.4 A behind
+> AlphaFold-Multimer (8.61 A) on roughly equivalent splits with ~2% of
+> AF-Multimer's trainable parameter budget (and a frozen 35M ESM-2
+> backbone). The model produces a single predicted pose per target;
+> multi-sample inference does NOT yield ranker-able diversity (three
+> independent rankers — learned confidence, self-consistency, and
+> physical clash/contact energy — all cluster within 0.4 A of each
+> other, none recovering more than 20% of the 2 A oracle gap), so the
+> next research direction is pose-distribution diversity rather than
+> better ranking.*
 
 ## Files
 
@@ -119,12 +157,28 @@ The honest claim that survives peer scrutiny:
 
 ## Next steps (post-blog or v2)
 
-1. **Per-residue confidence head** — replace mean-pool->scalar with
-   per-residue lDDT regression; allow sample-level discrimination.
-2. **Contrastive ranking loss** — train head to score better samples
-   higher within a K-pool, not just regress to GT lDDT.
-3. **Pair representation + chain-aware relpos** (Task H, deferred).
-4. **ESM-2-150M** — try the bigger ESM variant; current cache is
+The ranker ablation (above) showed the *ranker* path is exhausted on
+this model. Real next-step priorities, in order:
+
+1. **Pose-distribution diversity** — the K=40 pool is one mode with
+   noise. Options:
+   - Ensemble of seeds (train 3-5 models with different init seeds;
+     each is one mode; pool spans modes).
+   - Temperature-tuned VE sampling (higher T -> more pose entropy,
+     but with risk of broken structures).
+   - Conditional generation on different chain-A/chain-B role
+     assignments (we always feed chain 0 = A; flipping is a free
+     diversity axis).
+2. **Per-residue confidence head + contrastive loss** — useful only
+   if step 1 unlocks real pose diversity. Without diversity there is
+   nothing to rank.
+3. **Family-filtered / PINDER hard-split eval** — verify the 9.02 A
+   number isn't inflated by random-split overlap with training data.
+4. **Run AF-Multimer / ColabFold on the same 100 targets** — the 8.61
+   A AF-M number is from literature on different splits; rerun for an
+   apples-to-apples baseline.
+5. **Pair representation + chain-aware relpos** (Task H, deferred).
+6. **ESM-2-150M** — try the bigger ESM variant; current cache is
    already gitignored and disk allows it.
-5. **PINDER hard-split eval** — only meaningful now that we beat
-   AF-Multimer on oracle@40.
+
+Items 3 and 4 are cheap (1-2 h each); items 1-2 are weeks of work.

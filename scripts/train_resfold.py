@@ -63,7 +63,13 @@ from tinyfold.model.diffusion import (
 )
 from tinyfold.model.geometry import kabsch_rigid
 from tinyfold.model.resfold import ResFoldPipeline
-from tinyfold.model.metrics import compute_dockq, cluster_poses, interface_mask_from_gt
+from tinyfold.model.metrics import (
+    compute_dockq,
+    cluster_poses,
+    interface_mask_from_gt,
+    score_geometric_energy,
+    score_self_consistency,
+)
 from tinyfold.training.utils import (
     MultiCopyTrainer,
     VectorizedMultiCopyTrainer,
@@ -737,13 +743,17 @@ def parse_args():
                              "Max(eval_K_list) must be <= --n_samples.")
     # Loop 06 — third ranker uses the confidence head's predicted lDDT.
     parser.add_argument("--rank_by", type=str, default="cluster",
-                        choices=["oracle", "cluster", "confidence"],
+                        choices=["oracle", "cluster", "confidence",
+                                 "self_consistency", "geometric"],
                         help="Multi-sample ranking strategy for downstream metrics "
                              "(DockQ, atom RMSE, C-RMSD). cluster=HDOCK-style "
                              "cluster-rep (default), oracle=argmin per-sample RMSE "
                              "vs GT (cheats; sanity-check upper bound), "
                              "confidence=argmax predicted lDDT (requires "
-                             "--confidence_head). Both ranked@K and ranked_conf@K "
+                             "--confidence_head), self_consistency=min mean "
+                             "interface-RMSD to other K-1 samples, "
+                             "geometric=min cross-chain clash count minus contact "
+                             "count. ranked_{cluster,conf,consistency,energy}@K "
                              "are always reported when applicable.")
 
     # AF3-style training (multi-copy with trunk reuse)
@@ -825,6 +835,11 @@ def _run_test_eval(
     # Loop 06: per-K ranked-by-confidence RMSE (only populated when the OneStep
     # model has a confidence head and emits pred_lddt during sampling).
     per_k_ranked_conf = {k: [] for k in k_list}
+    # Energy-style rankers (post-Loop-06 add-on):
+    # - consistency: argmin mean interface-RMSD to other K-1 samples
+    # - energy:      argmin clash_count - 0.1 * contact_count
+    per_k_ranked_consistency = {k: [] for k in k_list}
+    per_k_ranked_energy = {k: [] for k in k_list}
     # Loop 06: flat lists across all (target, sample) pairs for Spearman.
     all_pred_lddts: list = []
     all_neg_rmses: list = []
@@ -893,6 +908,16 @@ def _run_test_eval(
                     cluster_rep_per_k = {}
                     conf_rep_per_k = {}
                     oracle_rep_per_k = {}
+                    consistency_rep_per_k = {}
+                    energy_rep_per_k = {}
+                    # Atom coords for the geometric scorer: [K, n_res, 4, 3] in
+                    # Angstroms, CPU (cluster.py helpers are CPU-only).
+                    if is_onestep and samples_a is not None:
+                        atoms_cpu = (samples_a[:, 0, :n_res, :, :] * s['std']).cpu()
+                    else:
+                        atoms_cpu = None
+                    chain_ids_cpu = batch['chain_ids'][0, :n_res].cpu()
+                    valid_cpu = batch['mask_res'][0, :n_res].cpu()
                     for k in k_list:
                         sub_rmses = per_sample_rmses[:k]
                         per_k_oracle[k].append(min(sub_rmses))
@@ -909,6 +934,24 @@ def _run_test_eval(
                             conf_idx = int(max(range(k), key=lambda i: sub_conf[i]))
                             conf_rep_per_k[k] = conf_idx
                             per_k_ranked_conf[k].append(sub_rmses[conf_idx])
+                        # Self-consistency: needs K>=2 to be meaningful; for K=1
+                        # the scorer returns zeros and consistency_idx degenerates
+                        # to sample 0, matching the existing K=1 fast-path.
+                        consistency_scores = score_self_consistency(
+                            poses_cpu[:k], iface_mask
+                        )
+                        consistency_idx = int(torch.argmin(consistency_scores).item())
+                        consistency_rep_per_k[k] = consistency_idx
+                        per_k_ranked_consistency[k].append(sub_rmses[consistency_idx])
+                        # Geometric energy: requires per-sample atom coords; skip
+                        # silently when not available (non-onestep path).
+                        if atoms_cpu is not None:
+                            energy_scores = score_geometric_energy(
+                                atoms_cpu[:k], chain_ids_cpu, valid_cpu,
+                            )
+                            energy_idx = int(torch.argmin(energy_scores).item())
+                            energy_rep_per_k[k] = energy_idx
+                            per_k_ranked_energy[k].append(sub_rmses[energy_idx])
                     # Downstream metrics (DockQ, atom RMSE, C-RMSD) use the sample
                     # chosen by the active ranker at the FULL K to stay consistent
                     # with the headline ranked@K column. Default cluster keeps
@@ -920,7 +963,11 @@ def _run_test_eval(
                         pick = oracle_rep_per_k.get(K, 0)
                     elif rank_by == "confidence" and per_sample_conf is not None:
                         pick = conf_rep_per_k.get(K, 0)
-                    else:  # cluster (default) or confidence-without-head
+                    elif rank_by == "self_consistency":
+                        pick = consistency_rep_per_k.get(K, 0)
+                    elif rank_by == "geometric" and atoms_cpu is not None:
+                        pick = energy_rep_per_k.get(K, 0)
+                    else:  # cluster (default) or unavailable head/atoms
                         pick = cluster_rep_per_k.get(K, 0)
                     centroids_pred = samples_c[pick]
                     if is_onestep:
@@ -1101,6 +1148,15 @@ def _run_test_eval(
                 rc = sum(per_k_ranked_conf[k]) / len(per_k_ranked_conf[k])
                 log_msg += f" | ranked_conf@{k}: {rc:.4f} A"
                 extra_tokens.append(f"ranked_conf@{k} {rc:.3f} A")
+            # Energy-style rankers: self-consistency and geometric clash/contact.
+            if per_k_ranked_consistency[k]:
+                rcs = sum(per_k_ranked_consistency[k]) / len(per_k_ranked_consistency[k])
+                log_msg += f" | ranked_consistency@{k}: {rcs:.4f} A"
+                extra_tokens.append(f"ranked_consistency@{k} {rcs:.3f} A")
+            if per_k_ranked_energy[k]:
+                re = sum(per_k_ranked_energy[k]) / len(per_k_ranked_energy[k])
+                log_msg += f" | ranked_energy@{k}: {re:.4f} A"
+                extra_tokens.append(f"ranked_energy@{k} {re:.3f} A")
         # Loop 06: Spearman(pred_lddt, -RMSE) across all (target, sample) pairs.
         # Falls back to torch.corrcoef Pearson if scipy isn't installed.
         if all_pred_lddts:
