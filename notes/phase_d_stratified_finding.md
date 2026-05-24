@@ -167,6 +167,43 @@ honest stratified evaluation IS the story. Trying to land Phase F
 (full-size generalization) before publishing risks a 3-week stall
 on uncertain payoff.
 
+## POSITIONAL ENCODING — diagnostic confirms it's the load-bearing bug
+
+Added 2026-05-25.
+
+`scripts/test_positional_invariance.py` runs Phase D's checkpoint
+forward on the SAME small protein with res_idx shifted by a constant.
+A length-invariant model should give identical predictions; ours
+diverges catastrophically:
+
+  Sample          L | shift=5 | shift=10 | shift=20 | shift=50 | shift=100
+  1a02.pdb1_0   105 |   5.4 A |   9.4 A  |  20.5 A  |  32.0 A  |  26.1 A
+  1akh.pdb1_0   137 |  12.1 A |  14.6 A  |  18.2 A  |  15.4 A  |  14.7 A
+
+Even shifting by 5 indices — fully within Phase D's training range —
+causes 5-12 A of per-atom RMSD. The model has learned absolute
+res_idx as a strong structural cue, not the size-invariant relative
+positions that AF3/Boltz/AF-Multimer use.
+
+This DIRECTLY explains the OOD cliff. When chain A grows from
+Phase D's typical ~100 residues to Phase E's typical ~300, chain B's
+res_idx values shift by 200+ positions into untrained territory.
+The model sees a "different protein" even though chemistry hasn't
+changed.
+
+The fix is unambiguous: **replace `sinusoidal_pos_enc(res_idx, dim)`
+with AF-Multimer-style RELATIVE position encoding clipped to +/-32
+plus a same-chain bit, applied to the pair representation.**
+Roughly 1-2 days of focused code work. This is the single highest-
+priority architectural change before any further training.
+
+This finding upgrades the memo's recommendation:
+
+**Ship the small-protein result now, AND fix positional encoding as
+the first v2 priority** (instead of the broader 2-3 week wishlist of
+architecture changes). The smoke matrix already ruled out
+normalization; this diagnostic isolates the actual bug.
+
 ## Recommendation
 
 **Ship the small-protein story now with this memo's framing.**
