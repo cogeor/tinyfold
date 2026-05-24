@@ -67,6 +67,7 @@ from tinyfold.model.metrics import compute_dockq, cluster_poses, interface_mask_
 from tinyfold.training.utils import (
     MultiCopyTrainer,
     VectorizedMultiCopyTrainer,
+    edm_loss_weight,
 )
 
 # Loss imports
@@ -1309,15 +1310,20 @@ def _run_training(args, progress):
                     translation = args.translate_aug * torch.randn(current_batch_size, 1, 3, device=device)
                     x_t = x_t + translation
 
-                # Loss weighting (AF3-style)
-                loss_weight = noiser.loss_weight(sigma).mean() if args.loss_weighting else 1.0
+                # EDM/Karras 2022 per-sample loss weighting (Eq. 7).
+                # See tinyfold/training/utils.py::edm_loss_weight for derivation.
+                # MUST be applied at per-sample MSE level, not after batch reduction.
+                loss_weight = (
+                    edm_loss_weight(sigma, sigma_data=noiser.sigma_data)
+                    if args.loss_weighting else None
+                )
             else:
                 # Standard: discrete timesteps with VP noise
                 t = torch.randint(0, noiser.T, (current_batch_size,), device=device)
                 sqrt_ab = noiser.schedule.sqrt_alpha_bar[t].view(-1, 1, 1)
                 sqrt_one_minus_ab = noiser.schedule.sqrt_one_minus_alpha_bar[t].view(-1, 1, 1)
                 x_t = sqrt_ab * batch['centroids'] + sqrt_one_minus_ab * noise
-                loss_weight = 1.0
+                loss_weight = None
 
             # Forward pass
             if args.mode == "stage1_only":
@@ -1422,14 +1428,24 @@ def _run_training(args, progress):
                             atoms_pred = None
                     # Loss: MSE on centroids + distance consistency
                     # Use centroids_target which may be rotated by augmentation
-                    loss_mse = compute_mse_loss(centroids_pred, centroids_target, batch['mask_res'])
+                    if loss_weight is not None:
+                        # EDM/Karras 2022 per-sample weighting: lambda(sigma) * MSE,
+                        # then average across batch. See edm_loss_weight derivation.
+                        per_sample_mse = compute_mse_loss(
+                            centroids_pred, centroids_target, batch['mask_res'],
+                            reduction='per_sample',
+                        )
+                        loss_mse = (per_sample_mse * loss_weight).mean()
+                    else:
+                        loss_mse = compute_mse_loss(
+                            centroids_pred, centroids_target, batch['mask_res']
+                        )
+                    # dist loss is a geometric regularizer (not the EDM-preconditioned
+                    # objective), so we leave it unweighted by lambda(sigma).
                     loss_dist = compute_distance_consistency_loss(
                         centroids_pred, centroids_target, batch['mask_res']
                     )
                     loss = loss_mse + args.dist_weight * loss_dist
-
-                    # Apply AF3-style loss weighting (if enabled)
-                    loss = loss * loss_weight
 
                     # OneStep: add atom-MSE (with warmup) and geometry losses on atoms_pred.
                     loss_atom = 0.0
@@ -1484,7 +1500,7 @@ def _run_training(args, progress):
                             'mse': loss_mse.item(),
                             'dist': loss_dist.item(),
                             'contact': loss_contact,
-                            'loss_weight': loss_weight if isinstance(loss_weight, float) else loss_weight.item(),
+                            'loss_weight': loss_weight.mean().item() if loss_weight is not None else 1.0,
                         }
                         if is_onestep:
                             loss_components.update({

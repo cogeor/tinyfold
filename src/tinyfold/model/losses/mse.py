@@ -60,6 +60,7 @@ def compute_mse_loss(
     target: Tensor,
     mask: Optional[Tensor] = None,
     use_kabsch: bool = True,
+    reduction: str = 'mean',
 ) -> Tensor:
     """MSE loss with optional Kabsch alignment.
 
@@ -78,10 +79,19 @@ def compute_mse_loss(
         target: Target coordinates [B, N, 3]
         mask: Optional mask for valid positions [B, N]
         use_kabsch: Whether to apply Kabsch alignment (default True)
+        reduction: 'mean' returns a scalar (default; existing behavior);
+                   'per_sample' returns a [B] tensor of per-sample MSE
+                   (used by EDM/Karras 2022 per-sample loss weighting; see
+                   tinyfold.training.utils.edm_loss_weight).
 
     Returns:
-        loss: Scalar MSE loss (averaged per-sample, then across batch)
+        loss: Scalar MSE loss when reduction='mean', else [B] per-sample MSE.
     """
+    if reduction not in ('mean', 'per_sample'):
+        raise ValueError(
+            f"compute_mse_loss: reduction must be 'mean' or 'per_sample', got {reduction!r}"
+        )
+
     if use_kabsch:
         # Align TARGET to PRED's frame (not pred to target!)
         target_aligned, pred_c = kabsch_align(target, pred, mask)
@@ -101,9 +111,14 @@ def compute_mse_loss(
         # Per-sample loss: average over valid positions within each sample
         n_valid_per_sample = mask.sum(dim=1).clamp(min=1)  # [B]
         per_sample_loss = (sq_diff * mask.float()).sum(dim=1) / n_valid_per_sample  # [B]
+        if reduction == 'per_sample':
+            return per_sample_loss
         # Average across samples
         loss = per_sample_loss.mean()
     else:
+        if reduction == 'per_sample':
+            # Average over (N, 3) per sample first; sq_diff is [B, N] -> [B]
+            return sq_diff.mean(dim=1)
         loss = sq_diff.mean()
 
     return loss
