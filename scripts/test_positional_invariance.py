@@ -84,6 +84,10 @@ def main() -> None:
                    help="Diffusion sigma to evaluate at (sigma_max in Phase D config).")
     p.add_argument("--shifts", type=str, default="0,100,500,1000",
                    help="CSV of res_idx shifts to test.")
+    p.add_argument("--per_chain_res_idx", action="store_true",
+                   help="Build the BASE res_idx as [0..LA-1, 0..LB-1] (the new "
+                        "per-chain-reset encoding) instead of arange(L_total). "
+                        "Use this when testing a model trained with the fix.")
     args = p.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -122,12 +126,22 @@ def main() -> None:
     x_t = centroids_gt + sigma.view(-1, 1, 1) * noise
 
     shifts = [int(s) for s in args.shifts.split(",")]
-    print(f"\nRunning forward_sigma at sigma={args.sigma} with res_idx shifts: {shifts}")
+    if args.per_chain_res_idx:
+        # Base: parquet's per-chain reset values.
+        base_res_idx_cpu = torch.tensor(table["res_idx"][idx].as_py(), dtype=torch.long)
+        print(f"\nBASE res_idx = per-chain reset (chain A then B); "
+              f"first 5 = {base_res_idx_cpu[:5].tolist()}, "
+              f"last 5 = {base_res_idx_cpu[-5:].tolist()}")
+    else:
+        base_res_idx_cpu = torch.arange(L)
+        print(f"\nBASE res_idx = arange(L_total) (legacy absolute encoding)")
+    base_res_idx = base_res_idx_cpu.to(device)
+    print(f"Running forward_sigma at sigma={args.sigma} with res_idx shifts: {shifts}")
     preds_centroid = {}
     preds_atoms = {}
     with torch.no_grad():
         for s in shifts:
-            res_idx = (torch.arange(L, device=device) + s).unsqueeze(0)
+            res_idx = (base_res_idx + s).unsqueeze(0)
             out = model.forward_sigma(
                 x_t=x_t,
                 sigma=sigma,

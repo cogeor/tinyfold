@@ -17,6 +17,7 @@ def load_sample(
     i: int,
     normalize: bool = True,
     esm_cache_dir: Optional[str | Path] = None,
+    per_chain_res_idx: bool = False,
 ) -> Dict[str, Any]:
     """Load sample at residue level (4 atoms per residue).
 
@@ -74,6 +75,24 @@ def load_sample(
 
     sample_id = table['sample_id'][i].as_py()
 
+    # res_idx encoding choice — see scripts/test_positional_invariance.py
+    # for why this matters:
+    #   - per_chain_res_idx=False (legacy / Phase D): a single continuous
+    #     index 0..L_total-1. Chain B residues end up offset by LA, so the
+    #     same chain B residue gets a different positional feature depending
+    #     on chain A's length. The model learns absolute position as a
+    #     structural cue and catastrophically loses size invariance.
+    #   - per_chain_res_idx=True (the fix): use the per-chain-reset indices
+    #     already stored in the parquet ([0..LA-1] for chain A, [0..LB-1]
+    #     for chain B). The chain_id embedding disambiguates which chain;
+    #     positional features now generalize across complex sizes.
+    if per_chain_res_idx:
+        res_idx_tensor = torch.tensor(
+            table['res_idx'][i].as_py(), dtype=torch.long
+        )
+    else:
+        res_idx_tensor = torch.arange(n_res)
+
     out = {
         'coords': coords,
         'coords_res': coords_res,
@@ -82,7 +101,7 @@ def load_sample(
         'atom_to_res': atom_to_res,
         'aa_seq': seq_res,
         'chain_ids': chain_res,
-        'res_idx': torch.arange(n_res),
+        'res_idx': res_idx_tensor,
         'std': std.item(),
         'n_atoms': n_atoms,
         'n_res': n_res,

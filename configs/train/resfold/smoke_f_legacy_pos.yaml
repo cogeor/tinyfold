@@ -1,0 +1,52 @@
+# Smoke F: legacy (Phase D) absolute position encoding. No ESM.
+# Mirrors Phase D's architecture exactly so the per-chain-reset
+# experiment is a clean A/B (Smoke F vs Smoke G).
+#
+# Uses the existing diffdock_pp_smoke split (500 small complexes).
+
+model_kind: onestep
+mode: stage1_only
+load_split: data/processed/splits/diffdock_pp_smoke.json
+
+n_steps: 3000
+eval_every: 1000
+lr: 1.0e-04
+min_lr: 1.0e-05
+grad_accum: 1
+seed: 42
+batch_size: 16
+dynamic_batch: false
+use_bucketing: false
+
+# Phase D arch
+c_token_s1: 256
+trunk_layers: 6
+denoiser_blocks: 6
+atom_head_layers: 2
+atom_head_heads: 4
+aa_embed: learned  # no ESM
+
+T: 50
+continuous_sigma: true
+sigma_data: 1.0
+sigma_min: 0.002
+sigma_max: 10.0
+
+# legacy positional encoding (absolute arange over LA+LB)
+# (--per_chain_res_idx NOT set)
+
+confidence_head: false
+loss_weighting: true
+augment_rotation: true
+multi_copy: 0
+self_cond_prob: 0.0
+dist_weight: 0.1
+geom_weight: 0.1
+contact_weight: 0.0
+atom_weight: 0.5
+atom_warmup_steps: 200
+one_shot_sample: true
+n_samples: 1
+eval_K_list: "1"
+
+output_dir: outputs/resfold/smoke_f_legacy_pos

@@ -1,0 +1,11 @@
+- train resfold end to end
+- for decoder input, give N samples of residue positions
+- easy to implement and gives good augmentation to decoder
+- connect tokens to decoder, use both redisue and atoms loss. 
+- pass in encoded tokens + residue positions to decoder, decode atoms positions directly
+- no need to reuse diffusion for decoding
+- compare the three approaches, make plots
+- smooth out the frontend
+- more data / msa / proper eval
+- energy loss for stage 2
+- 

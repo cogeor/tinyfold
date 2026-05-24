@@ -598,6 +598,12 @@ def parse_args():
                              "(5 bins; last is [1500, inf)).")
     parser.add_argument("--no_normalize", action="store_true",
                         help="Don't normalize coordinates to unit variance - work in Angstroms directly")
+    parser.add_argument("--per_chain_res_idx", action="store_true",
+                        help="Use per-chain-reset res_idx ([0..LA-1] then [0..LB-1]) "
+                             "instead of the legacy single arange(L_total). The legacy "
+                             "encoding makes the model size-dependent — chain B's "
+                             "positional features change with chain A's length. "
+                             "See scripts/test_positional_invariance.py.")
     parser.add_argument("--load_split", type=str, default=None,
                         help="Load train/test split from JSON (for Stage 2 to reuse Stage 1 split)")
     parser.add_argument("--batch_size", type=int, default=64)
@@ -1297,8 +1303,9 @@ def _run_training(args, progress):
     normalize = not args.no_normalize
     logger.log(f"Preloading samples... (normalize={normalize})")
     _esm_dir = args.esm_cache_dir if args.aa_embed != "learned" else None
-    train_samples = {idx: load_sample_raw(table, idx, normalize=normalize, esm_cache_dir=_esm_dir) for idx in train_indices}
-    test_samples = {idx: load_sample_raw(table, idx, normalize=normalize, esm_cache_dir=_esm_dir) for idx in test_indices}
+    per_chain = getattr(args, "per_chain_res_idx", False)
+    train_samples = {idx: load_sample_raw(table, idx, normalize=normalize, esm_cache_dir=_esm_dir, per_chain_res_idx=per_chain) for idx in train_indices}
+    test_samples = {idx: load_sample_raw(table, idx, normalize=normalize, esm_cache_dir=_esm_dir, per_chain_res_idx=per_chain) for idx in test_indices}
     logger.log(f"  Loaded {len(train_samples)} train, {len(test_samples)} test samples")
 
     # If not normalizing, warn about sigma values
