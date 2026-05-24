@@ -30,23 +30,30 @@
 model_kind: onestep
 
 # --- Data ---
-# Use the full pre-processed parquet. After the data-pipeline fix the
-# parquet ranges from LA+LB=80 to LA+LB=3106 residues. The trainer filter
-# is wide-open (min_atoms=0, sentinel max_atoms=99999) so the only data
-# restriction is whatever the parquet itself contains.
-n_train: 41000
+# Use the full pre-processed parquet but cap per-sample size to keep training
+# tractable. After the data-pipeline fix the parquet contains LA+LB up to
+# 3,106 residues, and a 3000-residue complex is 25x slower per training step
+# than a 600-residue one (attention is O(L^2)). The very large tail (>1200
+# residues, ~1,956 samples or 4.7% of the parquet) is excluded here to keep
+# wall-time in the 4-6 h range; a future Phase F can revisit with reduced
+# batch + bf16 if needed.
+#
+# Per-sample size is measured in ATOMS (4 backbone atoms per residue), so
+# max_atoms=4800 == LA+LB <= 1200 residues. This still includes the 600-1200
+# residue band that was previously hidden by the upstream chain-length cap,
+# giving ~5,000 new training samples beyond Phase D.
+n_train: 38000
 n_test: 200
 n_eval_train: 200
 min_atoms: 0
-max_atoms: 99999
+max_atoms: 4800
 
 # Stratified test sampling: equal share per residue-size bin so the
-# headline number reflects performance across the full size distribution,
-# not just the population mode (40-50% of samples are <600 residues).
-# Default bins partition [0,400) [400,600) [600,1000) [1000,1500) [1500,inf).
-# 200 / 5 bins = 40 test samples per bin.
+# headline number reflects performance across the included size distribution
+# rather than the population mode (~70% of samples are <600 residues).
+# 5 bins all within the [0, 1200] cap; 200 / 5 = 40 test samples per bin.
 test_strategy: stratified
-test_size_bins: "0,400,600,1000,1500"
+test_size_bins: "0,400,600,800,1000"
 
 # Dynamic batching by token count handles the variable size distribution
 # safely. With c_token=256 trunk on a 4070 Ti SUPER, max_tokens=30000
