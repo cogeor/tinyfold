@@ -62,7 +62,7 @@ from tinyfold.model.diffusion import (
     create_sampler,
 )
 from tinyfold.model.resfold import ResFoldPipeline
-from tinyfold.model.metrics import compute_dockq
+from tinyfold.model.metrics import compute_dockq, cluster_poses, interface_mask_from_gt
 from tinyfold.training.utils import (
     MultiCopyTrainer,
     VectorizedMultiCopyTrainer,
@@ -152,7 +152,7 @@ def sample_centroids(model, batch, noiser, device, clamp_val=3.0,
 
 @torch.no_grad()
 def sample_centroids_one_shot(model, batch, noiser, device, is_onestep=False,
-                              sigma_init=None):
+                              sigma_init=None, generator=None):
     """Single-forward inference for EDM-preconditioned models.
 
     At high sigma the EDM model's output is dominated by F (the learned prior).
@@ -163,6 +163,9 @@ def sample_centroids_one_shot(model, batch, noiser, device, is_onestep=False,
     learns a regression conditional on noise level).
 
     For ResFoldOneStep, also returns the atom-head output from the same forward.
+
+    When ``generator`` is provided, the noise init draws from it instead of the
+    global RNG so the caller can request K reproducible, distinct samples.
     """
     B, L = batch['aa_seq'].shape
     mask = batch['mask_res']
@@ -170,7 +173,7 @@ def sample_centroids_one_shot(model, batch, noiser, device, is_onestep=False,
     if sigma_init is None:
         sigma_init = sigmas[0]
     sigma_init = torch.as_tensor(sigma_init, device=device).view(1).expand(B)
-    x = sigma_init.view(B, 1, 1) * torch.randn(B, L, 3, device=device)
+    x = sigma_init.view(B, 1, 1) * torch.randn(B, L, 3, device=device, generator=generator)
     denoiser = model if is_onestep else model.stage1
     out = denoiser.forward_sigma(
         x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
@@ -185,7 +188,7 @@ def sample_centroids_one_shot(model, batch, noiser, device, is_onestep=False,
 @torch.no_grad()
 def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
                         align_per_step=True, recenter=True, self_cond=True,
-                        is_onestep=False):
+                        is_onestep=False, generator=None):
     """VE (variance-exploding) sampling for continuous sigma models.
 
     Uses AF3-style Euler sampling with the Karras sigma schedule.
@@ -217,7 +220,7 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
     sigmas = noiser.sigmas.to(device)  # Decreasing: [sigma_max, ..., sigma_min]
 
     # Initialize at highest noise level (VE: x = sigma * noise)
-    x = sigmas[0] * torch.randn(B, L, 3, device=device)
+    x = sigmas[0] * torch.randn(B, L, 3, device=device, generator=generator)
 
     # Track previous x0_pred for self-conditioning
     x0_prev = None
@@ -274,6 +277,104 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
         return x, atoms_pred
 
     return x
+
+
+@torch.no_grad()
+def sample_k_centroids(
+    model,
+    batch,
+    noiser,
+    device,
+    K: int,
+    base_seed: int,
+    target_idx: int,
+    is_onestep: bool,
+    one_shot: bool,
+    align_per_step: bool = False,
+    recenter: bool = False,
+    self_cond: bool = True,
+):
+    """Draw K reproducible centroid samples for one target.
+
+    For the (is_onestep, one_shot) path the trunk is run ONCE and only the
+    denoiser runs K times via ``forward_sigma_with_trunk``. For the VE path
+    the trunk runs K times — for L<=300, c_token=128 and a 4-block trunk
+    this cost is negligible vs the K * (T-1) denoiser passes.
+
+    The per-sample noise generator is seeded
+    ``base_seed * 100003 + target_idx * 1009 + sample_idx`` so the same
+    ``--seed`` reproduces the run bit-for-bit, and the K seeds within a
+    target are independent across targets.
+
+    Args:
+        model: ResFoldOneStep or ResFoldPipeline.
+        batch: collated batch dict (B=1 expected).
+        noiser: VENoiser (continuous-sigma path).
+        device: torch device.
+        K: number of samples to draw.
+        base_seed: typically ``args.seed``.
+        target_idx: integer index for per-target seeding.
+        is_onestep: True for ResFoldOneStep.
+        one_shot: True for single-forward EDM inference (fast path).
+        align_per_step: forwarded to the VE sampler.
+        recenter: forwarded to the VE sampler.
+        self_cond: forwarded to the VE sampler.
+
+    Returns:
+        tuple (centroids, atoms_or_None) where
+            centroids: ``[K, B, L, 3]``
+            atoms_or_None: ``[K, B, L, 4, 3]`` when ``is_onestep`` else None.
+    """
+    B, L = batch['aa_seq'].shape
+    assert B == 1, "sample_k_centroids assumes one target per call"
+    mask = batch['mask_res']
+
+    centroid_list = []
+    atom_list = []
+
+    # Fast path: reuse the trunk across K denoiser calls.
+    if is_onestep and one_shot:
+        trunk_tokens = model.get_trunk_tokens(
+            batch['aa_seq'], batch['chain_ids'], batch['res_idx'], mask
+        )
+        sigmas = noiser.sigmas.to(device)
+        sigma_init = sigmas[0].view(1).expand(B)
+        for i in range(K):
+            seed_i = base_seed * 100003 + target_idx * 1009 + i
+            gen = torch.Generator(device=device).manual_seed(seed_i)
+            x = sigma_init.view(B, 1, 1) * torch.randn(
+                B, L, 3, device=device, generator=gen
+            )
+            centroid_pred, atoms_pred = model.forward_sigma_with_trunk(
+                x, trunk_tokens, sigma_init, mask, x0_prev=None
+            )
+            centroid_list.append(centroid_pred)
+            atom_list.append(atoms_pred)
+    else:
+        for i in range(K):
+            seed_i = base_seed * 100003 + target_idx * 1009 + i
+            gen = torch.Generator(device=device).manual_seed(seed_i)
+            if one_shot:
+                # Non-onestep one_shot: trunk lives inside model.stage1; just rerun it.
+                out = sample_centroids_one_shot(
+                    model, batch, noiser, device, is_onestep=is_onestep, generator=gen,
+                )
+            else:
+                out = sample_centroids_ve(
+                    model, batch, noiser, device,
+                    align_per_step=align_per_step, recenter=recenter,
+                    self_cond=self_cond, is_onestep=is_onestep, generator=gen,
+                )
+            if is_onestep:
+                centroid_pred, atoms_pred = out
+                centroid_list.append(centroid_pred)
+                atom_list.append(atoms_pred)
+            else:
+                centroid_list.append(out)
+
+    centroids = torch.stack(centroid_list, dim=0)  # [K, B, L, 3]
+    atoms = torch.stack(atom_list, dim=0) if is_onestep else None
+    return centroids, atoms
 
 
 @torch.no_grad()
@@ -519,6 +620,16 @@ def parse_args():
     parser.add_argument("--recenter", action="store_true",
                         help="Re-center coordinates each step (avoids translation drift)")
 
+    # Multi-sample inference (HDOCK-style cluster-then-rank). K=1 (default) is
+    # the legacy single-sample path and produces byte-identical eval output.
+    parser.add_argument("--n_samples", type=int, default=1,
+                        help="K samples per target for multi-sample eval (default 1 = old behaviour)")
+    parser.add_argument("--cluster_radius", type=float, default=5.0,
+                        help="Interface-CA RMSD radius (Angstroms) for HDOCK-style clustering")
+    parser.add_argument("--eval_K_list", type=str, default="1,5,40",
+                        help="Comma-separated K values to report; only used when --n_samples > 1. "
+                             "Max(eval_K_list) must be <= --n_samples.")
+
     # AF3-style training (multi-copy with trunk reuse)
     parser.add_argument("--multi_copy", type=int, default=0,
                         help="Number of augmented copies per sample (0=disabled, 48=AF3-style)")
@@ -575,11 +686,26 @@ def _run_test_eval(
     storing returned metrics if they want them surfaced to REGISTRY.md.
 
     Returns:
-        tuple ``(test_avg, dockq_avg, dockq_success_pct, c_rmsd_avg)``. Each
-        of the last three may be ``None`` if the corresponding metric was not
-        collected (e.g., DockQ is None for non-onestep stage1_only modes).
+        tuple ``(test_avg, dockq_avg, dockq_success_pct, c_rmsd_avg, extra_tokens)``.
+        Each of ``dockq_avg``, ``dockq_success_pct``, ``c_rmsd_avg`` may be
+        ``None`` if the corresponding metric was not collected (e.g., DockQ is
+        None for non-onestep stage1_only modes). ``extra_tokens`` is a possibly
+        empty list of pre-formatted ``oracle@K`` / ``mean@K`` / ``ranked@K``
+        strings (one trio per K > 1 in ``args.eval_K_list`` when
+        ``--n_samples > 1``).
     """
     model.eval()
+    # K-list parsing: when --n_samples 1 (default), the K=1 fast path keeps
+    # current behaviour byte-identical; the multi-sample machinery is silent.
+    if getattr(args, "n_samples", 1) > 1:
+        k_list = sorted({int(x) for x in args.eval_K_list.split(",")})
+        assert max(k_list) <= args.n_samples, \
+            f"eval_K_list max ({max(k_list)}) exceeds --n_samples ({args.n_samples})"
+    else:
+        k_list = [1]
+    per_k_oracle = {k: [] for k in k_list}
+    per_k_mean = {k: [] for k in k_list}
+    per_k_ranked = {k: [] for k in k_list}
     with torch.no_grad():
         # Evaluate on test set
         test_rmses = []
@@ -588,13 +714,53 @@ def _run_test_eval(
         test_ilddt_scores = []
         test_atom_rmses = []  # OneStep only
         test_c_rmsds = []  # Complex-RMSD (chain-A-aligned, all CA)
-        for idx in test_indices:
+        for target_pos, idx in enumerate(test_indices):
             s = test_samples[idx]
             batch = collate_batch([s], device)
 
             if args.mode == "stage1_only":
                 atoms_pred_onestep = None
-                if args.continuous_sigma:
+                if args.continuous_sigma and args.n_samples > 1:
+                    # Multi-sample path: K reproducible samples per target.
+                    samples_c, samples_a = sample_k_centroids(
+                        model, batch, noiser, device,
+                        K=args.n_samples, base_seed=args.seed, target_idx=target_pos,
+                        is_onestep=is_onestep, one_shot=args.one_shot_sample,
+                        align_per_step=args.align_per_step, recenter=args.recenter,
+                    )
+                    n_res = s['n_res']
+                    # Per-sample RMSE vs GT (Kabsch-aligned by compute_rmse).
+                    gt_centroids = batch['centroids']
+                    mask_res = batch['mask_res']
+                    per_sample_rmses = []
+                    for k_i in range(args.n_samples):
+                        r = compute_rmse(
+                            samples_c[k_i], gt_centroids, mask_res
+                        ).item() * s['std']
+                        per_sample_rmses.append(r)
+                    # Interface mask is GT-only, computed once.
+                    iface_mask = interface_mask_from_gt(
+                        batch['centroids'][0, :n_res].cpu(),
+                        batch['chain_ids'][0, :n_res].cpu(),
+                        batch['mask_res'][0, :n_res].cpu(),
+                    )
+                    if not iface_mask.any():
+                        # Sanity guard: chains too far apart in GT — cluster on all residues.
+                        iface_mask = torch.ones(n_res, dtype=torch.bool)
+                    # Pose tensor for clustering: [K, n_res, 3] on CPU, in Angstroms.
+                    poses_cpu = (samples_c[:, 0, :n_res, :] * s['std']).cpu()
+                    for k in k_list:
+                        sub_rmses = per_sample_rmses[:k]
+                        per_k_oracle[k].append(min(sub_rmses))
+                        per_k_mean[k].append(sum(sub_rmses) / k)
+                        clusters = cluster_poses(poses_cpu[:k], iface_mask, args.cluster_radius)
+                        per_k_ranked[k].append(sub_rmses[clusters[0]["representative"]])
+                    # Downstream metrics (DockQ, atom RMSE, C-RMSD) use sample 0.
+                    centroids_pred = samples_c[0]
+                    if is_onestep:
+                        atoms_pred_onestep = samples_a[0]
+                    rmse = per_sample_rmses[0]
+                elif args.continuous_sigma:
                     if args.one_shot_sample:
                         sample_out = sample_centroids_one_shot(
                             model, batch, noiser, device, is_onestep=is_onestep,
@@ -610,15 +776,17 @@ def _run_test_eval(
                         centroids_pred, atoms_pred_onestep = sample_out
                     else:
                         centroids_pred = sample_out
+                    rmse = compute_rmse(centroids_pred, batch['centroids'], batch['mask_res']).item() * s['std']
                 elif eval_sampler is not None:
                     centroids_pred = sample_centroids_with_sampler(model, batch, noiser, device, eval_sampler)
+                    rmse = compute_rmse(centroids_pred, batch['centroids'], batch['mask_res']).item() * s['std']
                 else:
                     centroids_pred = sample_centroids(
                         model, batch, noiser, device,
                         align_per_step=args.align_per_step,
                         recenter=args.recenter
                     )
-                rmse = compute_rmse(centroids_pred, batch['centroids'], batch['mask_res']).item() * s['std']
+                    rmse = compute_rmse(centroids_pred, batch['centroids'], batch['mask_res']).item() * s['std']
                 if is_onestep and atoms_pred_onestep is not None:
                     # Atom RMSE in Angstroms (Kabsch-aligned).
                     B_, L_ = centroids_pred.shape[:2]
@@ -746,9 +914,22 @@ def _run_test_eval(
         if test_c_rmsds:
             c_rmsd_avg = sum(test_c_rmsds) / len(test_c_rmsds)
             log_msg += f" | C-RMSD: {c_rmsd_avg:.4f} A"
+        # Multi-sample (Loop 02) tokens: K=1 oracle/mean/ranked all equal the
+        # printed test RMSE, so skip K=1 to keep the cell tidy.
+        extra_tokens: list = []
+        for k in k_list:
+            if k == 1:
+                continue
+            o = sum(per_k_oracle[k]) / len(per_k_oracle[k])
+            m = sum(per_k_mean[k]) / len(per_k_mean[k])
+            r = sum(per_k_ranked[k]) / len(per_k_ranked[k])
+            log_msg += f" | oracle@{k}: {o:.4f} A | mean@{k}: {m:.4f} A | ranked@{k}: {r:.4f} A"
+            extra_tokens.append(f"oracle@{k} {o:.3f} A")
+            extra_tokens.append(f"mean@{k} {m:.3f} A")
+            extra_tokens.append(f"ranked@{k} {r:.3f} A")
         logger.log(log_msg)
 
-        return test_avg, dockq_avg, dockq_success_pct, c_rmsd_avg
+        return test_avg, dockq_avg, dockq_success_pct, c_rmsd_avg, extra_tokens
 
 
 def _run_training(args, progress):
@@ -1010,7 +1191,7 @@ def _run_training(args, progress):
         logger.log("=" * 70)
         logger.log(f"Eval-only: scoring {args.checkpoint} on test split (N={len(test_indices)})")
         logger.log("=" * 70)
-        test_avg, dockq_avg, dockq_success_pct, c_rmsd_avg = _run_test_eval(
+        test_avg, dockq_avg, dockq_success_pct, c_rmsd_avg, extra_tokens = _run_test_eval(
             model, test_samples, test_indices, noiser, eval_sampler,
             device, args, is_onestep, logger,
         )
@@ -1022,6 +1203,8 @@ def _run_training(args, progress):
             progress["dockq_success_pct"] = dockq_success_pct
         if c_rmsd_avg is not None:
             progress["c_rmsd"] = c_rmsd_avg
+        if extra_tokens:
+            progress["extra_tokens"] = extra_tokens
         logger.log(f"Finished: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         logger.close()
         return test_avg
@@ -1480,7 +1663,7 @@ def _run_training(args, progress):
                 train_avg = sum(train_rmses) / len(train_rmses)
 
                 # Evaluate on test set (delegated; see _run_test_eval).
-                test_avg, dockq_avg, dockq_success_pct, c_rmsd_avg = _run_test_eval(
+                test_avg, dockq_avg, dockq_success_pct, c_rmsd_avg, extra_tokens = _run_test_eval(
                     model, test_samples, test_indices, noiser, eval_sampler,
                     device, args, is_onestep, logger,
                     train_avg=train_avg, n_eval=n_eval,
@@ -1561,6 +1744,8 @@ def _run_training(args, progress):
                         progress["dockq_success_pct"] = dockq_success_pct
                     if c_rmsd_avg is not None:
                         progress["c_rmsd"] = c_rmsd_avg
+                    if extra_tokens:
+                        progress["extra_tokens"] = extra_tokens
                     torch.save({
                         'step': step,
                         'model_state_dict': model.state_dict(),
@@ -1643,6 +1828,7 @@ def main():
                 dockq_avg=progress.get("dockq_avg"),
                 dockq_success_pct=progress.get("dockq_success_pct"),
                 c_rmsd=progress.get("c_rmsd"),
+                extra_tokens=progress.get("extra_tokens"),
             )
             print(f"[registry] appended row to {registry_path}")
         except Exception as reg_err:

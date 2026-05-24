@@ -8,7 +8,7 @@ locking).
 
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 
 def _escape_pipes(value: str) -> str:
@@ -27,6 +27,7 @@ def append_registry_row(
     dockq_avg: Optional[float] = None,
     dockq_success_pct: Optional[float] = None,
     c_rmsd: Optional[float] = None,
+    extra_tokens: Optional[List[str]] = None,
 ) -> Path:
     """Append one row to ``experiments/REGISTRY.md`` and return the resolved path.
 
@@ -53,6 +54,11 @@ def append_registry_row(
         c_rmsd: Optional mean Complex-RMSD across the test split (chain-A
             Kabsch alignment then RMSD over all CA). When supplied, appended
             to the Outcome cell as ``C-RMSD X.XXXX A``.
+        extra_tokens: Optional list of pre-formatted metric strings appended
+            to the Outcome cell after the C-RMSD / DockQ tokens with ``"; "``
+            joiner. Preferred for new metrics (e.g. Loop 02's ``oracle@K``,
+            ``mean@K``, ``ranked@K``); the named kwargs above are kept for
+            Loop 01 back-compat only.
 
     Returns:
         Resolved ``Path`` to the registry file that was written to.
@@ -91,6 +97,8 @@ def append_registry_row(
     if dockq_avg is not None:
         succ = f" succ {dockq_success_pct:.1f}%" if dockq_success_pct is not None else ""
         extras.append(f"DockQ {dockq_avg:.3f}{succ}")
+    if extra_tokens:
+        extras.extend(extra_tokens)
     if extras:
         # NOTE: use "; " not " | " — bare pipes inside an outcome cell are
         # parsed as new markdown columns, which would break the table layout.
