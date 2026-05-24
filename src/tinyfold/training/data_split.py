@@ -56,9 +56,31 @@ class DataSplitConfig:
     # Random seed for shuffling (fixed for reproducibility)
     seed: int = 42
 
+    # Test-set sampling strategy:
+    #   "random"     - shuffle eligible pool, take first n_test (default; current behaviour).
+    #   "stratified" - bin eligible samples by total residue count, take an equal
+    #                  share per bin so the headline number is not dominated by
+    #                  the population mode (small complexes).
+    test_strategy: str = "random"
+
+    # Bin edges (inclusive lower, exclusive upper) for stratified mode.
+    # Specified in TOTAL residues (LA + LB). Default partitions the full DIPS
+    # distribution at the small/medium/large/very-large boundaries.
+    # Used only when test_strategy == "stratified".
+    test_size_bins: Optional[list[int]] = None
+
     def __post_init__(self):
         if self.n_test is None:
             self.n_test = max(10, self.n_train // 5)
+        if self.test_strategy not in {"random", "stratified"}:
+            raise ValueError(
+                f"test_strategy must be 'random' or 'stratified', got {self.test_strategy!r}"
+            )
+        if self.test_size_bins is None:
+            # Default bins: [0, 400), [400, 600), [600, 1000), [1000, 1500),
+            # [1500, inf). Matches the natural breaks in the un-truncated
+            # DIPS-Plus distribution after the chain-length-cap fix.
+            self.test_size_bins = [0, 400, 600, 1000, 1500]
 
 
 def get_eligible_samples(table: pa.Table, config: DataSplitConfig) -> list[tuple[int, str, int]]:
@@ -100,6 +122,77 @@ def get_eligible_samples(table: pa.Table, config: DataSplitConfig) -> list[tuple
         return eligible
 
 
+def _residues_for_sample(table: pa.Table, row_idx: int) -> int:
+    """Return LA + LB for a parquet row. Used by stratified split."""
+    return int(table['LA'][row_idx].as_py()) + int(table['LB'][row_idx].as_py())
+
+
+def _stratified_test_split(
+    eligible: list[tuple[int, str, int]],
+    table: pa.Table,
+    bins: list[int],
+    n_test: int,
+    seed: int,
+) -> tuple[list[tuple[int, str, int]], list[tuple[int, str, int]]]:
+    """Take ``n_test`` test samples, equal share per residue-size bin.
+
+    Bins are half-open intervals [bins[i], bins[i+1]) with an implicit final
+    bin [bins[-1], inf). Samples whose total residue count (LA+LB) falls in
+    each bin are shuffled with ``seed`` and the first ``n_test // n_bins``
+    are taken as test. The remainder is added to the training pool. Any
+    leftover test slots from undersized bins are filled from the largest
+    bin still having capacity.
+
+    Returns:
+        (train_pool, test_pool) - same triple format as ``eligible``.
+    """
+    # Build per-bin lists of eligible triples.
+    n_bins = len(bins)  # bins=[0,400,600,...,1500] -> 5 bins (last is [1500, inf))
+    binned: list[list[tuple[int, str, int]]] = [[] for _ in range(n_bins)]
+    for triple in eligible:
+        row_idx = triple[0]
+        L = _residues_for_sample(table, row_idx)
+        for b in range(n_bins - 1, -1, -1):
+            if L >= bins[b]:
+                binned[b].append(triple)
+                break
+
+    target_per_bin = n_test // n_bins
+    test_pool: list[tuple[int, str, int]] = []
+    train_pool: list[tuple[int, str, int]] = []
+    deficit = 0
+    rng = random.Random(seed)
+    for b in range(n_bins):
+        bucket = binned[b]
+        rng.shuffle(bucket)
+        take = min(target_per_bin, len(bucket))
+        test_pool.extend(bucket[:take])
+        train_pool.extend(bucket[take:])
+        deficit += max(0, target_per_bin - take)
+
+    # Distribute any deficit: pull extra test from the largest non-empty bin
+    # that has remaining train capacity. This keeps the test set at exactly
+    # n_test even if some bins are sparse.
+    if deficit > 0:
+        # Re-bin the train_pool so we can pull from largest bins first.
+        train_by_bin: list[list[tuple[int, str, int]]] = [[] for _ in range(n_bins)]
+        for triple in train_pool:
+            L = _residues_for_sample(table, triple[0])
+            for b in range(n_bins - 1, -1, -1):
+                if L >= bins[b]:
+                    train_by_bin[b].append(triple)
+                    break
+        # Iterate from largest bin downward, pulling extras.
+        for b in range(n_bins - 1, -1, -1):
+            while deficit > 0 and train_by_bin[b]:
+                test_pool.append(train_by_bin[b].pop(0))
+                deficit -= 1
+        # Reflatten train_pool.
+        train_pool = [t for bucket in train_by_bin for t in bucket]
+
+    return train_pool, test_pool
+
+
 def get_train_test_indices(
     table: pa.Table,
     config: DataSplitConfig,
@@ -132,14 +225,32 @@ def get_train_test_indices(
                 f"but only {len(eligible)} samples have {config.min_atoms}-{config.max_atoms} atoms"
             )
 
-    # Shuffle with fixed seed
-    rng = random.Random(config.seed)
-    samples = eligible.copy()
-    rng.shuffle(samples)
-
-    # Split: first n_train for training, next n_test for testing
-    train_samples = samples[:config.n_train]
-    test_samples = samples[config.n_train:config.n_train + config.n_test]
+    if config.test_strategy == "stratified":
+        # Carve out the test set first via size-bucket sampling; the train
+        # set is then a shuffled prefix of what's left.
+        train_pool, test_samples = _stratified_test_split(
+            eligible=eligible,
+            table=table,
+            bins=config.test_size_bins,
+            n_test=config.n_test,
+            seed=config.seed,
+        )
+        if len(train_pool) < config.n_train:
+            raise ValueError(
+                f"Stratified split: after carving {len(test_samples)} test samples, "
+                f"only {len(train_pool)} remain for training (n_train={config.n_train})."
+            )
+        rng = random.Random(config.seed)
+        rng.shuffle(train_pool)
+        train_samples = train_pool[:config.n_train]
+    else:
+        # Random strategy: shuffle eligible, take first n_train for training and
+        # the next n_test for testing.
+        rng = random.Random(config.seed)
+        samples = eligible.copy()
+        rng.shuffle(samples)
+        train_samples = samples[:config.n_train]
+        test_samples = samples[config.n_train:config.n_train + config.n_test]
 
     # Extract just the original indices (first element of tuple)
     train_indices = [s[0] for s in train_samples]

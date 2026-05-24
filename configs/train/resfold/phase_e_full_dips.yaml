@@ -30,14 +30,23 @@
 model_kind: onestep
 
 # --- Data ---
-# Use the full pre-processed parquet. min_atoms=0 admits the smallest
-# complexes; max_atoms=99999 is a sentinel that never trips at the
-# actual parquet's 600-residue ceiling.
-n_train: 28000
+# Use the full pre-processed parquet. After the data-pipeline fix the
+# parquet ranges from LA+LB=80 to LA+LB=3106 residues. The trainer filter
+# is wide-open (min_atoms=0, sentinel max_atoms=99999) so the only data
+# restriction is whatever the parquet itself contains.
+n_train: 41000
 n_test: 200
 n_eval_train: 200
 min_atoms: 0
 max_atoms: 99999
+
+# Stratified test sampling: equal share per residue-size bin so the
+# headline number reflects performance across the full size distribution,
+# not just the population mode (40-50% of samples are <600 residues).
+# Default bins partition [0,400) [400,600) [600,1000) [1000,1500) [1500,inf).
+# 200 / 5 bins = 40 test samples per bin.
+test_strategy: stratified
+test_size_bins: "0,400,600,1000,1500"
 
 # Dynamic batching by token count handles the variable size distribution
 # safely. With c_token=256 trunk on a 4070 Ti SUPER, max_tokens=30000

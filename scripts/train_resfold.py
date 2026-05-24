@@ -585,6 +585,17 @@ def parse_args():
     parser.add_argument("--max_atoms", type=int, default=400)
     parser.add_argument("--select_smallest", action="store_true",
                         help="Select N smallest proteins instead of filtering by atom range")
+    parser.add_argument("--test_strategy", type=str, default="random",
+                        choices=["random", "stratified"],
+                        help="Test-set sampling: 'random' (default) shuffles "
+                             "eligible pool and takes n_test; 'stratified' bins by "
+                             "LA+LB total residues and takes an equal share per bin "
+                             "(so the headline number isn't dominated by small "
+                             "complexes in datasets with a long size tail).")
+    parser.add_argument("--test_size_bins", type=str, default=None,
+                        help="Comma-separated bin lower-edges (LA+LB residues) for "
+                             "--test_strategy stratified. Default: '0,400,600,1000,1500' "
+                             "(5 bins; last is [1500, inf)).")
     parser.add_argument("--no_normalize", action="store_true",
                         help="Don't normalize coordinates to unit variance - work in Angstroms directly")
     parser.add_argument("--load_split", type=str, default=None,

@@ -49,6 +49,13 @@ def get_or_create_split(
         logger.log(f"  Test: {len(test_indices)} samples")
         return train_indices, test_indices, loaded_info
     
+    # Parse optional test_size_bins (CSV string from CLI, list from YAML).
+    bins_arg = getattr(args, 'test_size_bins', None)
+    if isinstance(bins_arg, str) and bins_arg.strip():
+        bins_arg = [int(x) for x in bins_arg.split(",")]
+    elif not bins_arg:
+        bins_arg = None  # let DataSplitConfig pick its default
+
     # Create new split
     split_config = DataSplitConfig(
         n_train=args.n_train,
@@ -57,6 +64,8 @@ def get_or_create_split(
         max_atoms=getattr(args, 'max_atoms', 1000),
         select_smallest=getattr(args, 'select_smallest', False),
         seed=getattr(args, 'seed', 42),
+        test_strategy=getattr(args, 'test_strategy', 'random'),
+        test_size_bins=bins_arg,
     )
     train_indices, test_indices = get_train_test_indices(table, split_config)
     split_info = get_split_info(table, split_config)
