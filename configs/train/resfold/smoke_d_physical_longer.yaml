@@ -1,0 +1,50 @@
+# Smoke D: like C (physical scale, no aux), but 10K steps.
+# Goal: see if physical scale converges further than the normalized
+# baseline given enough time. Smoke A plateaued at ~17.5 in 3K steps;
+# Smoke C was still descending. Run D long enough to know.
+
+model_kind: onestep
+mode: stage1_only
+load_split: data/processed/splits/diffdock_pp_smoke.json
+
+n_steps: 10000
+eval_every: 2000
+lr: 1.0e-04
+min_lr: 1.0e-05
+grad_accum: 1
+seed: 42
+batch_size: 16
+dynamic_batch: false
+use_bucketing: false
+
+c_token_s1: 256
+trunk_layers: 6
+denoiser_blocks: 6
+atom_head_layers: 2
+atom_head_heads: 4
+aa_embed: esm2_35M
+
+T: 50
+continuous_sigma: true
+no_normalize: true
+sigma_data: 16.0
+sigma_min: 4.0e-4
+sigma_max: 160.0
+
+confidence_head: false
+loss_weighting: true
+augment_rotation: true
+multi_copy: 0
+self_cond_prob: 0.0
+
+dist_weight: 0.0
+geom_weight: 0.0
+contact_weight: 0.0
+atom_weight: 0.0
+atom_warmup_steps: 0
+
+one_shot_sample: true
+n_samples: 1
+eval_K_list: "1"
+
+output_dir: outputs/resfold/smoke_d_physical_longer

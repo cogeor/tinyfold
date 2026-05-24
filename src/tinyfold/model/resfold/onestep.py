@@ -130,11 +130,17 @@ class ResFoldOneStep(BaseDecoder):
         aa_embed: str = "learned",
         esm_dim: Optional[int] = None,
         confidence_head: bool = False,
+        sigma_data: float = 1.0,
     ):
         super().__init__()
         self.c_token = c_token
         self.n_timesteps = n_timesteps
-        self.sigma_data = 1.0
+        # sigma_data is the EDM preconditioning constant; should match the
+        # std of the data distribution in the units the model trains in.
+        # 1.0 is correct when coords are per-sample-normalized to unit std;
+        # ~16.0 (Boltz/AF3 convention) is correct when coords are in raw
+        # Angstroms and only centered.
+        self.sigma_data = float(sigma_data)
         self.aa_embed_mode = aa_embed
 
         # === TRUNK (sequence-only, runs once) ===

@@ -1410,6 +1410,7 @@ def _run_training(args, progress):
             aa_embed=args.aa_embed,
             esm_dim=args._esm_dim,
             confidence_head=args.confidence_head,
+            sigma_data=args.sigma_data,
         ).to(device)
         # In OneStep the model itself is the "stage 1" denoiser; alias for forward calls.
         stage1_module = model
