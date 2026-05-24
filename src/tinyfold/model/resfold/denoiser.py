@@ -59,6 +59,16 @@ class SwiGLU(nn.Module):
 # Residue Encoder (Trunk)
 # =============================================================================
 
+# ESM-2 hidden dims for the variants exposed via `aa_embed=...`. Kept here
+# (and mirrored in ``scripts/prepare_esm2_embeddings.py`` /
+# ``scripts/train_resfold.py``) so the model construction does not have to
+# import either script.
+ESM_DIMS = {
+    "esm2_35M": 480,
+    "esm2_150M": 640,
+}
+
+
 class ResidueEncoder(nn.Module):
     """Residue-level encoder (trunk) that runs ONCE per sample.
 
@@ -67,6 +77,16 @@ class ResidueEncoder(nn.Module):
     IMPORTANT: This trunk processes ONLY sequence/token features (aa_seq, chain_ids, res_idx).
     It does NOT take coordinates as input. This enables the trunk-once optimization
     where trunk runs once and denoiser runs multiple times with different noisy coords.
+
+    AA-representation modes (``aa_embed``):
+        * ``"learned"`` (default): the historical ``nn.Embedding(n_aa_types,
+          c_token)`` lookup. Trainable from scratch; loss curve and parameter
+          count are byte-identical to pre-Loop-05.
+        * ``"esm2_35M"`` / ``"esm2_150M"``: frozen ESM-2 features supplied per
+          forward via ``esm_embed=[B, L, esm_dim]`` (loaded from the parquet
+          cache built by ``scripts/prepare_esm2_embeddings.py``). Projected
+          through ``nn.Linear(esm_dim -> c_token)``; the chain + sinusoidal
+          positional features are unchanged.
     """
 
     def __init__(
@@ -77,12 +97,34 @@ class ResidueEncoder(nn.Module):
         n_aa_types: int = 21,
         n_chains: int = 2,
         dropout: float = 0.0,
+        aa_embed: str = "learned",
+        esm_dim: Optional[int] = None,
     ):
         super().__init__()
         self.c_token = c_token
+        self.aa_embed_mode = aa_embed
 
-        # Residue embeddings (sequence-only, no coordinates!)
-        self.aa_embed = nn.Embedding(n_aa_types, c_token)
+        if aa_embed == "learned":
+            # Bit-for-bit identical to the historical path.
+            self.aa_embed = nn.Embedding(n_aa_types, c_token)
+            self.esm_proj = None
+            self.esm_dim = None
+        elif aa_embed in ESM_DIMS:
+            # Resolve esm_dim from the small lookup table unless overridden.
+            resolved = esm_dim if esm_dim is not None else ESM_DIMS[aa_embed]
+            self.esm_dim = resolved
+            # No AA-lookup embedding in ESM mode. Set to None so a future
+            # accidental ``self.aa_embed(aa_seq)`` raises immediately.
+            self.aa_embed = None
+            self.esm_proj = nn.Linear(resolved, c_token)
+            nn.init.xavier_uniform_(self.esm_proj.weight)
+            nn.init.zeros_(self.esm_proj.bias)
+        else:
+            raise ValueError(
+                f"Unknown aa_embed={aa_embed!r}; expected 'learned' or one of "
+                f"{sorted(ESM_DIMS.keys())}"
+            )
+
         self.chain_embed = nn.Embedding(n_chains, c_token // 4)
 
         # Input projection
@@ -111,16 +153,33 @@ class ResidueEncoder(nn.Module):
         chain_ids: Tensor,       # [B, L]
         res_idx: Tensor,         # [B, L]
         mask: Optional[Tensor] = None,  # [B, L]
+        esm_embed: Optional[Tensor] = None,  # [B, L, esm_dim], required in ESM mode
     ) -> Tensor:
         """Encode residue-level sequence features (NO coordinates).
+
+        When ``aa_embed_mode == "learned"`` the original lookup is used (and
+        ``esm_embed`` is ignored). When in ESM mode, the caller MUST pass
+        ``esm_embed`` (a per-residue cached ESM-2 feature tensor); we project
+        it through ``self.esm_proj`` instead of running an embedding lookup.
+        The integer ``aa_seq`` is still accepted (it determines the [B, L]
+        shape) but its values are ignored in ESM mode.
 
         Returns:
             tokens: [B, L, c_token] conditioning for denoiser
         """
         B, L = aa_seq.shape
 
-        # Embeddings (sequence-only)
-        aa_emb = self.aa_embed(aa_seq)  # [B, L, c_token]
+        # Sequence / ESM feature
+        if self.aa_embed_mode == "learned":
+            aa_emb = self.aa_embed(aa_seq)  # [B, L, c_token]
+        else:
+            assert esm_embed is not None, (
+                f"ResidueEncoder in ESM mode (aa_embed={self.aa_embed_mode!r}) "
+                "requires batch['esm_embed']; got None."
+            )
+            # Cast fp16 -> fp32 defensively (dataloader already returns fp32;
+            # this keeps the path safe if a future caller passes fp16 directly).
+            aa_emb = self.esm_proj(esm_embed.float())  # [B, L, c_token]
         chain_emb = self.chain_embed(chain_ids)  # [B, L, c_token//4]
         res_emb = sinusoidal_pos_enc(res_idx, self.c_token)  # [B, L, c_token]
 
@@ -270,10 +329,13 @@ class ResidueDenoiser(BaseDecoder):
         n_aa_types: int = 21,
         n_chains: int = 2,
         dropout: float = 0.0,
+        aa_embed: str = "learned",
+        esm_dim: Optional[int] = None,
     ):
         super().__init__()
         self.c_token = c_token
         self.n_timesteps = n_timesteps
+        self.aa_embed_mode = aa_embed
 
         # === TRUNK (runs once) ===
         self.trunk = ResidueEncoder(
@@ -283,6 +345,8 @@ class ResidueDenoiser(BaseDecoder):
             n_aa_types=n_aa_types,
             n_chains=n_chains,
             dropout=dropout,
+            aa_embed=aa_embed,
+            esm_dim=esm_dim,
         )
 
         # === DENOISER (runs each step) ===
@@ -325,6 +389,7 @@ class ResidueDenoiser(BaseDecoder):
         res_idx: Tensor,     # [B, L]
         t: Tensor,           # [B] timestep
         mask: Optional[Tensor] = None,  # [B, L]
+        esm_embed: Optional[Tensor] = None,  # [B, L, esm_dim], required in ESM mode
     ) -> Tensor:
         """Predict clean centroids x0 from noisy input (x0 prediction).
 
@@ -338,7 +403,7 @@ class ResidueDenoiser(BaseDecoder):
             mask = torch.ones(B, L, dtype=torch.bool, device=device)
 
         # === TRUNK (once, sequence-only) ===
-        trunk_tokens = self.trunk(aa_seq, chain_ids, res_idx, mask)
+        trunk_tokens = self.trunk(aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed)
 
         # === DENOISER ===
 
@@ -392,6 +457,7 @@ class ResidueDenoiser(BaseDecoder):
         sigma: Tensor,       # [B] continuous noise level
         mask: Optional[Tensor] = None,  # [B, L]
         x0_prev: Optional[Tensor] = None,  # [B, L, 3] previous x0 prediction (self-conditioning)
+        esm_embed: Optional[Tensor] = None,  # [B, L, esm_dim], required in ESM mode
     ) -> Tensor:
         """Predict clean centroids x0 from noisy input using continuous sigma.
 
@@ -405,6 +471,7 @@ class ResidueDenoiser(BaseDecoder):
             sigma: Continuous noise level (NOT discrete timestep)
             mask: Valid residue mask
             x0_prev: Previous x0 prediction for self-conditioning (optional)
+            esm_embed: Cached frozen ESM-2 embeddings (required in ESM mode)
 
         Returns:
             x0_pred: [B, L, 3] predicted clean centroids
@@ -416,7 +483,7 @@ class ResidueDenoiser(BaseDecoder):
             mask = torch.ones(B, L, dtype=torch.bool, device=device)
 
         # === TRUNK (once, sequence-only) ===
-        trunk_tokens = self.trunk(aa_seq, chain_ids, res_idx, mask)
+        trunk_tokens = self.trunk(aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed)
 
         # === DENOISER ===
 
@@ -499,6 +566,7 @@ class ResidueDenoiser(BaseDecoder):
         chain_ids: Tensor,   # [B, L]
         res_idx: Tensor,     # [B, L]
         mask: Optional[Tensor] = None,
+        esm_embed: Optional[Tensor] = None,
     ) -> Tensor:
         """Compute trunk embeddings from sequence features (for Stage 2 or multi-copy).
 
@@ -507,7 +575,7 @@ class ResidueDenoiser(BaseDecoder):
         Returns:
             trunk_tokens: [B, L, c_token] embeddings
         """
-        return self.trunk(aa_seq, chain_ids, res_idx, mask)
+        return self.trunk(aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed)
 
     def forward_with_trunk(
         self,

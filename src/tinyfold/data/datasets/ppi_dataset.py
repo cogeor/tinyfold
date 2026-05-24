@@ -22,6 +22,7 @@ class PPIDataset(Dataset):
         self,
         parquet_path: str | Path,
         split_file: str | Path | None = None,
+        esm_cache_dir: str | Path | None = None,
     ):
         """
         Initialize dataset.
@@ -30,8 +31,17 @@ class PPIDataset(Dataset):
             parquet_path: Path to Parquet file with all samples
             split_file: Optional path to split file (one sample_id per line)
                        If None, use all samples in Parquet file
+            esm_cache_dir: Optional directory of per-sample ESM-2 NPZ files
+                       (one file per ``sample_id``). When set, every batch
+                       returned by ``__getitem__`` includes an ``esm_embed``
+                       tensor of shape ``[L, esm_dim]`` (float32). Phase D
+                       training path goes through
+                       ``tinyfold.training.data.load_sample`` rather than this
+                       dataset; the arg is plumbed here for future use and to
+                       keep the two loaders consistent.
         """
         self.parquet_path = Path(parquet_path)
+        self.esm_cache_dir = Path(esm_cache_dir) if esm_cache_dir is not None else None
 
         # Load Parquet table
         self.table = pq.read_table(self.parquet_path)
@@ -67,7 +77,7 @@ class PPIDataset(Dataset):
         sample = dict_to_sample(row)
 
         # Convert to torch tensors
-        return {
+        out = {
             "sample_id": sample["sample_id"],
             "pdb_id": sample["pdb_id"],
             "seq": torch.from_numpy(sample["seq"]),
@@ -84,6 +94,22 @@ class PPIDataset(Dataset):
             "LA": sample["LA"],
             "LB": sample["LB"],
         }
+        if self.esm_cache_dir is not None:
+            cache_path = self.esm_cache_dir / f"{sample_id}.npz"
+            if not cache_path.exists():
+                raise ValueError(
+                    f"ESM cache missing for {sample_id}: {cache_path}"
+                )
+            with np.load(cache_path, mmap_mode="r") as npz:
+                emb_np = np.asarray(npz["embeddings"])
+            n_res = int(sample["LA"]) + int(sample["LB"])
+            if emb_np.shape[0] != n_res:
+                raise ValueError(
+                    f"ESM cache shape mismatch for {sample_id}: "
+                    f"got {emb_np.shape[0]} residues, expected {n_res}"
+                )
+            out["esm_embed"] = torch.from_numpy(emb_np).float()
+        return out
 
     def get_sample_by_id(self, sample_id: str) -> dict[str, Any] | None:
         """Get a sample by its ID.

@@ -127,11 +127,14 @@ class ResFoldOneStep(BaseDecoder):
         n_aa_types: int = 21,
         n_chains: int = 2,
         dropout: float = 0.0,
+        aa_embed: str = "learned",
+        esm_dim: Optional[int] = None,
     ):
         super().__init__()
         self.c_token = c_token
         self.n_timesteps = n_timesteps
         self.sigma_data = 1.0
+        self.aa_embed_mode = aa_embed
 
         # === TRUNK (sequence-only, runs once) ===
         self.trunk = ResidueEncoder(
@@ -141,6 +144,8 @@ class ResFoldOneStep(BaseDecoder):
             n_aa_types=n_aa_types,
             n_chains=n_chains,
             dropout=dropout,
+            aa_embed=aa_embed,
+            esm_dim=esm_dim,
         )
 
         # === DENOISER (per-step) ===
@@ -240,13 +245,19 @@ class ResFoldOneStep(BaseDecoder):
         sigma: Tensor,
         mask: Optional[Tensor] = None,
         x0_prev: Optional[Tensor] = None,
+        esm_embed: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
-        """Continuous-sigma forward (EDM-preconditioned). Returns (centroid_pred, atoms_pred)."""
+        """Continuous-sigma forward (EDM-preconditioned). Returns (centroid_pred, atoms_pred).
+
+        ``esm_embed`` (``[B, L, esm_dim]``) is required when the model was
+        constructed with ``aa_embed in {"esm2_35M", "esm2_150M"}``. In the
+        default ``aa_embed="learned"`` mode it is ignored.
+        """
         B, L, _ = x_t.shape
         if mask is None:
             mask = torch.ones(B, L, dtype=torch.bool, device=x_t.device)
         c_skip, c_out, c_in, c_noise = self._edm_coefficients(sigma)
-        trunk_tokens = self.trunk(aa_seq, chain_ids, res_idx, mask)
+        trunk_tokens = self.trunk(aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed)
         cond = self._embed_c_noise(c_noise)
         denoiser_tokens = self._denoiser_tokens(c_in * x_t, trunk_tokens, cond, mask, x0_prev)
         return self._heads_edm(denoiser_tokens, x_t, c_skip, c_out, mask)
@@ -276,6 +287,7 @@ class ResFoldOneStep(BaseDecoder):
         res_idx: Tensor,
         t: Tensor,
         mask: Optional[Tensor] = None,
+        esm_embed: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
         """Discrete-timestep forward (legacy path).
 
@@ -286,7 +298,7 @@ class ResFoldOneStep(BaseDecoder):
         B, L, _ = x_t.shape
         if mask is None:
             mask = torch.ones(B, L, dtype=torch.bool, device=x_t.device)
-        trunk_tokens = self.trunk(aa_seq, chain_ids, res_idx, mask)
+        trunk_tokens = self.trunk(aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed)
         cond = self.time_embed(t)
         denoiser_tokens = self._denoiser_tokens(x_t, trunk_tokens, cond, mask, None)
         F_centroid = self.centroid_proj(denoiser_tokens)
@@ -300,8 +312,9 @@ class ResFoldOneStep(BaseDecoder):
         chain_ids: Tensor,
         res_idx: Tensor,
         mask: Optional[Tensor] = None,
+        esm_embed: Optional[Tensor] = None,
     ) -> Tensor:
-        return self.trunk(aa_seq, chain_ids, res_idx, mask)
+        return self.trunk(aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed)
 
     def count_parameters(self) -> dict:
         trunk = sum(p.numel() for p in self.trunk.parameters())

@@ -106,7 +106,17 @@ def collate_ppi(batch: list[dict[str, Any]]) -> dict[str, Any]:
         edge_type = torch.zeros(0, dtype=torch.long)
         atom_batch = torch.zeros(0, dtype=torch.long)
 
-    return {
+    # Optional ESM-2 embedding pathway. Mirrors the same gating logic as
+    # ``tinyfold.training.data.collate_batch``: if every sample carries an
+    # ``esm_embed`` tensor, pad them all to ``[B, Lmax, esm_dim]``; otherwise
+    # leave the key absent so the learned-embedding path is unchanged.
+    esm_embed_padded = None
+    if all("esm_embed" in b for b in batch):
+        esm_embed_padded = pad_sequence(
+            [b["esm_embed"] for b in batch], batch_first=True, padding_value=0.0,
+        )
+
+    out = {
         "seq": seq_padded,
         "chain_id_res": chain_id_padded,
         "res_idx": res_idx_padded,
@@ -123,3 +133,6 @@ def collate_ppi(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "LA": LA,
         "LB": LB,
     }
+    if esm_embed_padded is not None:
+        out["esm_embed"] = esm_embed_padded
+    return out

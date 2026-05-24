@@ -5,18 +5,31 @@ Provides:
 - collate_batch: Collate samples into padded batches
 """
 
-from typing import Dict, List, Any
+from pathlib import Path
+from typing import Dict, List, Any, Optional
+import numpy as np
 import torch
 from torch import Tensor
 
 
-def load_sample(table, i: int, normalize: bool = True) -> Dict[str, Any]:
+def load_sample(
+    table,
+    i: int,
+    normalize: bool = True,
+    esm_cache_dir: Optional[str | Path] = None,
+) -> Dict[str, Any]:
     """Load sample at residue level (4 atoms per residue).
 
     Args:
         table: PyArrow table from samples.parquet
         i: Sample index
         normalize: If True, normalize coords to unit variance
+        esm_cache_dir: Optional directory containing per-sample ESM-2 embeddings
+            (NPZ files keyed by ``sample_id``). When given, the returned dict
+            includes ``'esm_embed'``: float32 [L, esm_dim]. The cache key is
+            ``sample_id`` (NOT ``pdb_id``) so different bioassemblies do not
+            collide. Raises ``ValueError`` if the cache file is missing or its
+            residue count disagrees with the parquet row.
 
     Returns:
         Dict with:
@@ -29,6 +42,8 @@ def load_sample(table, i: int, normalize: bool = True) -> Dict[str, Any]:
             - std: normalization factor
             - n_atoms, n_res: counts
             - sample_id: identifier
+            - esm_embed (optional): [L, esm_dim] float32, present only when
+              ``esm_cache_dir`` is set.
     """
     coords = torch.tensor(table['atom_coords'][i].as_py(), dtype=torch.float32)
     atom_types = torch.tensor(table['atom_type'][i].as_py(), dtype=torch.long)
@@ -57,7 +72,9 @@ def load_sample(table, i: int, normalize: bool = True) -> Dict[str, Any]:
     coords_res = coords.view(n_res, 4, 3)
     centroids = coords_res.mean(dim=1)
 
-    return {
+    sample_id = table['sample_id'][i].as_py()
+
+    out = {
         'coords': coords,
         'coords_res': coords_res,
         'centroids': centroids,
@@ -69,8 +86,30 @@ def load_sample(table, i: int, normalize: bool = True) -> Dict[str, Any]:
         'std': std.item(),
         'n_atoms': n_atoms,
         'n_res': n_res,
-        'sample_id': table['sample_id'][i].as_py(),
+        'sample_id': sample_id,
     }
+
+    if esm_cache_dir is not None:
+        cache_path = Path(esm_cache_dir) / f"{sample_id}.npz"
+        if not cache_path.exists():
+            raise ValueError(
+                f"ESM cache missing for {sample_id}: {cache_path}"
+            )
+        # mmap so DataLoader workers don't multiply RAM usage.
+        # `np.load` keeps the file open; copying into a torch tensor below
+        # materialises only the slice we need, then the npz handle goes out
+        # of scope and closes.
+        with np.load(cache_path, mmap_mode='r') as npz:
+            emb_np = np.asarray(npz['embeddings'])
+        if emb_np.shape[0] != n_res:
+            raise ValueError(
+                f"ESM cache shape mismatch for {sample_id}: "
+                f"got {emb_np.shape[0]} residues, expected {n_res} (LA+LB)"
+            )
+        # Cast fp16 -> fp32 here, off the GPU hot path.
+        out['esm_embed'] = torch.from_numpy(emb_np).float()
+
+    return out
 
 
 def collate_batch(samples: List[Dict], device: torch.device) -> Dict[str, Any]:
@@ -103,6 +142,16 @@ def collate_batch(samples: List[Dict], device: torch.device) -> Dict[str, Any]:
 
     stds = []
 
+    # Optional ESM-2 embedding pathway. We allocate the padded tensor lazily
+    # so the default ``aa_embed="learned"`` path (no per-sample ``esm_embed``)
+    # never touches this branch and the returned dict is byte-identical to
+    # the pre-Loop-05 behaviour.
+    have_esm = any('esm_embed' in s for s in samples)
+    esm_embed_padded = None
+    if have_esm:
+        esm_dim = samples[0]['esm_embed'].shape[1]
+        esm_embed_padded = torch.zeros(B, max_res, esm_dim)
+
     for i, s in enumerate(samples):
         L = s['n_res']
         N = s['n_atoms']
@@ -119,9 +168,12 @@ def collate_batch(samples: List[Dict], device: torch.device) -> Dict[str, Any]:
         atom_to_res[i, :N] = s['atom_to_res']
         mask_atom[i, :N] = True
 
+        if have_esm:
+            esm_embed_padded[i, :L] = s['esm_embed']
+
         stds.append(s['std'])
 
-    return {
+    out = {
         'centroids': centroids.to(device),
         'coords_res': coords_res.to(device),
         'aa_seq': aa_seq.to(device),
@@ -137,6 +189,9 @@ def collate_batch(samples: List[Dict], device: torch.device) -> Dict[str, Any]:
         'n_atoms': [s['n_atoms'] for s in samples],
         'sample_ids': [s['sample_id'] for s in samples],
     }
+    if esm_embed_padded is not None:
+        out['esm_embed'] = esm_embed_padded.to(device)
+    return out
 
 
 # Aliases for backward compatibility

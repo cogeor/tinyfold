@@ -56,8 +56,10 @@ class _IdentityDenoiser(nn.Module):
     introduce extra drift when the denoiser is already a fixed point.
     """
 
-    def forward_sigma(self, x, aa_seq, chain_ids, res_idx, sigma_batch, mask, x0_prev=None):
+    def forward_sigma(self, x, aa_seq, chain_ids, res_idx, sigma_batch, mask, x0_prev=None, esm_embed=None):
         # Return x as x0 estimate (a perfect-fixed-point denoiser).
+        # ``esm_embed`` is accepted but ignored — sample_centroids_ve passes
+        # ``batch.get('esm_embed')`` (Loop 05) even when no cache is in use.
         return x
 
 
@@ -82,9 +84,10 @@ class _RotationDenoiser(nn.Module):
         ])
         self.register_buffer("R", R)
 
-    def forward_sigma(self, x, aa_seq, chain_ids, res_idx, sigma_batch, mask, x0_prev=None):
+    def forward_sigma(self, x, aa_seq, chain_ids, res_idx, sigma_batch, mask, x0_prev=None, esm_embed=None):
         # Rotate around x's centroid so the rotation is purely orientational
         # (centroid-preserving). Avoids the rotation pulling x away from origin.
+        # ``esm_embed`` accepted but ignored (see _IdentityDenoiser).
         centroid = x.mean(dim=1, keepdim=True)
         x_c = x - centroid
         rotated = torch.einsum('bnj,ij->bni', x_c, self.R)

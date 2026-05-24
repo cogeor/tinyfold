@@ -115,7 +115,7 @@ def sample_centroids(model, batch, noiser, device, clamp_val=3.0,
         # Predict x0 (clean centroids)
         x0_pred = model.forward_stage1(
             x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
-            t_batch, mask
+            t_batch, mask, esm_embed=batch.get('esm_embed'),
         )
         x0_pred = torch.clamp(x0_pred, -clamp_val, clamp_val)
 
@@ -180,6 +180,7 @@ def sample_centroids_one_shot(model, batch, noiser, device, is_onestep=False,
     out = denoiser.forward_sigma(
         x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
         sigma_init, mask, x0_prev=None,
+        esm_embed=batch.get('esm_embed'),
     )
     if is_onestep:
         centroid_pred, atoms_pred = out
@@ -253,7 +254,8 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
         # Predict x0 using continuous sigma conditioning (with self-conditioning)
         out = denoiser.forward_sigma(
             x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
-            sigma_batch, mask, x0_prev=x0_prev if self_cond else None
+            sigma_batch, mask, x0_prev=x0_prev if self_cond else None,
+            esm_embed=batch.get('esm_embed'),
         )
         x0_pred = out[0] if is_onestep else out
         x0_pred = torch.clamp(x0_pred, -clamp_val, clamp_val)
@@ -301,6 +303,7 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
         _, atoms_pred = denoiser.forward_sigma(
             x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
             sigma_min_batch, mask, x0_prev=x0_prev if self_cond else None,
+            esm_embed=batch.get('esm_embed'),
         )
         return x, atoms_pred
 
@@ -366,7 +369,8 @@ def sample_k_centroids(
     # Fast path: reuse the trunk across K denoiser calls.
     if is_onestep and one_shot:
         trunk_tokens = model.get_trunk_tokens(
-            batch['aa_seq'], batch['chain_ids'], batch['res_idx'], mask
+            batch['aa_seq'], batch['chain_ids'], batch['res_idx'], mask,
+            esm_embed=batch.get('esm_embed'),
         )
         sigmas = noiser.sigmas.to(device)
         sigma_init = sigmas[0].view(1).expand(B)
@@ -432,10 +436,12 @@ def sample_centroids_with_sampler(model, batch, noiser, device, sampler):
         'res_idx': batch['res_idx'],
         'mask_res': batch['mask_res'],
     }
+    if 'esm_embed' in batch:
+        model_kwargs['esm_embed'] = batch['esm_embed']
 
     # Custom forward function that adapts ResFold interface to sampler interface
-    def forward_fn(mdl, x, t, aa_seq, chain_ids, res_idx, mask_res, **kwargs):
-        return mdl.forward_stage1(x, aa_seq, chain_ids, res_idx, t, mask_res)
+    def forward_fn(mdl, x, t, aa_seq, chain_ids, res_idx, mask_res, esm_embed=None, **kwargs):
+        return mdl.forward_stage1(x, aa_seq, chain_ids, res_idx, t, mask_res, esm_embed=esm_embed)
 
     # Run sampler
     return sampler.sample(
@@ -565,6 +571,18 @@ def parse_args():
     parser.add_argument("--c_token_s1", type=int, default=256)
     parser.add_argument("--trunk_layers", type=int, default=9)
     parser.add_argument("--denoiser_blocks", type=int, default=7)
+
+    # Model - AA representation (Loop 05 / Task F)
+    # learned   = historical nn.Embedding(n_aa_types, c_token), default
+    # esm2_35M  = frozen ESM-2-35M cached embeddings (480d) + projection
+    # esm2_150M = frozen ESM-2-150M cached embeddings (640d) + projection
+    parser.add_argument("--aa_embed", type=str, default="learned",
+                        choices=["learned", "esm2_35M", "esm2_150M"],
+                        help="AA representation: learned nn.Embedding (default) or frozen "
+                             "ESM-2 cached embeddings (35M=480d, 150M=640d).")
+    parser.add_argument("--esm_cache_dir", type=str, default=None,
+                        help="Directory containing per-sample ESM NPZ files. Required when "
+                             "--aa_embed != learned. Default: data/processed/esm2_{variant}.")
 
     # Model - OneStep atom head (only used when model_kind=onestep)
     parser.add_argument("--atom_head_layers", type=int, default=2,
@@ -862,7 +880,8 @@ def _run_test_eval(
                 # For Stage 2 with cached predictions: use Stage 1 predictions directly
                 atoms_pred = model.forward_stage2(
                     batch['centroids_pred'], batch['aa_seq'], batch['chain_ids'],
-                    batch['res_idx'], batch['mask_res']
+                    batch['res_idx'], batch['mask_res'],
+                    esm_embed=batch.get('esm_embed'),
                 )
                 atoms_pred_flat = atoms_pred.view(1, -1, 3)
                 rmse = compute_rmse(atoms_pred_flat, batch['coords'], batch['mask_atom']).item() * s['std']
@@ -895,7 +914,8 @@ def _run_test_eval(
                 # For end_to_end or stage2 without cached: full sampling
                 atoms_pred = model.sample(
                     batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
-                    noiser, batch['mask_res']
+                    noiser, batch['mask_res'],
+                    esm_embed=batch.get('esm_embed'),
                 )
                 rmse = compute_rmse(atoms_pred, batch['coords'], batch['mask_atom']).item() * s['std']
 
@@ -984,6 +1004,31 @@ def _run_training(args, progress):
     plots_dir = os.path.join(args.output_dir, 'plots')
     os.makedirs(plots_dir, exist_ok=True)
 
+    # === Loop 05: resolve ESM cache + esm_dim once, up-front ===
+    # We mirror the small dim table from prepare_esm2_embeddings.py and the
+    # model/ResidueEncoder ESM_DIMS so the three sites stay in sync. Fail fast
+    # with a friendly message if the cache directory is missing — re-running
+    # the prep script is the only fix and the error should make that obvious.
+    ESM_DIMS = {"esm2_35M": 480, "esm2_150M": 640}
+    if args.aa_embed != "learned":
+        if args.esm_cache_dir is None:
+            variant = args.aa_embed.split("_", 1)[1]  # "esm2_35M" -> "35M"
+            args.esm_cache_dir = os.path.join("data", "processed", f"esm2_{variant}")
+        if not os.path.isdir(args.esm_cache_dir):
+            raise FileNotFoundError(
+                f"ESM cache dir not found: {args.esm_cache_dir}\n"
+                f"Build it first:\n"
+                f"  python scripts/prepare_esm2_embeddings.py "
+                f"--parquet data/processed/samples.parquet "
+                f"--output-dir {args.esm_cache_dir} "
+                f"--variant {args.aa_embed.split('_', 1)[1]} --device cuda"
+            )
+        args._esm_dim = ESM_DIMS[args.aa_embed]
+    else:
+        args._esm_dim = None
+        # Leave esm_cache_dir alone (likely None) so load_sample passes None and
+        # the dataloader is byte-identical to pre-Loop-05.
+
     # Save config at startup (before training, in case of crash)
     save_config(args, args.output_dir)
 
@@ -1014,6 +1059,10 @@ def _run_training(args, progress):
     logger.log(f"  eval_every:    {args.eval_every}")
     logger.log(f"  lr:            {args.lr}")
     logger.log(f"  T:             {args.T}")
+    logger.log(f"  aa_embed:      {args.aa_embed}")
+    if args.aa_embed != "learned":
+        logger.log(f"  esm_cache_dir: {args.esm_cache_dir}")
+        logger.log(f"  esm_dim:       {args._esm_dim}")
     logger.log(f"  centroid_noise:{args.centroid_noise}")
     logger.log(f"  dist_weight:   {args.dist_weight}")
     logger.log(f"  geom_weight:   {args.geom_weight}")
@@ -1043,8 +1092,9 @@ def _run_training(args, progress):
     # Preload samples
     normalize = not args.no_normalize
     logger.log(f"Preloading samples... (normalize={normalize})")
-    train_samples = {idx: load_sample_raw(table, idx, normalize=normalize) for idx in train_indices}
-    test_samples = {idx: load_sample_raw(table, idx, normalize=normalize) for idx in test_indices}
+    _esm_dir = args.esm_cache_dir if args.aa_embed != "learned" else None
+    train_samples = {idx: load_sample_raw(table, idx, normalize=normalize, esm_cache_dir=_esm_dir) for idx in train_indices}
+    test_samples = {idx: load_sample_raw(table, idx, normalize=normalize, esm_cache_dir=_esm_dir) for idx in test_indices}
     logger.log(f"  Loaded {len(train_samples)} train, {len(test_samples)} test samples")
 
     # If not normalizing, warn about sigma values
@@ -1090,6 +1140,8 @@ def _run_training(args, progress):
                 s2_heads=args.s2_heads,
                 n_timesteps=args.T,
                 dropout=0.0,
+                aa_embed=args.aa_embed,
+                esm_dim=args._esm_dim,
             ).to(device)
 
             ckpt = torch.load(s1_checkpoint, map_location=device)
@@ -1143,6 +1195,8 @@ def _run_training(args, progress):
             atom_head_heads=args.atom_head_heads,
             n_timesteps=args.T,
             dropout=0.0,
+            aa_embed=args.aa_embed,
+            esm_dim=args._esm_dim,
         ).to(device)
         # In OneStep the model itself is the "stage 1" denoiser; alias for forward calls.
         stage1_module = model
@@ -1167,6 +1221,8 @@ def _run_training(args, progress):
             n_timesteps=args.T,
             dropout=0.0,
             stage1_only=(args.mode == "stage1_only"),
+            aa_embed=args.aa_embed,
+            esm_dim=args._esm_dim,
         ).to(device)
         stage1_module = model.stage1
 
@@ -1334,7 +1390,8 @@ def _run_training(args, progress):
                     # Run trunk ONCE on sequence features (no coordinates!)
                     trunk_tokens = model.stage1.get_trunk_tokens(
                         batch['aa_seq'], batch['chain_ids'],
-                        batch['res_idx'], batch['mask_res']
+                        batch['res_idx'], batch['mask_res'],
+                        esm_embed=batch.get('esm_embed'),
                     )
 
                     # Expand for n_copies
@@ -1398,7 +1455,8 @@ def _run_training(args, progress):
                             with torch.no_grad():
                                 sc_out = stage1_module.forward_sigma(
                                     x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
-                                    sigma, batch['mask_res'], x0_prev=None
+                                    sigma, batch['mask_res'], x0_prev=None,
+                                    esm_embed=batch.get('esm_embed'),
                                 )
                                 # OneStep returns (centroid, atoms); self-conditioning only uses centroids.
                                 x0_prev = (sc_out[0] if is_onestep else sc_out).detach()
@@ -1406,7 +1464,8 @@ def _run_training(args, progress):
                         # Main forward pass (with or without self-conditioning)
                         fwd_out = stage1_module.forward_sigma(
                             x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
-                            sigma, batch['mask_res'], x0_prev=x0_prev
+                            sigma, batch['mask_res'], x0_prev=x0_prev,
+                            esm_embed=batch.get('esm_embed'),
                         )
                         if is_onestep:
                             centroids_pred, atoms_pred = fwd_out
@@ -1418,12 +1477,14 @@ def _run_training(args, progress):
                         if is_onestep:
                             centroids_pred, atoms_pred = stage1_module(
                                 x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
-                                t, batch['mask_res']
+                                t, batch['mask_res'],
+                                esm_embed=batch.get('esm_embed'),
                             )
                         else:
                             centroids_pred = model.forward_stage1(
                                 x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
-                                t, batch['mask_res']
+                                t, batch['mask_res'],
+                                esm_embed=batch.get('esm_embed'),
                             )
                             atoms_pred = None
                     # Loss: MSE on centroids + distance consistency
@@ -1523,7 +1584,8 @@ def _run_training(args, progress):
                 # Compute trunk tokens from sequence features (no coordinates)
                 trunk_tokens = model.get_trunk_tokens(
                     batch['aa_seq'], batch['chain_ids'],
-                    batch['res_idx'], batch['mask_res']
+                    batch['res_idx'], batch['mask_res'],
+                    esm_embed=batch.get('esm_embed'),
                 )
                 # Add noise augmentation to centroids input (optional)
                 centroids_input = centroids_for_s2
@@ -1532,7 +1594,8 @@ def _run_training(args, progress):
                 # Forward stage 2 with trunk tokens
                 atoms_pred = model.forward_stage2(
                     centroids_input, batch['aa_seq'], batch['chain_ids'],
-                    batch['res_idx'], batch['mask_res'], trunk_tokens=trunk_tokens
+                    batch['res_idx'], batch['mask_res'], trunk_tokens=trunk_tokens,
+                    esm_embed=batch.get('esm_embed'),
                 )
                 # Loss: MSE on atom positions
                 # Reshape coords_res to [B, L*4, 3] for comparison
@@ -1584,7 +1647,8 @@ def _run_training(args, progress):
                 # Full pipeline
                 result = model(
                     x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
-                    t, batch['mask_res'], mode="end_to_end"
+                    t, batch['mask_res'], mode="end_to_end",
+                    esm_embed=batch.get('esm_embed'),
                 )
                 centroids_pred = result['centroids_pred']
                 atoms_pred = result['atoms_pred']
@@ -1705,7 +1769,8 @@ def _run_training(args, progress):
                         # For Stage 2 with cached predictions: use Stage 1 predictions directly
                         atoms_pred = model.forward_stage2(
                             batch['centroids_pred'], batch['aa_seq'], batch['chain_ids'],
-                            batch['res_idx'], batch['mask_res']
+                            batch['res_idx'], batch['mask_res'],
+                            esm_embed=batch.get('esm_embed'),
                         )
                         atoms_pred = atoms_pred.view(1, -1, 3)
                         rmse = compute_rmse(atoms_pred, batch['coords'], batch['mask_atom']).item() * s['std']
@@ -1713,7 +1778,8 @@ def _run_training(args, progress):
                         # For end_to_end or stage2 without cached: full sampling
                         atoms_pred = model.sample(
                             batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
-                            noiser, batch['mask_res']
+                            noiser, batch['mask_res'],
+                            esm_embed=batch.get('esm_embed'),
                         )
                         rmse = compute_rmse(atoms_pred, batch['coords'], batch['mask_atom']).item() * s['std']
                     train_rmses.append(rmse)
@@ -1764,7 +1830,8 @@ def _run_training(args, progress):
                     # Plot atoms for Stage 2 with cached predictions
                     atoms_pred = model.forward_stage2(
                         batch['centroids_pred'], batch['aa_seq'], batch['chain_ids'],
-                        batch['res_idx'], batch['mask_res']
+                        batch['res_idx'], batch['mask_res'],
+                        esm_embed=batch.get('esm_embed'),
                     )
                     n = s['n_atoms']
                     pred = atoms_pred[0].view(-1, 3)[:n] * s['std']
@@ -1776,7 +1843,8 @@ def _run_training(args, progress):
                     # Plot atoms for end_to_end (or stage2 without cached)
                     atoms_pred = model.sample(
                         batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
-                        noiser, batch['mask_res']
+                        noiser, batch['mask_res'],
+                        esm_embed=batch.get('esm_embed'),
                     )
                     n = s['n_atoms']
                     pred = atoms_pred[0, :n] * s['std']

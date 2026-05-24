@@ -159,6 +159,7 @@ class MultiCopyTrainer:
                 batch['chain_ids'],
                 batch['res_idx'],
                 mask,
+                esm_embed=batch.get('esm_embed'),
             )  # [B, L, c_token]
 
         # === STEP 2: Create N augmented copies ===
@@ -280,6 +281,7 @@ class VectorizedMultiCopyTrainer:
             batch['chain_ids'],
             batch['res_idx'],
             mask,
+            esm_embed=batch.get('esm_embed'),
         )  # [B, L, c_token]
 
         # === STEP 2: Expand for n_copies ===

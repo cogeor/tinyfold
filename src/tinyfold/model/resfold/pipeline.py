@@ -25,11 +25,14 @@ class ResFoldPipeline(nn.Module):
         n_chains: int = 2,
         dropout: float = 0.0,
         stage1_only: bool = False,  # Lightweight mode: skip Stage 2
+        aa_embed: str = "learned",
+        esm_dim: Optional[int] = None,
     ):
         super().__init__()
         self.n_timesteps = n_timesteps
         self.c_token_s1 = c_token_s1
         self._stage1_only = stage1_only
+        self.aa_embed_mode = aa_embed
 
         self.stage1 = ResidueDenoiser(
             c_token=c_token_s1,
@@ -41,6 +44,8 @@ class ResFoldPipeline(nn.Module):
             n_aa_types=n_aa_types,
             n_chains=n_chains,
             dropout=dropout,
+            aa_embed=aa_embed,
+            esm_dim=esm_dim,
         )
 
         # Only create Stage 2 if needed (saves ~14M params for stage1_only training)
@@ -54,48 +59,48 @@ class ResFoldPipeline(nn.Module):
                 dropout=dropout,
             )
 
-    def forward_stage1(self, x_t, aa_seq, chain_ids, res_idx, t, mask=None):
-        return self.stage1(x_t, aa_seq, chain_ids, res_idx, t, mask)
+    def forward_stage1(self, x_t, aa_seq, chain_ids, res_idx, t, mask=None, esm_embed=None):
+        return self.stage1(x_t, aa_seq, chain_ids, res_idx, t, mask, esm_embed=esm_embed)
 
-    def get_trunk_tokens(self, aa_seq, chain_ids, res_idx, mask=None):
+    def get_trunk_tokens(self, aa_seq, chain_ids, res_idx, mask=None, esm_embed=None):
         """Get trunk tokens from sequence features (no coordinates)."""
-        return self.stage1.get_trunk_tokens(aa_seq, chain_ids, res_idx, mask)
+        return self.stage1.get_trunk_tokens(aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed)
 
-    def forward_stage2(self, centroids, aa_seq, chain_ids, res_idx, mask=None, trunk_tokens=None):
+    def forward_stage2(self, centroids, aa_seq, chain_ids, res_idx, mask=None, trunk_tokens=None, esm_embed=None):
         if self.stage2 is None:
             raise RuntimeError("Stage 2 not available (model created with stage1_only=True)")
         if trunk_tokens is None:
-            trunk_tokens = self.get_trunk_tokens(aa_seq, chain_ids, res_idx, mask)
+            trunk_tokens = self.get_trunk_tokens(aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed)
         offsets = self.stage2(trunk_tokens, centroids, mask)
         atom_coords = centroids.unsqueeze(2) + offsets
         return atom_coords
 
-    def forward(self, x_t, aa_seq, chain_ids, res_idx, t, mask=None, mode='end_to_end', gt_centroids=None, centroid_noise=0.0):
+    def forward(self, x_t, aa_seq, chain_ids, res_idx, t, mask=None, mode='end_to_end', gt_centroids=None, centroid_noise=0.0, esm_embed=None):
         result = {}
         # Trunk tokens are sequence-only (computed once)
-        trunk_tokens = self.get_trunk_tokens(aa_seq, chain_ids, res_idx, mask)
+        trunk_tokens = self.get_trunk_tokens(aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed)
 
         if mode == 'stage2_only':
             assert gt_centroids is not None
             centroids_input = gt_centroids
             if centroid_noise > 0:
                 centroids_input = gt_centroids + centroid_noise * torch.randn_like(gt_centroids)
-            atoms_pred = self.forward_stage2(centroids_input, aa_seq, chain_ids, res_idx, mask, trunk_tokens=trunk_tokens)
+            atoms_pred = self.forward_stage2(centroids_input, aa_seq, chain_ids, res_idx, mask, trunk_tokens=trunk_tokens, esm_embed=esm_embed)
             result['centroids_pred'] = gt_centroids
             result['atoms_pred'] = atoms_pred
         elif mode == 'stage1_only':
-            centroids_pred = self.forward_stage1(x_t, aa_seq, chain_ids, res_idx, t, mask)
+            centroids_pred = self.forward_stage1(x_t, aa_seq, chain_ids, res_idx, t, mask, esm_embed=esm_embed)
             result['centroids_pred'] = centroids_pred
             result['atoms_pred'] = None
         else:
-            centroids_pred = self.forward_stage1(x_t, aa_seq, chain_ids, res_idx, t, mask)
-            atoms_pred = self.forward_stage2(centroids_pred, aa_seq, chain_ids, res_idx, mask, trunk_tokens=trunk_tokens)
+            centroids_pred = self.forward_stage1(x_t, aa_seq, chain_ids, res_idx, t, mask, esm_embed=esm_embed)
+            atoms_pred = self.forward_stage2(centroids_pred, aa_seq, chain_ids, res_idx, mask, trunk_tokens=trunk_tokens, esm_embed=esm_embed)
             result['centroids_pred'] = centroids_pred
             result['atoms_pred'] = atoms_pred
         return result
 
     @torch.no_grad()
-    def sample(self, aa_seq, chain_ids, res_idx, noiser, mask=None, clamp_val=3.0):
+    def sample(self, aa_seq, chain_ids, res_idx, noiser, mask=None, clamp_val=3.0, esm_embed=None):
         B, L = aa_seq.shape
         device = aa_seq.device
         if mask is None:
@@ -103,7 +108,7 @@ class ResFoldPipeline(nn.Module):
         x = torch.randn(B, L, 3, device=device)
         for t in reversed(range(noiser.T)):
             t_batch = torch.full((B,), t, device=device, dtype=torch.long)
-            x0_pred = self.forward_stage1(x, aa_seq, chain_ids, res_idx, t_batch, mask)
+            x0_pred = self.forward_stage1(x, aa_seq, chain_ids, res_idx, t_batch, mask, esm_embed=esm_embed)
             x0_pred = torch.clamp(x0_pred, -clamp_val, clamp_val)
             if t > 0:
                 ab_t = noiser.alpha_bar[t]
@@ -118,7 +123,7 @@ class ResFoldPipeline(nn.Module):
             else:
                 x = x0_pred
         centroids = x
-        atoms = self.forward_stage2(centroids, aa_seq, chain_ids, res_idx, mask)
+        atoms = self.forward_stage2(centroids, aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed)
         return atoms.view(B, L * 4, 3)
 
     def set_training_mode(self, mode):
