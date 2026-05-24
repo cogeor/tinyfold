@@ -1,0 +1,111 @@
+# Phase E — full pre-processed DIPS, no size filter.
+#
+# IMPORTANT — read this before assuming "full DIPS":
+#
+# The parquet at `data/processed/samples.parquet` is itself pre-filtered by
+# `scripts/prepare_data.py` (chain length 40-300 residues). So "full DIPS"
+# here means "100% of the 28,352 rows the data pipeline emits", NOT the
+# original DIPS-Plus Zenodo dataset (which contains much larger complexes).
+#
+# Distribution (see `scripts/dataset_stats.py` output):
+#   - LA, LB each in [40, 300], median ~195
+#   - Complex size LA+LB in [80, 600], median 384, p95 555
+#   - Phase D's `[200, 1200]` filter retained 88.4% (25,050 / 28,352)
+#   - Phase E lifts the lower bound and uses 100% (adds back 3,302 tiny
+#     complexes <200 residues total — peptide-protein pairs etc.)
+#
+# True apples-to-apples with AlphaFold-Multimer would require re-running
+# `scripts/prepare_data.py` with a larger chain cap (~600+); that is a
+# separate data-pipeline job, NOT a config-knob change. Phase E removes
+# the size filter we CAN remove; the upstream cap stays.
+#
+# Comparable methods (DiffDock-PP, EquiDock, GeoDock) use chain ranges
+# similar to ours (50-600 residues per chain) so the comparison to those
+# remains honest under Phase E. AF-M / Boltz remain unfair-in-our-favour
+# until the upstream cap is raised.
+#
+# This config is NOT YET TRAINED — see Phase E run plan in
+# `notes/phase_e_setup.md` for the next steps.
+
+model_kind: onestep
+
+# --- Data ---
+# Use the full pre-processed parquet. min_atoms=0 admits the smallest
+# complexes; max_atoms=99999 is a sentinel that never trips at the
+# actual parquet's 600-residue ceiling.
+n_train: 28000
+n_test: 200
+n_eval_train: 200
+min_atoms: 0
+max_atoms: 99999
+
+# Dynamic batching by token count handles the variable size distribution
+# safely. With c_token=256 trunk on a 4070 Ti SUPER, max_tokens=30000
+# fits comfortably (see scripts/vram_probe.py — Phase D peaks at 9.8 GiB
+# reserved, so 30000 tokens / batch is well within the 16 GiB budget).
+batch_size: 32
+dynamic_batch: true
+use_bucketing: true
+n_buckets: 8
+max_tokens: 30000
+
+# --- Training ---
+n_steps: 50000
+eval_every: 5000
+lr: 1.0e-04
+min_lr: 1.0e-05
+grad_accum: 1
+seed: 42
+
+mode: stage1_only
+
+# --- Architecture ---
+# Same as Phase D so the only delta vs the 9.02 A baseline is the
+# training distribution. Scaling experiments belong in Phase F.
+c_token_s1: 256
+trunk_layers: 6
+denoiser_blocks: 6
+atom_head_layers: 2
+atom_head_heads: 4
+
+# Loop 05: ESM-2-35M frozen embeddings (cache covers all 28,352 samples).
+aa_embed: esm2_35M
+
+# Loop 06: confidence head + ranking. Kept on for downstream consistency,
+# even though Phase D ranker ablation showed it does not close the
+# oracle gap.
+confidence_head: true
+confidence_head_weight: 0.1
+rank_by: confidence
+
+# Loop 04: corrected EDM lambda(sigma) per-sample weighting.
+loss_weighting: true
+
+# Loop 02: multi-sample eval at K=5 by default; K=40 via --eval_only
+# re-eval after training.
+n_samples: 5
+eval_K_list: "1,5"
+cluster_radius: 5.0
+
+# --- Diffusion ---
+T: 50
+continuous_sigma: true
+
+# --- Augmentation ---
+augment_rotation: true
+multi_copy: 0
+translate_aug: 0.0
+self_cond_prob: 0.0
+
+# --- Loss weights ---
+dist_weight: 0.1
+geom_weight: 0.1
+contact_weight: 0.0
+atom_weight: 0.5
+atom_warmup_steps: 500
+
+# --- Eval sampler ---
+# Loop 03 found Kabsch interp hurts at this scale; keep one-shot.
+one_shot_sample: true
+
+output_dir: outputs/resfold/phase_e_full_dips
