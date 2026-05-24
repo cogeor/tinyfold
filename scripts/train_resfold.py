@@ -79,6 +79,7 @@ from tinyfold.model.losses import (
     compute_distance_consistency_loss,
     GeometryLoss,
     ContactLoss,
+    compute_lddt,
     compute_lddt_metrics,
 )
 
@@ -183,7 +184,11 @@ def sample_centroids_one_shot(model, batch, noiser, device, is_onestep=False,
         esm_embed=batch.get('esm_embed'),
     )
     if is_onestep:
-        centroid_pred, atoms_pred = out
+        # Loop 06: ResFoldOneStep.forward_sigma returns a 3-tuple
+        # (centroid, atoms, pred_lddt_or_None). Drop pred_lddt here — single-
+        # sample inference doesn't rank, and callers downstream expect the
+        # legacy 2-tuple shape.
+        centroid_pred, atoms_pred, _ = out
         return centroid_pred, atoms_pred
     return out
 
@@ -300,11 +305,15 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
         # follow the aligned centroids — no extra Kabsch on atoms needed.
         # See PLAN D5.
         sigma_min_batch = sigmas[-1].expand(B)
-        _, atoms_pred = denoiser.forward_sigma(
+        # Loop 06: ResFoldOneStep.forward_sigma is now a 3-tuple
+        # (centroid, atoms, pred_lddt_or_None). Index by position so we work
+        # for both the legacy and head-on configurations.
+        sigma_out = denoiser.forward_sigma(
             x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
             sigma_min_batch, mask, x0_prev=x0_prev if self_cond else None,
             esm_embed=batch.get('esm_embed'),
         )
+        atoms_pred = sigma_out[1]
         return x, atoms_pred
 
     return x
@@ -355,9 +364,12 @@ def sample_k_centroids(
         self_cond: forwarded to the VE sampler.
 
     Returns:
-        tuple (centroids, atoms_or_None) where
-            centroids: ``[K, B, L, 3]``
-            atoms_or_None: ``[K, B, L, 4, 3]`` when ``is_onestep`` else None.
+        tuple ``(centroids, atoms_or_None, pred_lddts_or_None)`` where
+            centroids:        ``[K, B, L, 3]``
+            atoms_or_None:    ``[K, B, L, 4, 3]`` when ``is_onestep`` else ``None``.
+            pred_lddts_or_None: ``[K, B]`` predicted lDDT per sample when the
+                OneStep model has a confidence head, else ``None``. The
+                non-onestep pipeline always returns ``None`` for this slot.
     """
     B, L = batch['aa_seq'].shape
     assert B == 1, "sample_k_centroids assumes one target per call"
@@ -365,6 +377,17 @@ def sample_k_centroids(
 
     centroid_list = []
     atom_list = []
+    # Loop 06: per-sample predicted lDDT (only populated when the OneStep
+    # model has a confidence head). For the slow VE path on the onestep model
+    # we rerun forward_sigma at sigma_min (done inside sample_centroids_ve)
+    # which loses the lddt scalar, so we only collect pred_lddt on the
+    # one_shot fast path. The VE path falls back to None (the cluster ranker
+    # remains active in that case via _run_test_eval).
+    has_conf_head = (
+        is_onestep
+        and getattr(model, "confidence_head", None) is not None
+    )
+    pred_lddt_list: list = []
 
     # Fast path: reuse the trunk across K denoiser calls.
     if is_onestep and one_shot:
@@ -380,11 +403,13 @@ def sample_k_centroids(
             x = sigma_init.view(B, 1, 1) * torch.randn(
                 B, L, 3, device=device, generator=gen
             )
-            centroid_pred, atoms_pred = model.forward_sigma_with_trunk(
+            centroid_pred, atoms_pred, pred_lddt = model.forward_sigma_with_trunk(
                 x, trunk_tokens, sigma_init, mask, x0_prev=None
             )
             centroid_list.append(centroid_pred)
             atom_list.append(atoms_pred)
+            if has_conf_head and pred_lddt is not None:
+                pred_lddt_list.append(pred_lddt)
     else:
         for i in range(K):
             seed_i = base_seed * 100003 + target_idx * 1009 + i
@@ -405,12 +430,26 @@ def sample_k_centroids(
                 centroid_pred, atoms_pred = out
                 centroid_list.append(centroid_pred)
                 atom_list.append(atoms_pred)
+                if has_conf_head:
+                    # Recover pred_lddt with a single extra forward at the
+                    # final centroid. The VE sampler already ran the denoiser
+                    # T times, so this is cheap relative to the trajectory.
+                    sigma_min_batch = noiser.sigmas.to(device)[-1].expand(B)
+                    _, _, pred_lddt = model.forward_sigma(
+                        centroid_pred,
+                        batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
+                        sigma_min_batch, mask, x0_prev=None,
+                        esm_embed=batch.get('esm_embed'),
+                    )
+                    if pred_lddt is not None:
+                        pred_lddt_list.append(pred_lddt)
             else:
                 centroid_list.append(out)
 
     centroids = torch.stack(centroid_list, dim=0)  # [K, B, L, 3]
     atoms = torch.stack(atom_list, dim=0) if is_onestep else None
-    return centroids, atoms
+    pred_lddts = torch.stack(pred_lddt_list, dim=0) if pred_lddt_list else None
+    return centroids, atoms, pred_lddts
 
 
 @torch.no_grad()
@@ -594,6 +633,18 @@ def parse_args():
     parser.add_argument("--atom_warmup_steps", type=int, default=500,
                         help="Linear warmup steps for the atom-MSE weight (onestep only)")
 
+    # Model - OneStep confidence head (Loop 06 — optional per-target lDDT regressor
+    # for multi-sample ranking at eval; small weight by default so a noisy
+    # regression target can't tank centroid quality).
+    parser.add_argument("--confidence_head", action="store_true",
+                        help="Enable the per-target confidence head on ResFoldOneStep "
+                             "(predicts lDDT in [0,1] from pooled denoiser tokens). "
+                             "Requires --model_kind onestep.")
+    parser.add_argument("--confidence_head_weight", type=float, default=0.0,
+                        help="Aux loss coefficient for smooth-L1(pred_lddt, gt_lddt). "
+                             ">0 requires --confidence_head. Default 0 keeps the head "
+                             "frozen out of the loss even when instantiated.")
+
     # Model - Stage 2 (AtomRefinerV2: ~15M params with defaults)
     parser.add_argument("--c_token_s2", type=int, default=256)
     parser.add_argument("--s2_layers", type=int, default=18)
@@ -684,6 +735,16 @@ def parse_args():
     parser.add_argument("--eval_K_list", type=str, default="1,5,40",
                         help="Comma-separated K values to report; only used when --n_samples > 1. "
                              "Max(eval_K_list) must be <= --n_samples.")
+    # Loop 06 — third ranker uses the confidence head's predicted lDDT.
+    parser.add_argument("--rank_by", type=str, default="cluster",
+                        choices=["oracle", "cluster", "confidence"],
+                        help="Multi-sample ranking strategy for downstream metrics "
+                             "(DockQ, atom RMSE, C-RMSD). cluster=HDOCK-style "
+                             "cluster-rep (default), oracle=argmin per-sample RMSE "
+                             "vs GT (cheats; sanity-check upper bound), "
+                             "confidence=argmax predicted lDDT (requires "
+                             "--confidence_head). Both ranked@K and ranked_conf@K "
+                             "are always reported when applicable.")
 
     # AF3-style training (multi-copy with trunk reuse)
     parser.add_argument("--multi_copy", type=int, default=0,
@@ -761,6 +822,16 @@ def _run_test_eval(
     per_k_oracle = {k: [] for k in k_list}
     per_k_mean = {k: [] for k in k_list}
     per_k_ranked = {k: [] for k in k_list}
+    # Loop 06: per-K ranked-by-confidence RMSE (only populated when the OneStep
+    # model has a confidence head and emits pred_lddt during sampling).
+    per_k_ranked_conf = {k: [] for k in k_list}
+    # Loop 06: flat lists across all (target, sample) pairs for Spearman.
+    all_pred_lddts: list = []
+    all_neg_rmses: list = []
+    # Loop 06 smoke instrumentation: stddev of pred_lddt across K samples per
+    # target. A near-zero stddev for every target = head collapsed.
+    pred_lddt_std_per_target: list = []
+    rank_by = getattr(args, "rank_by", "cluster")
     with torch.no_grad():
         # Evaluate on test set
         test_rmses = []
@@ -777,7 +848,7 @@ def _run_test_eval(
                 atoms_pred_onestep = None
                 if args.continuous_sigma and args.n_samples > 1:
                     # Multi-sample path: K reproducible samples per target.
-                    samples_c, samples_a = sample_k_centroids(
+                    samples_c, samples_a, samples_lddt = sample_k_centroids(
                         model, batch, noiser, device,
                         K=args.n_samples, base_seed=args.seed, target_idx=target_pos,
                         is_onestep=is_onestep, one_shot=args.one_shot_sample,
@@ -794,6 +865,18 @@ def _run_test_eval(
                             samples_c[k_i], gt_centroids, mask_res
                         ).item() * s['std']
                         per_sample_rmses.append(r)
+                    # Loop 06: flatten pred_lddt vs -RMSE for Spearman across all
+                    # (target, sample) pairs.
+                    if samples_lddt is not None:
+                        # samples_lddt: [K, B=1]. Per-sample scores list.
+                        per_sample_conf = samples_lddt[:, 0].cpu().tolist()
+                        all_pred_lddts.extend(per_sample_conf)
+                        all_neg_rmses.extend([-r for r in per_sample_rmses])
+                        pred_lddt_std_per_target.append(
+                            float(torch.tensor(per_sample_conf).std().item())
+                        )
+                    else:
+                        per_sample_conf = None
                     # Interface mask is GT-only, computed once.
                     iface_mask = interface_mask_from_gt(
                         batch['centroids'][0, :n_res].cpu(),
@@ -805,17 +888,44 @@ def _run_test_eval(
                         iface_mask = torch.ones(n_res, dtype=torch.bool)
                     # Pose tensor for clustering: [K, n_res, 3] on CPU, in Angstroms.
                     poses_cpu = (samples_c[:, 0, :n_res, :] * s['std']).cpu()
+                    # Track per-K best indices for each ranker so the downstream
+                    # selection (DockQ/atom/C-RMSD) can honour --rank_by.
+                    cluster_rep_per_k = {}
+                    conf_rep_per_k = {}
+                    oracle_rep_per_k = {}
                     for k in k_list:
                         sub_rmses = per_sample_rmses[:k]
                         per_k_oracle[k].append(min(sub_rmses))
                         per_k_mean[k].append(sum(sub_rmses) / k)
                         clusters = cluster_poses(poses_cpu[:k], iface_mask, args.cluster_radius)
-                        per_k_ranked[k].append(sub_rmses[clusters[0]["representative"]])
-                    # Downstream metrics (DockQ, atom RMSE, C-RMSD) use sample 0.
-                    centroids_pred = samples_c[0]
+                        cluster_idx = clusters[0]["representative"]
+                        cluster_rep_per_k[k] = cluster_idx
+                        per_k_ranked[k].append(sub_rmses[cluster_idx])
+                        oracle_rep_per_k[k] = int(
+                            min(range(k), key=lambda i: sub_rmses[i])
+                        )
+                        if per_sample_conf is not None:
+                            sub_conf = per_sample_conf[:k]
+                            conf_idx = int(max(range(k), key=lambda i: sub_conf[i]))
+                            conf_rep_per_k[k] = conf_idx
+                            per_k_ranked_conf[k].append(sub_rmses[conf_idx])
+                    # Downstream metrics (DockQ, atom RMSE, C-RMSD) use the sample
+                    # chosen by the active ranker at the FULL K to stay consistent
+                    # with the headline ranked@K column. Default cluster keeps
+                    # legacy sample-0 behaviour only if the cluster-rep happens
+                    # to be sample 0 (no behavioural change vs Loop 02 in the
+                    # typical small-K case).
+                    K = args.n_samples
+                    if rank_by == "oracle":
+                        pick = oracle_rep_per_k.get(K, 0)
+                    elif rank_by == "confidence" and per_sample_conf is not None:
+                        pick = conf_rep_per_k.get(K, 0)
+                    else:  # cluster (default) or confidence-without-head
+                        pick = cluster_rep_per_k.get(K, 0)
+                    centroids_pred = samples_c[pick]
                     if is_onestep:
-                        atoms_pred_onestep = samples_a[0]
-                    rmse = per_sample_rmses[0]
+                        atoms_pred_onestep = samples_a[pick]
+                    rmse = per_sample_rmses[pick]
                 elif args.continuous_sigma:
                     if args.one_shot_sample:
                         sample_out = sample_centroids_one_shot(
@@ -986,6 +1096,33 @@ def _run_test_eval(
             extra_tokens.append(f"oracle@{k} {o:.3f} A")
             extra_tokens.append(f"mean@{k} {m:.3f} A")
             extra_tokens.append(f"ranked@{k} {r:.3f} A")
+            # Loop 06: confidence-ranked sample (only when the head fired).
+            if per_k_ranked_conf[k]:
+                rc = sum(per_k_ranked_conf[k]) / len(per_k_ranked_conf[k])
+                log_msg += f" | ranked_conf@{k}: {rc:.4f} A"
+                extra_tokens.append(f"ranked_conf@{k} {rc:.3f} A")
+        # Loop 06: Spearman(pred_lddt, -RMSE) across all (target, sample) pairs.
+        # Falls back to torch.corrcoef Pearson if scipy isn't installed.
+        if all_pred_lddts:
+            try:
+                from scipy.stats import spearmanr
+                rho, _ = spearmanr(all_pred_lddts, all_neg_rmses)
+                log_msg += f" | Spearman(pred_lddt,-RMSE): {rho:.3f}"
+                extra_tokens.append(f"spearman {rho:.3f}")
+            except Exception:
+                a = torch.tensor(all_pred_lddts, dtype=torch.float32)
+                b = torch.tensor(all_neg_rmses, dtype=torch.float32)
+                stacked = torch.stack([a, b], dim=0)
+                if a.numel() > 1 and a.std() > 0 and b.std() > 0:
+                    rho = torch.corrcoef(stacked)[0, 1].item()
+                    log_msg += f" | Pearson(pred_lddt,-RMSE): {rho:.3f}"
+                    extra_tokens.append(f"pearson {rho:.3f}")
+            # Mean of per-target stddev: a value near 0 means the head's score
+            # is invariant to which sample it sees (collapse-to-mean indicator).
+            if pred_lddt_std_per_target:
+                std_mean = sum(pred_lddt_std_per_target) / len(pred_lddt_std_per_target)
+                log_msg += f" | pred_lddt_std(per-target): {std_mean:.4f}"
+                extra_tokens.append(f"pred_lddt_std {std_mean:.4f}")
         logger.log(log_msg)
 
         return test_avg, dockq_avg, dockq_success_pct, c_rmsd_avg, extra_tokens
@@ -1187,6 +1324,14 @@ def _run_training(args, progress):
             raise ValueError("model_kind=onestep requires --mode stage1_only")
         if args.multi_copy and args.multi_copy > 0:
             raise ValueError("model_kind=onestep does not yet support --multi_copy training")
+        # Loop 06: confidence-head weight requires the head be instantiated.
+        if args.confidence_head_weight > 0 and not args.confidence_head:
+            raise ValueError(
+                "--confidence_head_weight > 0 requires --confidence_head to be set "
+                f"(got weight={args.confidence_head_weight}, head=False)."
+            )
+        if getattr(args, "rank_by", "cluster") == "confidence" and not args.confidence_head:
+            raise ValueError("--rank_by confidence requires --confidence_head.")
         model = ResFoldOneStep(
             c_token=args.c_token_s1,
             trunk_layers=args.trunk_layers,
@@ -1197,6 +1342,7 @@ def _run_training(args, progress):
             dropout=0.0,
             aa_embed=args.aa_embed,
             esm_dim=args._esm_dim,
+            confidence_head=args.confidence_head,
         ).to(device)
         # In OneStep the model itself is the "stage 1" denoiser; alias for forward calls.
         stage1_module = model
@@ -1207,6 +1353,11 @@ def _run_training(args, progress):
         logger.log(f"  Trunk params:     {pc['trunk']:,} ({pc['trunk_pct']:.1f}%)")
         logger.log(f"  Denoiser params:  {pc['denoiser']:,} ({pc['denoiser_pct']:.1f}%)")
         logger.log(f"  Atom-head params: {pc['atom_head']:,} ({pc['atom_head_pct']:.1f}%)")
+        if pc.get('confidence_head', 0) > 0:
+            logger.log(
+                f"  Confidence-head params: {pc['confidence_head']:,} "
+                f"({pc['confidence_head_pct']:.1f}%)"
+            )
         logger.log(f"  Total params:     {pc['total']:,}")
         logger.log("")
     else:
@@ -1447,6 +1598,7 @@ def _run_training(args, progress):
 
                 else:
                     # === STANDARD TRAINING ===
+                    pred_lddt = None  # Loop 06: confidence-head output (onestep only)
                     if args.continuous_sigma:
                         # AF3-style with continuous sigma
                         # Self-conditioning: with probability p, first run model to get x0_prev
@@ -1458,7 +1610,7 @@ def _run_training(args, progress):
                                     sigma, batch['mask_res'], x0_prev=None,
                                     esm_embed=batch.get('esm_embed'),
                                 )
-                                # OneStep returns (centroid, atoms); self-conditioning only uses centroids.
+                                # OneStep returns (centroid, atoms, pred_lddt); self-conditioning only uses centroids.
                                 x0_prev = (sc_out[0] if is_onestep else sc_out).detach()
 
                         # Main forward pass (with or without self-conditioning)
@@ -1468,7 +1620,8 @@ def _run_training(args, progress):
                             esm_embed=batch.get('esm_embed'),
                         )
                         if is_onestep:
-                            centroids_pred, atoms_pred = fwd_out
+                            # Loop 06: 3-tuple (centroid, atoms, pred_lddt_or_None).
+                            centroids_pred, atoms_pred, pred_lddt = fwd_out
                         else:
                             centroids_pred = fwd_out
                             atoms_pred = None
@@ -1543,6 +1696,38 @@ def _run_training(args, progress):
                             loss_angle = geom_losses['bond_angle'].item()
                             loss_omega = geom_losses['omega'].item()
 
+                    # === Loop 06: confidence head auxiliary loss ===
+                    # Regress predicted lDDT against GT lDDT of the EDM-blended
+                    # one-step centroid prediction. GT is computed under no_grad
+                    # so only the head/denoiser learn from this term — never the
+                    # path that produced `centroids_pred`. coord_scale=1.0
+                    # because trainer coords are normalized (std~1.0 per sample,
+                    # absorbed at eval time via s['std']); lDDT thresholds in
+                    # the normalized space then scale-compare correctly.
+                    loss_conf = 0.0
+                    gt_lddt_mean = 0.0
+                    pred_lddt_mean = 0.0
+                    if (
+                        is_onestep
+                        and pred_lddt is not None
+                        and args.confidence_head_weight > 0
+                    ):
+                        with torch.no_grad():
+                            gt_lddt = compute_lddt(
+                                centroids_pred.detach(),
+                                centroids_target,
+                                mask=batch['mask_res'],
+                                coord_scale=1.0,
+                                reduction="per_sample",
+                            )
+                        conf_loss_tensor = torch.nn.functional.smooth_l1_loss(
+                            pred_lddt, gt_lddt
+                        )
+                        loss = loss + args.confidence_head_weight * conf_loss_tensor
+                        loss_conf = conf_loss_tensor.item()
+                        gt_lddt_mean = gt_lddt.mean().item()
+                        pred_lddt_mean = pred_lddt.mean().item()
+
                     # Contact loss for Stage 1
                     loss_contact = 0.0
                     if contact_loss_fn is not None and args.contact_stage in ["stage1", "both"]:
@@ -1571,6 +1756,10 @@ def _run_training(args, progress):
                                 'bond': loss_bond,
                                 'angle': loss_angle,
                                 'omega': loss_omega,
+                                # Loop 06: confidence-head aux loss (0 when disabled).
+                                'conf': loss_conf,
+                                'gt_lddt_mean': gt_lddt_mean,
+                                'pred_lddt_mean': pred_lddt_mean,
                             })
 
             elif args.mode == "stage2_only":
@@ -1708,7 +1897,9 @@ def _run_training(args, progress):
         scheduler.step()
         loss = accum_loss
 
-        if step % 100 == 0:
+        # Log every 100 steps OR on the eval boundary (so short runs still
+        # surface a representative per-step line). Loop 06 adds `conf` token.
+        if step % 100 == 0 or step % args.eval_every == 0:
             elapsed = time.time() - start_time
             if args.mode == "end_to_end" and 'loss_components' in dir():
                 lc = loss_components
@@ -1725,7 +1916,14 @@ def _run_training(args, progress):
                 lc = loss_components
                 contact_str = f" | cnt: {lc.get('contact', 0):.4f}" if args.contact_weight > 0 else ""
                 weight_str = f" | w: {lc.get('loss_weight', 1.0):.2f}" if args.continuous_sigma and args.loss_weighting else ""
-                logger.log(f"Step {step:5d} | loss: {loss:.6f} | mse: {lc['mse']:.4f} | dst: {lc['dist']:.4f}{contact_str}{weight_str} | lr: {scheduler.get_last_lr()[0]:.2e} | {elapsed:.0f}s")
+                # Loop 06: when the confidence head is active, surface its aux
+                # loss + raw lddt means so collapse-to-mean is visible at a glance.
+                conf_str = (
+                    f" | conf: {lc.get('conf', 0):.4f} (pred={lc.get('pred_lddt_mean', 0):.3f} gt={lc.get('gt_lddt_mean', 0):.3f})"
+                    if getattr(args, "confidence_head", False)
+                    else ""
+                )
+                logger.log(f"Step {step:5d} | loss: {loss:.6f} | mse: {lc['mse']:.4f} | dst: {lc['dist']:.4f}{contact_str}{weight_str}{conf_str} | lr: {scheduler.get_last_lr()[0]:.2e} | {elapsed:.0f}s")
             else:
                 logger.log(f"Step {step:5d} | loss: {loss:.6f} | lr: {scheduler.get_last_lr()[0]:.2e} | {elapsed:.0f}s")
 

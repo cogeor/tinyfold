@@ -246,6 +246,40 @@ class TestLDDT:
         lddt = compute_lddt(random_coords, perturbed, coord_scale=1.0)
         assert 0 <= lddt <= 1
 
+    def test_compute_lddt_per_sample(self):
+        """Per-sample reduction should return [B] with distinct values.
+
+        Sample 0: pred == gt  ->  lDDT ~= 1.0
+        Sample 1: pred = gt + 100 A shift  ->  lDDT ~= 0.0
+        """
+        torch.manual_seed(0)
+        B, L = 2, 20
+        gt = torch.randn(B, L, 3) * 1.0  # already in Angstroms-ish (coord_scale=1)
+        pred = gt.clone()
+        pred[1] = pred[1] + 100.0  # massive global shift on sample 1
+        mask = torch.ones(B, L, dtype=torch.bool)
+
+        # Note: a uniform translation does NOT change pairwise distances, so we
+        # add per-residue noise on sample 1 to actually wreck local distances.
+        pred[1] = pred[1] + torch.randn_like(pred[1]) * 50.0
+
+        per_sample = compute_lddt(pred, gt, mask, coord_scale=1.0, reduction="per_sample")
+        assert per_sample.shape == (B,)
+        assert per_sample[0] > 0.99, f"sample 0 (identical) should be ~1.0, got {per_sample[0]}"
+        assert per_sample[1] < 0.1, f"sample 1 (perturbed) should be ~0.0, got {per_sample[1]}"
+        assert (per_sample[0] - per_sample[1]).abs() >= 0.9
+
+        # Default reduction='mean' must still return a scalar.
+        scalar = compute_lddt(pred, gt, mask, coord_scale=1.0)
+        assert scalar.dim() == 0
+        assert torch.allclose(scalar, per_sample.mean(), atol=1e-6)
+
+    def test_compute_lddt_invalid_reduction(self):
+        """Bad reduction name should raise."""
+        x = torch.randn(1, 5, 3)
+        with pytest.raises(ValueError):
+            compute_lddt(x, x, reduction="bogus")
+
     def test_interface_mask(self, backbone_coords, chain_ids):
         """Interface mask should identify cross-chain contacts."""
         # Bring chains closer together for interface

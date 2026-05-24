@@ -79,13 +79,16 @@ def test_sample_k_centroids_one_shot_returns_distinct_samples() -> None:
     noiser = _make_noiser()
     device = torch.device("cpu")
 
-    centroids, atoms = train_resfold.sample_k_centroids(
+    # Loop 06: sample_k_centroids now returns a 3-tuple where the third slot
+    # is per-sample predicted lDDT (None when the model has no confidence head).
+    centroids, atoms, pred_lddts = train_resfold.sample_k_centroids(
         model, batch, noiser, device,
         K=4, base_seed=42, target_idx=0,
         is_onestep=True, one_shot=True,
     )
     assert centroids.shape == (4, 1, 10, 3)
     assert atoms is not None and atoms.shape == (4, 1, 10, 4, 3)
+    assert pred_lddts is None, "no confidence_head -> pred_lddts must be None"
 
     # Pairwise distinctness on the centroid output.
     for i in range(4):
@@ -94,13 +97,14 @@ def test_sample_k_centroids_one_shot_returns_distinct_samples() -> None:
             assert diff > 1e-3, f"samples {i} and {j} are too close: {diff:.6e}"
 
     # Reproducibility: same seeds -> identical tensors.
-    centroids2, atoms2 = train_resfold.sample_k_centroids(
+    centroids2, atoms2, pred_lddts2 = train_resfold.sample_k_centroids(
         model, batch, noiser, device,
         K=4, base_seed=42, target_idx=0,
         is_onestep=True, one_shot=True,
     )
     assert torch.equal(centroids, centroids2)
     assert torch.equal(atoms, atoms2)
+    assert pred_lddts2 is None
 
 
 def test_sample_k_centroids_ve_path_distinct() -> None:
@@ -110,13 +114,14 @@ def test_sample_k_centroids_ve_path_distinct() -> None:
     noiser = _make_noiser()
     device = torch.device("cpu")
 
-    centroids, _ = train_resfold.sample_k_centroids(
+    centroids, _, pred_lddts = train_resfold.sample_k_centroids(
         model, batch, noiser, device,
         K=3, base_seed=7, target_idx=2,
         is_onestep=True, one_shot=False,
         align_per_step=False, recenter=True, self_cond=False,
     )
     assert centroids.shape == (3, 1, 10, 3)
+    assert pred_lddts is None  # no confidence head on this tiny model
     for i in range(3):
         for j in range(i + 1, 3):
             assert (centroids[i] - centroids[j]).norm().item() > 1e-3
@@ -129,12 +134,12 @@ def test_different_target_idx_gives_independent_samples() -> None:
     noiser = _make_noiser()
     device = torch.device("cpu")
 
-    c_a, _ = train_resfold.sample_k_centroids(
+    c_a, _, _ = train_resfold.sample_k_centroids(
         model, batch, noiser, device,
         K=1, base_seed=42, target_idx=0,
         is_onestep=True, one_shot=True,
     )
-    c_b, _ = train_resfold.sample_k_centroids(
+    c_b, _, _ = train_resfold.sample_k_centroids(
         model, batch, noiser, device,
         K=1, base_seed=42, target_idx=1,
         is_onestep=True, one_shot=True,

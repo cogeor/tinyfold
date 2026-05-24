@@ -20,6 +20,7 @@ def compute_lddt(
     inclusion_radius: float = 15.0,
     thresholds: List[float] = [0.5, 1.0, 2.0, 4.0],
     coord_scale: float = DEFAULT_COORD_SCALE,
+    reduction: str = "mean",
 ) -> Tensor:
     """Compute lDDT (Local Distance Difference Test) for CA atoms.
 
@@ -34,10 +35,19 @@ def compute_lddt(
         inclusion_radius: Only consider pairs within this distance in GT (Angstroms)
         thresholds: Distance error thresholds in Angstroms (default: [0.5, 1, 2, 4])
         coord_scale: Scale factor if coords are normalized (default: 10.0)
+        reduction: ``"mean"`` (default) returns a scalar mean over the batch;
+            ``"per_sample"`` returns a ``[B]`` tensor (one lDDT per batch item).
+            Unbatched inputs always return a 0-d scalar.
 
     Returns:
-        lDDT score (0-1), averaged over all valid residues
+        lDDT score(s) in ``[0, 1]``. Shape depends on ``reduction``:
+            - ``"mean"``: scalar tensor (current/legacy behaviour).
+            - ``"per_sample"``: ``[B]`` tensor with one score per batch element.
     """
+    if reduction not in {"mean", "per_sample"}:
+        raise ValueError(
+            f"compute_lddt: reduction must be 'mean' or 'per_sample', got {reduction!r}"
+        )
     # Handle unbatched input
     if pred_ca.dim() == 2:
         pred_ca = pred_ca.unsqueeze(0)
@@ -87,6 +97,8 @@ def compute_lddt(
     else:
         lddt = lddt_per_res.mean(dim=-1)  # [B]
 
+    if reduction == "per_sample":
+        return lddt  # [B]
     return lddt.mean()  # Scalar
 
 

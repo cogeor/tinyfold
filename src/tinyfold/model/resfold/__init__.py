@@ -11,6 +11,7 @@ from tinyfold.model.resfold.refiner import AtomRefinerV2
 from tinyfold.model.resfold.assembler import ResFoldAssembler
 from tinyfold.model.resfold.e2e import ResFoldE2E, sample_e2e
 from tinyfold.model.resfold.atomrefine_multi_sample import AtomRefinerV2MultiSample
+from tinyfold.model.resfold.confidence_head import ConfidenceHead
 
 __all__ = [
     "ResidueDenoiser",
@@ -20,4 +21,5 @@ __all__ = [
     "ResFoldE2E",
     "sample_e2e",
     "AtomRefinerV2MultiSample",
+    "ConfidenceHead",
 ]

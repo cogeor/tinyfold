@@ -129,6 +129,7 @@ class ResFoldOneStep(BaseDecoder):
         dropout: float = 0.0,
         aa_embed: str = "learned",
         esm_dim: Optional[int] = None,
+        confidence_head: bool = False,
     ):
         super().__init__()
         self.c_token = c_token
@@ -172,6 +173,18 @@ class ResFoldOneStep(BaseDecoder):
             n_heads=atom_head_heads,
             dropout=dropout,
         )
+
+        # Optional per-target confidence head (Loop 06). Disabled by default so
+        # legacy training runs stay byte-identical. When enabled, returns a
+        # scalar predicted lDDT per target from mean-pooled denoiser tokens.
+        if confidence_head:
+            from .confidence_head import ConfidenceHead
+            self.confidence_head = ConfidenceHead(
+                c_token=c_token,
+                dropout=dropout,
+            )
+        else:
+            self.confidence_head = None
 
     def _edm_coefficients(self, sigma: Tensor):
         """Karras (EDM) preconditioning coefficients.
@@ -236,6 +249,20 @@ class ResFoldOneStep(BaseDecoder):
         atoms_pred = centroid_pred.unsqueeze(2) + atom_offsets        # [B, L, 4, 3]
         return centroid_pred, atoms_pred
 
+    def _predict_confidence(
+        self,
+        denoiser_tokens: Tensor,
+        mask: Optional[Tensor],
+    ) -> Optional[Tensor]:
+        """Run the optional confidence head; return ``None`` when disabled.
+
+        Returned tensor (when present) has shape ``[B]`` and lives in ``[0, 1]``
+        (predicted lDDT). Pooling uses the residue mask via ``ConfidenceHead``.
+        """
+        if self.confidence_head is None:
+            return None
+        return self.confidence_head(denoiser_tokens, mask)
+
     def forward_sigma(
         self,
         x_t: Tensor,
@@ -246,8 +273,12 @@ class ResFoldOneStep(BaseDecoder):
         mask: Optional[Tensor] = None,
         x0_prev: Optional[Tensor] = None,
         esm_embed: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tensor]:
-        """Continuous-sigma forward (EDM-preconditioned). Returns (centroid_pred, atoms_pred).
+    ) -> Tuple[Tensor, Tensor, Optional[Tensor]]:
+        """Continuous-sigma forward (EDM-preconditioned).
+
+        Returns ``(centroid_pred, atoms_pred, pred_lddt_or_None)``. The third
+        slot is the per-target predicted lDDT in ``[0, 1]`` when the model was
+        constructed with ``confidence_head=True``, else ``None``.
 
         ``esm_embed`` (``[B, L, esm_dim]``) is required when the model was
         constructed with ``aa_embed in {"esm2_35M", "esm2_150M"}``. In the
@@ -260,7 +291,11 @@ class ResFoldOneStep(BaseDecoder):
         trunk_tokens = self.trunk(aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed)
         cond = self._embed_c_noise(c_noise)
         denoiser_tokens = self._denoiser_tokens(c_in * x_t, trunk_tokens, cond, mask, x0_prev)
-        return self._heads_edm(denoiser_tokens, x_t, c_skip, c_out, mask)
+        centroid_pred, atoms_pred = self._heads_edm(
+            denoiser_tokens, x_t, c_skip, c_out, mask
+        )
+        pred_lddt = self._predict_confidence(denoiser_tokens, mask)
+        return centroid_pred, atoms_pred, pred_lddt
 
     def forward_sigma_with_trunk(
         self,
@@ -269,15 +304,23 @@ class ResFoldOneStep(BaseDecoder):
         sigma: Tensor,
         mask: Optional[Tensor] = None,
         x0_prev: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tensor]:
-        """Continuous-sigma forward with precomputed trunk tokens (EDM-preconditioned)."""
+    ) -> Tuple[Tensor, Tensor, Optional[Tensor]]:
+        """Continuous-sigma forward with precomputed trunk tokens (EDM-preconditioned).
+
+        Returns ``(centroid_pred, atoms_pred, pred_lddt_or_None)`` — same
+        contract as :meth:`forward_sigma`.
+        """
         B, L, _ = x_t.shape
         if mask is None:
             mask = torch.ones(B, L, dtype=torch.bool, device=x_t.device)
         c_skip, c_out, c_in, c_noise = self._edm_coefficients(sigma)
         cond = self._embed_c_noise(c_noise)
         denoiser_tokens = self._denoiser_tokens(c_in * x_t, trunk_tokens, cond, mask, x0_prev)
-        return self._heads_edm(denoiser_tokens, x_t, c_skip, c_out, mask)
+        centroid_pred, atoms_pred = self._heads_edm(
+            denoiser_tokens, x_t, c_skip, c_out, mask
+        )
+        pred_lddt = self._predict_confidence(denoiser_tokens, mask)
+        return centroid_pred, atoms_pred, pred_lddt
 
     def forward(
         self,
@@ -327,13 +370,20 @@ class ResFoldOneStep(BaseDecoder):
             + sum(p.numel() for p in self.centroid_proj.parameters())
         )
         atom_head = sum(p.numel() for p in self.atom_head.parameters())
-        total = trunk + denoiser + atom_head
+        confidence_head = (
+            sum(p.numel() for p in self.confidence_head.parameters())
+            if self.confidence_head is not None
+            else 0
+        )
+        total = trunk + denoiser + atom_head + confidence_head
         return {
             "trunk": trunk,
             "denoiser": denoiser,
             "atom_head": atom_head,
+            "confidence_head": confidence_head,
             "total": total,
             "trunk_pct": 100 * trunk / total,
             "denoiser_pct": 100 * denoiser / total,
             "atom_head_pct": 100 * atom_head / total,
+            "confidence_head_pct": 100 * confidence_head / total,
         }
