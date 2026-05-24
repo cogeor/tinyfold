@@ -9,8 +9,11 @@ model_kind: onestep
 n_train: 256
 n_test: 14
 n_eval_train: 64
+# [200, 600] -> 1198 eligible samples (vs 94 in [200,400]). Larger proteins
+# (avg ~150 residues) mean ~3x more compute per step than N<=64 runs.
+# Documented for the scaling plot: data filter changes from N=64 to N=256.
 min_atoms: 200
-max_atoms: 400
+max_atoms: 600
 batch_size: 32
 dynamic_batch: false
 use_bucketing: false
