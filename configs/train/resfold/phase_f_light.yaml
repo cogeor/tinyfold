@@ -1,0 +1,60 @@
+# Phase F-light: per_chain_res_idx + mixed-size training.
+# 1500 train samples spanning LA+LB in [80, 600] residues, 500 per bin.
+# 5K steps, ~30-40 min wall. Goal: see if per-chain reset alone is
+# enough to improve OOD generalization vs Phase D's catastrophic cliff.
+#
+# Architecture matches Phase D exactly (6M params, learned aa embed,
+# no confidence head, no ESM). The ONLY architectural delta is the
+# per-chain res_idx encoding.
+
+model_kind: onestep
+mode: stage1_only
+load_split: data/processed/splits/phase_f_light_mixed.json
+
+# --- Training ---
+n_steps: 5000
+eval_every: 1000
+lr: 1.0e-04
+min_lr: 1.0e-05
+grad_accum: 1
+seed: 42
+batch_size: 16
+dynamic_batch: true
+use_bucketing: true
+n_buckets: 4
+max_tokens: 20000
+
+# --- Architecture (Phase D defaults) ---
+c_token_s1: 256
+trunk_layers: 6
+denoiser_blocks: 6
+atom_head_layers: 2
+atom_head_heads: 4
+aa_embed: learned
+
+# --- THE FIX ---
+per_chain_res_idx: true
+
+# --- Diffusion ---
+T: 50
+continuous_sigma: true
+sigma_data: 1.0
+sigma_min: 0.002
+sigma_max: 10.0
+
+# --- Other ---
+confidence_head: false
+loss_weighting: true
+augment_rotation: true
+multi_copy: 0
+self_cond_prob: 0.0
+dist_weight: 0.1
+geom_weight: 0.1
+contact_weight: 0.0
+atom_weight: 0.5
+atom_warmup_steps: 200
+one_shot_sample: true
+n_samples: 1
+eval_K_list: "1"
+
+output_dir: outputs/resfold/phase_f_light
