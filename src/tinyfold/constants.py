@@ -65,8 +65,12 @@ BOND_LENGTH_TOLERANCE = 0.15
 # Interface distance threshold (CA-CA in Angstroms)
 INTERFACE_DISTANCE_THRESHOLD = 10.0
 
-# Filter thresholds
+# Filter thresholds — defaults for the data prep pipeline.
+# The MAX_CHAIN_LENGTH default is None (no upper cap) so the prep
+# script faithfully passes through whatever DIPS-Plus emits. Callers
+# (prepare_data.py CLI) can override both bounds. A previous default
+# of 300 silently truncated the dataset; see notes/phase_e_setup.md.
 MIN_CHAIN_LENGTH = 40
-MAX_CHAIN_LENGTH = 300
+MAX_CHAIN_LENGTH = None  # None = no upper cap; override on the CLI if you want one
 MIN_BACKBONE_COMPLETENESS = 0.95
 MAX_INTER_CHAIN_DISTANCE = 15.0  # Reject if chains don't interact

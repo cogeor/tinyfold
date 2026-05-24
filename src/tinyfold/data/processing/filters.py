@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Optional
 
 import numpy as np
 
@@ -55,7 +56,7 @@ def validate_chain_length(
     LA: int,
     LB: int,
     min_len: int = MIN_CHAIN_LENGTH,
-    max_len: int = MAX_CHAIN_LENGTH,
+    max_len: Optional[int] = MAX_CHAIN_LENGTH,
 ) -> FilterResult:
     """
     Check chain lengths are within bounds.
@@ -63,8 +64,10 @@ def validate_chain_length(
     Args:
         LA: Length of chain A
         LB: Length of chain B
-        min_len: Minimum allowed length
-        max_len: Maximum allowed length
+        min_len: Minimum allowed length. Defaults to ``MIN_CHAIN_LENGTH``.
+        max_len: Maximum allowed length. ``None`` disables the upper bound
+            (faithful pass-through of whatever the source dataset emits).
+            Defaults to ``MAX_CHAIN_LENGTH``.
 
     Returns:
         FilterResult
@@ -77,10 +80,11 @@ def validate_chain_length(
         return FilterResult.fail(FilterReason.CHAIN_A_TOO_SHORT, f"LA={LA} < {min_len}")
     if LB < min_len:
         return FilterResult.fail(FilterReason.CHAIN_B_TOO_SHORT, f"LB={LB} < {min_len}")
-    if LA > max_len:
-        return FilterResult.fail(FilterReason.CHAIN_A_TOO_LONG, f"LA={LA} > {max_len}")
-    if LB > max_len:
-        return FilterResult.fail(FilterReason.CHAIN_B_TOO_LONG, f"LB={LB} > {max_len}")
+    if max_len is not None:
+        if LA > max_len:
+            return FilterResult.fail(FilterReason.CHAIN_A_TOO_LONG, f"LA={LA} > {max_len}")
+        if LB > max_len:
+            return FilterResult.fail(FilterReason.CHAIN_B_TOO_LONG, f"LB={LB} > {max_len}")
 
     return FilterResult.ok()
 
@@ -257,6 +261,8 @@ def validate_sample(
     bonds_src: np.ndarray,
     bonds_dst: np.ndarray,
     bond_type: np.ndarray,
+    min_chain_length: int = MIN_CHAIN_LENGTH,
+    max_chain_length: Optional[int] = MAX_CHAIN_LENGTH,
 ) -> FilterResult:
     """
     Run all validation checks on a sample.
@@ -273,12 +279,15 @@ def validate_sample(
         bonds_src: [E] bond source indices
         bonds_dst: [E] bond destination indices
         bond_type: [E] bond types
+        min_chain_length: Lower bound on per-chain length. Default from constants.
+        max_chain_length: Upper bound on per-chain length, or ``None`` for no cap.
+            Default from constants (None = no upper cap).
 
     Returns:
         FilterResult - first failing check or PASSED
     """
     # Chain length
-    result = validate_chain_length(LA, LB)
+    result = validate_chain_length(LA, LB, min_chain_length, max_chain_length)
     if not result.passed:
         return result
 

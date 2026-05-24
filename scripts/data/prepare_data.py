@@ -68,12 +68,13 @@ def process_single_sample(args: tuple) -> dict[str, Any] | None:
     Process a single sample from manifest entry.
 
     Args:
-        args: Tuple of (manifest_entry, data_dir)
+        args: Tuple of (manifest_entry, data_dir, min_chain_length, max_chain_length).
+            ``max_chain_length`` may be ``None`` to disable the upper cap.
 
     Returns:
         Processed sample dict or error dict
     """
-    entry, data_dir = args
+    entry, data_dir, min_chain_length, max_chain_length = args
     sample_id = entry["sample_id"]
 
     try:
@@ -149,6 +150,8 @@ def process_single_sample(args: tuple) -> dict[str, Any] | None:
             bonds_src=bonds_src,
             bonds_dst=bonds_dst,
             bond_type=bond_type,
+            min_chain_length=min_chain_length,
+            max_chain_length=max_chain_length,
         )
 
         if not result.passed:
@@ -233,17 +236,38 @@ def run_preprocess(
     data_dir: Path,
     output_dir: Path,
     num_workers: int = 4,
+    min_chain_length: int = 40,
+    max_chain_length: int | None = None,
 ) -> tuple[list[dict], list[dict]]:
-    """Preprocess all samples from manifest."""
+    """Preprocess all samples from manifest.
+
+    Args:
+        manifest_path: Path to manifest.jsonl.
+        data_dir: Directory containing structure files referenced in the
+            manifest.
+        output_dir: Directory to write the parquet, stats, and errors files.
+        num_workers: Parallel worker count.
+        min_chain_length: Lower bound on per-chain length (passed to
+            ``validate_sample``). Default 40 rejects parsing fragments.
+        max_chain_length: Upper bound on per-chain length, or ``None`` to
+            disable the upper cap. Default ``None`` is faithful pass-through
+            of whatever the source dataset emits — set this on the CLI if
+            you need a size budget.
+    """
     print("=" * 60)
     print("Step 3: Preprocess structures")
     print("=" * 60)
 
     manifest = load_manifest(manifest_path)
     print(f"Loaded {len(manifest)} samples from manifest")
+    print(f"  Chain-length filter: min={min_chain_length}, "
+          f"max={'no cap' if max_chain_length is None else max_chain_length}")
 
     # Prepare arguments for parallel processing
-    args = [(entry, data_dir) for entry in manifest]
+    args = [
+        (entry, data_dir, min_chain_length, max_chain_length)
+        for entry in manifest
+    ]
 
     # Process samples
     samples = []
@@ -426,6 +450,22 @@ def main():
         default=None,
         help="Custom split fractions as JSON, e.g., '{\"train\": 0.8, \"val\": 0.2}'",
     )
+    parser.add_argument(
+        "--min-chain-length",
+        type=int,
+        default=40,
+        help="Minimum allowed length per chain (default: 40, rejects parsing fragments).",
+    )
+    parser.add_argument(
+        "--max-chain-length",
+        type=int,
+        default=None,
+        help=(
+            "Maximum allowed length per chain. Omit to disable the upper "
+            "cap (faithful pass-through of source data; previous releases "
+            "silently capped at 300, which truncated DIPS-Plus)."
+        ),
+    )
     args = parser.parse_args()
 
     # Parse split fractions if provided
@@ -453,7 +493,14 @@ def main():
         if not manifest_path.exists():
             print(f"Manifest not found at {manifest_path}. Creating...")
             run_manifest(data_dir, output_dir)
-        run_preprocess(manifest_path, data_dir, output_dir, num_workers=args.workers)
+        run_preprocess(
+            manifest_path,
+            data_dir,
+            output_dir,
+            num_workers=args.workers,
+            min_chain_length=args.min_chain_length,
+            max_chain_length=args.max_chain_length,
+        )
     elif args.only == "split":
         run_split(output_dir, seed=args.seed, split_name=args.split_name, fractions=split_fractions)
     else:
@@ -461,7 +508,14 @@ def main():
         if args.input_dir is None:
             run_download(output_dir)
         run_manifest(data_dir, output_dir)
-        run_preprocess(manifest_path, data_dir, output_dir, num_workers=args.workers)
+        run_preprocess(
+            manifest_path,
+            data_dir,
+            output_dir,
+            num_workers=args.workers,
+            min_chain_length=args.min_chain_length,
+            max_chain_length=args.max_chain_length,
+        )
         run_split(output_dir, seed=args.seed, split_name=args.split_name, fractions=split_fractions)
 
     print("\nDone!")
