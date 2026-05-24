@@ -1,0 +1,83 @@
+# Phase D — N=8600 with the full prio01-retrain stack.
+#
+# Stacks Loops 01-06 on top of the Phase C 9.87 A baseline:
+#   - aa_embed=esm2_35M       (Loop 05): ESM-2-35M frozen embeddings + projection
+#   - --loss_weighting        (Loop 04): EDM lambda(sigma) per-sample weighting
+#   - --confidence_head 0.1   (Loop 06): MLP head regressing pred lDDT
+#   - --n_samples 5           (Loop 02): 5-sample inference at eval
+#   - --rank_by confidence    (Loop 06): rank K samples by predicted lDDT
+#   - one_shot_sample: true   (Loop 03 finding: multi-step kabsch_interp hurts)
+#
+# Data filter and step budget match the Phase C headline so deltas are apples-to-apples.
+
+model_kind: onestep
+
+# --- Data ---
+n_train: 8600
+n_test: 100
+n_eval_train: 200
+min_atoms: 200
+max_atoms: 1200
+batch_size: 32
+dynamic_batch: false
+use_bucketing: false
+n_buckets: 8
+max_tokens: 30000
+
+# --- Training ---
+n_steps: 50000
+eval_every: 5000
+lr: 1.0e-04
+min_lr: 1.0e-05
+grad_accum: 1
+seed: 42
+
+mode: stage1_only
+
+# --- Architecture (matches Phase C ~6M params, plus ESM proj + conf head ~17k) ---
+c_token_s1: 256
+trunk_layers: 6
+denoiser_blocks: 6
+atom_head_layers: 2
+atom_head_heads: 4
+
+# Loop 05: ESM-2-35M frozen embeddings (480-dim). Cache must exist at
+# data/processed/esm2_35M (run scripts/prepare_esm2_embeddings.py first).
+aa_embed: esm2_35M
+
+# Loop 06: confidence head + ranking.
+confidence_head: true
+confidence_head_weight: 0.1
+rank_by: confidence
+
+# Loop 04: EDM per-sample loss weighting.
+loss_weighting: true
+
+# Loop 02: multi-sample eval at K=5. (K=40 sweep happens after training via
+# the --eval_only re-eval command in the loop's TEST.md.)
+n_samples: 5
+eval_K_list: "1,5"
+cluster_radius: 5.0
+
+# --- Diffusion ---
+T: 50
+continuous_sigma: true
+
+# --- Augmentation ---
+augment_rotation: true
+multi_copy: 0
+translate_aug: 0.0
+self_cond_prob: 0.0
+
+# --- Loss weights ---
+dist_weight: 0.1
+geom_weight: 0.1
+contact_weight: 0.0
+atom_weight: 0.5
+atom_warmup_steps: 500
+
+# --- Eval sampler ---
+# Loop 03 finding: multi-step Euler + Kabsch interp hurts vs one-shot at this scale.
+one_shot_sample: true
+
+output_dir: outputs/resfold/phase_d_n8600_full
