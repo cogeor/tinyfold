@@ -1,4 +1,7 @@
 model,bin,n,c_rmsd_mean_A,c_rmsd_median_A,dockq_mean,dockq_median
+diffdock_pp,clean_200_400,30,15.566,15.656,0.0421,0.023
+diffdock_pp,clean_400_600,30,21.591,20.687,0.0283,0.0112
+diffdock_pp,clean_600_1000,30,58.07,25.383,0.0149,0.0068
 tinyfold_f_medium,clean_200_400,30,22.084,19.958,0.0154,0.014
 tinyfold_f_medium,clean_400_600,30,23.583,22.569,0.0153,0.0125
 tinyfold_f_medium,clean_600_1000,30,29.003,27.217,0.0104,0.01

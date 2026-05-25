@@ -220,8 +220,12 @@ def main() -> None:
     print(f"Wrote {len(rows)} rows -> {out_path}")
 
     # Quick per-bin summary so the user sees something useful immediately.
+    # nan-safe: external baselines (DPP) occasionally write NaN-valued NPZs
+    # for samples where the model diverged; filter those out so they don't
+    # poison the bin mean.
+    import math
     print("\nPer-bin mean C-RMSD (aligned) / mean DockQ:")
-    print(f"  {'bin':>10} {'n':>4} {'c_rmsd_A':>10} {'dockq':>8}")
+    print(f"  {'bin':>14} {'n':>4} {'n_ok':>5} {'c_rmsd_A':>10} {'dockq':>8}")
     by_bin: dict[str, list[dict]] = {}
     for r in rows:
         by_bin.setdefault(r["bin"], []).append(r)
@@ -229,11 +233,13 @@ def main() -> None:
         if b not in by_bin:
             continue
         rs = by_bin[b]
-        c = [r["c_rmsd_aligned_A"] for r in rs if r["c_rmsd_aligned_A"] is not None]
-        dq = [r["dockq"] for r in rs if r["dockq"] is not None]
+        c = [r["c_rmsd_aligned_A"] for r in rs
+             if r["c_rmsd_aligned_A"] is not None and not math.isnan(r["c_rmsd_aligned_A"])]
+        dq = [r["dockq"] for r in rs
+              if r["dockq"] is not None and not math.isnan(r["dockq"])]
         c_mean = sum(c) / len(c) if c else float("nan")
         d_mean = sum(dq) / len(dq) if dq else float("nan")
-        print(f"  {b:>10} {len(rs):>4} {c_mean:>10.2f} {d_mean:>8.3f}")
+        print(f"  {b:>14} {len(rs):>4} {len(c):>5} {c_mean:>10.2f} {d_mean:>8.3f}")
 
 
 if __name__ == "__main__":
