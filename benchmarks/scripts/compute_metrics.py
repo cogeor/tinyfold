@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import re
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -162,6 +164,11 @@ def main() -> None:
                    help="Output CSV path (default benchmarks/results/{model}.csv).")
     p.add_argument("--splits", nargs="*", default=SPLITS,
                    help=f"Subset of stratified bins to score (default: all {SPLITS}).")
+    p.add_argument("--n_samples", type=int, default=1,
+                   help="Match the value passed to eval_tinyfold.py. K=1 reads "
+                        "{sample_id}.npz (existing behavior). K>1 reads "
+                        "{sample_id}_k{i}.npz, emits one CSV row per (sample, k), "
+                        "and the per-bin summary prints top-1 / mean / oracle.")
     args = p.parse_args()
 
     pred_root = REPO_ROOT / args.predictions_root / args.model
@@ -178,20 +185,32 @@ def main() -> None:
     # quadratic on a 40K-row parquet.
     id_cache = {sid: i for i, sid in enumerate(table["sample_id"].to_pylist())}
 
+    K = args.n_samples
+    k_pat = re.compile(r"^(.+)_k(\d+)\.npz$")
     rows = []
     for split in args.splits:
         split_dir = pred_root / split
         if not split_dir.exists():
             print(f"  [skip] {split}: no predictions at {split_dir}")
             continue
-        npzs = sorted(split_dir.glob("*.npz"))
+        if K > 1:
+            npzs = sorted(split_dir.glob("*_k*.npz"))
+        else:
+            npzs = sorted(p_ for p_ in split_dir.glob("*.npz") if not k_pat.match(p_.name))
         print(f"  {split}: {len(npzs)} predictions")
         for npz_path in npzs:
+            if K > 1:
+                m = k_pat.match(npz_path.name)
+                if not m:
+                    continue
+                stem_id, k_idx = m.group(1), int(m.group(2))
+            else:
+                stem_id, k_idx = npz_path.stem, 0
             with np.load(npz_path, allow_pickle=True) as data:
                 pred = np.asarray(data["pred_atoms"], dtype=np.float32)
                 sample_id = (
                     str(data["sample_id"]) if "sample_id" in data.files
-                    else npz_path.stem
+                    else stem_id
                 )
             gt = _load_gt(table, sample_id, _id_cache=id_cache)
             if gt is None:
@@ -201,13 +220,16 @@ def main() -> None:
                 print(f"    [skip] {sample_id}: shape mismatch pred={pred.shape} gt={gt['atoms'].shape}")
                 continue
             scores = score_one(pred, gt["atoms"], gt["aa"], gt["chains"])
-            rows.append({
+            row = {
                 "model": args.model,
                 "bin": split,
                 "sample_id": sample_id,
                 "n_res": int(len(gt["aa"])),
                 **scores,
-            })
+            }
+            if K > 1:
+                row["k_idx"] = k_idx
+            rows.append(row)
 
     if not rows:
         sys.exit("ERROR: no scored samples")
@@ -224,22 +246,59 @@ def main() -> None:
     # for samples where the model diverged; filter those out so they don't
     # poison the bin mean.
     import math
-    print("\nPer-bin mean C-RMSD (aligned) / mean DockQ:")
-    print(f"  {'bin':>14} {'n':>4} {'n_ok':>5} {'c_rmsd_A':>10} {'dockq':>8}")
     by_bin: dict[str, list[dict]] = {}
     for r in rows:
         by_bin.setdefault(r["bin"], []).append(r)
-    for b in SPLITS:
-        if b not in by_bin:
-            continue
-        rs = by_bin[b]
-        c = [r["c_rmsd_aligned_A"] for r in rs
-             if r["c_rmsd_aligned_A"] is not None and not math.isnan(r["c_rmsd_aligned_A"])]
-        dq = [r["dockq"] for r in rs
-              if r["dockq"] is not None and not math.isnan(r["dockq"])]
-        c_mean = sum(c) / len(c) if c else float("nan")
-        d_mean = sum(dq) / len(dq) if dq else float("nan")
-        print(f"  {b:>14} {len(rs):>4} {len(c):>5} {c_mean:>10.2f} {d_mean:>8.3f}")
+
+    def _finite(xs):
+        return [x for x in xs if x is not None and not math.isnan(x)]
+
+    if K == 1:
+        print("\nPer-bin mean C-RMSD (aligned) / mean DockQ:")
+        print(f"  {'bin':>14} {'n':>4} {'n_ok':>5} {'c_rmsd_A':>10} {'dockq':>8}")
+        for b in SPLITS:
+            if b not in by_bin:
+                continue
+            rs = by_bin[b]
+            c = _finite([r["c_rmsd_aligned_A"] for r in rs])
+            dq = _finite([r["dockq"] for r in rs])
+            c_mean = sum(c) / len(c) if c else float("nan")
+            d_mean = sum(dq) / len(dq) if dq else float("nan")
+            print(f"  {b:>14} {len(rs):>4} {len(c):>5} {c_mean:>10.2f} {d_mean:>8.3f}")
+    else:
+        # K-sample readout: per sample, take top-1 (k=0), mean, oracle (min c_rmsd).
+        # Per bin, average each across samples. The oracle is the ceiling that a
+        # perfect reranker could reach; the gap vs top-1 is the Cycle 02 lever.
+        print(f"\nPer-bin K={K} mean across samples of [top1 / mean / oracle] (C-RMSD A, DockQ):")
+        print(f"  {'bin':>14} {'n_smp':>5}"
+              f" {'c_top1':>8} {'c_mean':>8} {'c_oracle':>9}"
+              f" {'dq_top1':>8} {'dq_mean':>8} {'dq_oracle':>9}")
+        for b in SPLITS:
+            if b not in by_bin:
+                continue
+            per_sample: dict[str, list[dict]] = defaultdict(list)
+            for r in by_bin[b]:
+                per_sample[r["sample_id"]].append(r)
+            top1_c, mean_c, oracle_c = [], [], []
+            top1_d, mean_d, oracle_d = [], [], []
+            for sid, rs in per_sample.items():
+                rs_sorted = sorted(rs, key=lambda r: r["k_idx"])
+                cs = _finite([r["c_rmsd_aligned_A"] for r in rs_sorted])
+                ds = _finite([r["dockq"] for r in rs_sorted])
+                if cs:
+                    top1_c.append(rs_sorted[0]["c_rmsd_aligned_A"])
+                    mean_c.append(sum(cs) / len(cs))
+                    oracle_c.append(min(cs))
+                if ds:
+                    top1_d.append(rs_sorted[0]["dockq"])
+                    mean_d.append(sum(ds) / len(ds))
+                    # For DockQ higher is better, so "oracle" is max.
+                    oracle_d.append(max(ds))
+            n_smp = len(per_sample)
+            avg = lambda xs: sum(xs) / len(xs) if xs else float("nan")
+            print(f"  {b:>14} {n_smp:>5}"
+                  f" {avg(top1_c):>8.2f} {avg(mean_c):>8.2f} {avg(oracle_c):>9.2f}"
+                  f" {avg(top1_d):>8.3f} {avg(mean_d):>8.3f} {avg(oracle_d):>9.3f}")
 
 
 if __name__ == "__main__":

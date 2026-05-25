@@ -150,6 +150,12 @@ def main() -> None:
     p.add_argument("--n_steps", type=int, default=None,
                    help="Subsample the Karras schedule to this many denoising "
                         "steps (default: full schedule from the noiser).")
+    p.add_argument("--n_samples", type=int, default=1,
+                   help="Draws per target. K=1 keeps the prior single-generator "
+                        "behavior so old baseline CSVs stay reproducible. K>1 "
+                        "writes {sample_id}_k{i}.npz with a per-(sample, k) "
+                        "seed = args.seed + sample_idx * K + i, giving K "
+                        "distinct deterministic draws.")
     p.add_argument("--skip_existing", action="store_true",
                    help="Skip samples whose NPZ already exists.")
     args = p.parse_args()
@@ -167,6 +173,8 @@ def main() -> None:
     print(f"Noiser: VE Karras, T={cfg.get('T')}, sigma range [{cfg.get('sigma_min')}, {cfg.get('sigma_max')}]")
     if args.n_steps is not None:
         print(f"  Sampler: {args.n_steps}-step subsampled Karras (Protenix-Mini-style)")
+    if args.n_samples > 1:
+        print(f"  K={args.n_samples} draws/target, seed = {args.seed} + sample_idx * K + k")
 
     esm_cache = args.esm_cache_dir or cfg.get("esm_cache_dir")
     per_chain = bool(cfg.get("per_chain_res_idx", False))
@@ -180,7 +188,15 @@ def main() -> None:
     pred_root = REPO_ROOT / args.predictions_root / args.model_tag
     pred_root.mkdir(parents=True, exist_ok=True)
 
-    gen = torch.Generator(device=device).manual_seed(args.seed)
+    # K=1 reuses one global generator (preserves old baseline reproducibility).
+    # K>1 reseeds per (sample, k) so a single sample's draws don't depend on
+    # iteration order across bins.
+    K = args.n_samples
+    shared_gen = torch.Generator(device=device).manual_seed(args.seed) if K == 1 else None
+
+    def out_name(sid: str, k_idx: int) -> str:
+        return f"{sid}.npz" if K == 1 else f"{sid}_k{k_idx}.npz"
+
     for split in args.splits:
         split_file = REPO_ROOT / args.splits_root / f"{split}.json"
         if not split_file.exists():
@@ -192,11 +208,12 @@ def main() -> None:
         test_indices = d["test_indices"]
         test_ids = d["test_ids"]
 
-        print(f"  {split}: {len(test_ids)} samples -> {out_dir}")
+        print(f"  {split}: {len(test_ids)} samples x K={K} -> {out_dir}")
         n_written = 0
-        for idx, sid in zip(test_indices, test_ids):
-            out_path = out_dir / f"{sid}.npz"
-            if args.skip_existing and out_path.exists():
+        for sample_idx, (idx, sid) in enumerate(zip(test_indices, test_ids)):
+            # Skip parquet load + ESM load if every K output for this sample exists.
+            out_paths = [out_dir / out_name(sid, k) for k in range(K)]
+            if args.skip_existing and all(p.exists() for p in out_paths):
                 continue
 
             # Raw centroid for un-normalization (must come from parquet before
@@ -222,20 +239,30 @@ def main() -> None:
             )
             std = float(sample["std"])
 
-            _, atoms = _sample_ve(
-                model, noiser, aa, chains, res_idx, mask, esm,
-                device=device, generator=gen, n_steps=args.n_steps,
-            )
-            atoms_np = atoms.squeeze(0).cpu().numpy().reshape(L, 4, 3)
-            atoms_real = atoms_np * std + raw_centroid  # back to parquet frame
-            np.savez(
-                out_path,
-                pred_atoms=atoms_real.astype(np.float32),
-                sample_id=sid,
-                model_tag=args.model_tag,
-            )
-            n_written += 1
-        print(f"    wrote {n_written} NPZs (skipped {len(test_ids) - n_written})")
+            for k_idx, out_path in enumerate(out_paths):
+                if args.skip_existing and out_path.exists():
+                    continue
+                if K == 1:
+                    gen = shared_gen
+                else:
+                    gen = torch.Generator(device=device).manual_seed(
+                        args.seed + sample_idx * K + k_idx
+                    )
+                _, atoms = _sample_ve(
+                    model, noiser, aa, chains, res_idx, mask, esm,
+                    device=device, generator=gen, n_steps=args.n_steps,
+                )
+                atoms_np = atoms.squeeze(0).cpu().numpy().reshape(L, 4, 3)
+                atoms_real = atoms_np * std + raw_centroid  # back to parquet frame
+                np.savez(
+                    out_path,
+                    pred_atoms=atoms_real.astype(np.float32),
+                    sample_id=sid,
+                    model_tag=args.model_tag,
+                    k_idx=k_idx,
+                )
+                n_written += 1
+        print(f"    wrote {n_written} NPZs (skipped {len(test_ids) * K - n_written})")
 
     print(f"\nScore with: python benchmarks/scripts/compute_metrics.py --model {args.model_tag}")
 

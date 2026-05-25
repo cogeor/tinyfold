@@ -1,0 +1,5 @@
+bin,n_samples,c_rmsd_k1_baseline,c_rmsd_k10_top1,c_rmsd_k10_mean,c_rmsd_k10_oracle,delta_oracle_vs_top1,delta_oracle_vs_k1,dockq_k1_baseline,dockq_k10_top1,dockq_k10_mean,dockq_k10_oracle
+clean_200_400,10,17.99,17.87,17.89,16.61,-1.26,-1.37,0.024,0.022,0.022,0.045
+clean_400_600,10,19.36,19.73,19.29,17.24,-2.49,-2.12,0.016,0.014,0.017,0.037
+clean_600_1000,10,24.05,24.05,23.43,20.94,-3.11,-3.10,0.013,0.014,0.015,0.030
+clean_ge1000,10,32.51,32.64,32.83,29.02,-3.61,-3.49,0.008,0.008,0.008,0.016
