@@ -20,20 +20,24 @@ same cliff we do. This benchmark either confirms or refutes that.
 ## How to run
 
 ```bash
-# 1. Clone at pinned commit
+# 1. Clone at pinned commit (idempotent)
 bash benchmarks/baselines/diffdock_pp/clone.sh
 
-# 2. Convert our parquet → DiffDock-PP input format (one-time)
+# 2. Build a separate Python venv with torch 2.4 + PyG (NOT the TinyFold venv).
+#    Apply Windows portability patches.
+bash benchmarks/baselines/diffdock_pp/setup_env.sh
+
+# 3. Convert our parquet -> DPP input format (one-time per split)
 python benchmarks/baselines/diffdock_pp/adapt.py \
-  --split benchmarks/splits/le200.json \
-  --out benchmarks/baselines/diffdock_pp/repo/data/our_split/
+  --split benchmarks/splits/clean_400_600.json \
+  --out benchmarks/baselines/diffdock_pp/repo/datasets/clean_400_600/
 
-# 3. Run pretrained checkpoint, writes NPZ predictions
+# 4. Run pretrained checkpoint, writes NPZ predictions (Loop 03)
 python benchmarks/baselines/diffdock_pp/run_pretrained.py \
-  --split benchmarks/splits/le200.json \
-  --out benchmarks/predictions/diffdock_pp/le200/
+  --split benchmarks/splits/clean_400_600.json \
+  --out benchmarks/predictions/diffdock_pp/clean_400_600/
 
-# 4. Score (via shared metrics path)
+# 5. Score via shared metric pipeline
 python benchmarks/scripts/compute_metrics.py --model diffdock_pp
 ```
 
