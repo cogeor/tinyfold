@@ -1,0 +1,15 @@
+{
+  "bin": "clean_le200",
+  "label_residues": "<= 200",
+  "description": "DiffDock-PP test set MINUS our checkpoints train union (Phase D + F-medium). Both models can be fairly evaluated.",
+  "test_indices": [
+    28528
+  ],
+  "test_ids": [
+    "3ww7.pdb1_1"
+  ],
+  "n_test": 1,
+  "n_available": 1,
+  "random_seed": 42,
+  "source": "DiffDock-PP DIPS test set, filtered against our train union"
+}

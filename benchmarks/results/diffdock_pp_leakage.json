@@ -1,0 +1,38 @@
+{
+  "baseline": "diffdock_pp",
+  "leakage_finding": "MAJOR: DiffDock-PP was trained on DIPS, and 141/150 (94%) of the samples in our original phase_d_bin_* test bins are in DiffDock-PP's training split. Pretrained DiffDock-PP eval on those bins is invalid.",
+  "diffdock_pp_split_sizes": {
+    "train": 40290,
+    "val": 985,
+    "test": 971
+  },
+  "our_train_size": {
+    "phase_d_le200_bin": 8600,
+    "phase_f_medium": 8000,
+    "union": 14717
+  },
+  "original_bins_per_bin_overlap": {
+    "le200":    {"ours": 30, "in_dpp_train": 29, "in_dpp_val": 0, "in_dpp_test": 1, "novel": 0},
+    "200_400":  {"ours": 30, "in_dpp_train": 29, "in_dpp_val": 1, "in_dpp_test": 0, "novel": 0},
+    "400_600":  {"ours": 30, "in_dpp_train": 30, "in_dpp_val": 0, "in_dpp_test": 0, "novel": 0},
+    "600_1000": {"ours": 30, "in_dpp_train": 27, "in_dpp_val": 1, "in_dpp_test": 2, "novel": 0},
+    "ge1000":   {"ours": 30, "in_dpp_train": 26, "in_dpp_val": 0, "in_dpp_test": 1, "novel": 3}
+  },
+  "symmetric_leakage_our_train_in_dpp_test": {
+    "phase_d_bin_le200_train_in_dpp_test": 293,
+    "f_medium_train_in_dpp_test": 170,
+    "note": "Our pretrained checkpoints saw some of DiffDock-PP's test set during training. Naive 'evaluate ours on DPP-test' is also tainted; we need to filter."
+  },
+  "remediation": {
+    "approach": "Build a NEW evaluation set: DiffDock-PP-test MINUS our train union. Both pretrained models can be fairly evaluated on the result.",
+    "available_clean_samples": 572,
+    "per_bin_available": {
+      "le200":    1,
+      "200_400":  116,
+      "400_600":  160,
+      "600_1000": 184,
+      "ge1000":   109
+    },
+    "decision": "Cap each bin at 30 samples (random.seed=42) for parity with the original bins and DiffDock-PP inference tractability. Stored as benchmarks/splits/clean_{bin}.json. The le200 bin has only 1 clean sample — not statistically meaningful; we'll report it as a footnote, not headline."
+  }
+}

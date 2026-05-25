@@ -5,7 +5,7 @@ set -euo pipefail
 
 # Pin to a specific upstream commit so re-clones are reproducible.
 # After first clone, run `git -C repo rev-parse HEAD` and paste the hash here.
-PINNED_COMMIT=""   # TODO: set after first clone
+PINNED_COMMIT="25a28900736c0730821e45265ee8e409751c358a"   # tip of main, 2024-2025 era
 REPO_URL="https://github.com/ketatam/DiffDock-PP.git"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
