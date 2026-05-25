@@ -1,0 +1,13 @@
+model,bin,n,c_rmsd_mean_A,c_rmsd_median_A,dockq_mean,dockq_median
+tinyfold_f_medium,clean_200_400,30,22.084,19.958,0.0154,0.014
+tinyfold_f_medium,clean_400_600,30,23.583,22.569,0.0153,0.0125
+tinyfold_f_medium,clean_600_1000,30,29.003,27.217,0.0104,0.01
+tinyfold_f_medium,clean_ge1000,30,38.608,37.125,0.0069,0.0064
+tinyfold_f_medium_esm,clean_200_400,30,20.73,18.856,0.0243,0.0164
+tinyfold_f_medium_esm,clean_400_600,30,21.373,20.262,0.0191,0.0147
+tinyfold_f_medium_esm,clean_600_1000,30,26.972,25.238,0.0109,0.0087
+tinyfold_f_medium_esm,clean_ge1000,30,36.511,35.101,0.0073,0.0052
+tinyfold_phase_d,clean_200_400,30,22.179,21.798,0.0197,0.0177
+tinyfold_phase_d,clean_400_600,30,24.57,23.636,0.0141,0.0118
+tinyfold_phase_d,clean_600_1000,30,29.498,28.497,0.0137,0.0113
+tinyfold_phase_d,clean_ge1000,30,38.26,37.829,0.007,0.006
