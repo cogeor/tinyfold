@@ -1,0 +1,63 @@
+# Phase F-medium: per_chain_res_idx + stratified mixed-size training, no ESM.
+# Mirrors Phase D's architecture and step budget AS CLOSELY AS POSSIBLE so
+# the only meaningful deltas vs Phase D are:
+#   1. per_chain_res_idx: true  (the positional encoding fix)
+#   2. mixed-size training pool [80, 1000] residues, 8K samples stratified
+#      across 4 bins (vs Phase D's narrow [80, 300])
+#
+# Goal: see if Phase D's small-protein performance can be approached on
+# in-distribution AND OOD generalization is materially better than D's
+# catastrophic cliff. Phase F-light (5K steps, 1500 samples) already
+# beat D on every OOD bin; this is the proper-scale follow-up.
+
+model_kind: onestep
+mode: stage1_only
+load_split: data/processed/splits/phase_f_medium.json
+
+# --- Training ---
+n_steps: 20000
+eval_every: 2000
+lr: 1.0e-04
+min_lr: 1.0e-05
+grad_accum: 1
+seed: 42
+batch_size: 16
+dynamic_batch: true
+use_bucketing: true
+n_buckets: 4
+max_tokens: 20000
+
+# --- Architecture (Phase D defaults) ---
+c_token_s1: 256
+trunk_layers: 6
+denoiser_blocks: 6
+atom_head_layers: 2
+atom_head_heads: 4
+aa_embed: learned
+
+# --- THE FIX ---
+per_chain_res_idx: true
+
+# --- Diffusion (Phase D convention) ---
+T: 50
+continuous_sigma: true
+sigma_data: 1.0
+sigma_min: 0.002
+sigma_max: 10.0
+
+# --- Other ---
+confidence_head: false
+loss_weighting: true
+augment_rotation: true
+multi_copy: 0
+self_cond_prob: 0.0
+dist_weight: 0.1
+geom_weight: 0.1
+contact_weight: 0.0
+atom_weight: 0.5
+atom_warmup_steps: 200
+one_shot_sample: true
+n_samples: 1
+eval_K_list: "1"
+
+output_dir: outputs/resfold/phase_f_medium
