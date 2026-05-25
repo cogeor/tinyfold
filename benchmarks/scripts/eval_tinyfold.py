@@ -91,10 +91,23 @@ def _sample_ve(
     device: str,
     clamp_val: float = 3.0,
     generator: torch.Generator | None = None,
+    n_steps: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Minimal VE Euler sampler, returns (centroids, atoms) both [1, L, *, 3]."""
+    """Minimal VE Euler sampler, returns (centroids, atoms) both [1, L, *, 3].
+
+    ``n_steps``: if given and smaller than the full schedule, the Karras
+    sigma grid is subsampled to ``n_steps + 1`` evenly-spaced indices
+    (sigma_max and sigma_min always preserved). ``None`` uses the full
+    schedule from the noiser. Tests Protenix-Mini's claim (arXiv:2507.11839)
+    that a 2-step ODE sampler is nearly identical to a 200-step run.
+    """
     B, L = aa_seq.shape
-    sigmas = noiser.sigmas.to(device)
+    sigmas_full = noiser.sigmas.to(device)
+    if n_steps is not None and n_steps + 1 < len(sigmas_full):
+        idx = torch.linspace(0, len(sigmas_full) - 1, n_steps + 1).long().to(device)
+        sigmas = sigmas_full[idx]
+    else:
+        sigmas = sigmas_full
     x = sigmas[0] * torch.randn(B, L, 3, device=device, generator=generator)
     x0_prev = None
     for i in range(len(sigmas) - 1):
@@ -134,6 +147,9 @@ def main() -> None:
     p.add_argument("--esm_cache_dir", default=None,
                    help="Override the config's esm_cache_dir (auto-detected by default).")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--n_steps", type=int, default=None,
+                   help="Subsample the Karras schedule to this many denoising "
+                        "steps (default: full schedule from the noiser).")
     p.add_argument("--skip_existing", action="store_true",
                    help="Skip samples whose NPZ already exists.")
     args = p.parse_args()
@@ -149,6 +165,8 @@ def main() -> None:
 
     noiser = _build_noiser(cfg, device=device)
     print(f"Noiser: VE Karras, T={cfg.get('T')}, sigma range [{cfg.get('sigma_min')}, {cfg.get('sigma_max')}]")
+    if args.n_steps is not None:
+        print(f"  Sampler: {args.n_steps}-step subsampled Karras (Protenix-Mini-style)")
 
     esm_cache = args.esm_cache_dir or cfg.get("esm_cache_dir")
     per_chain = bool(cfg.get("per_chain_res_idx", False))
@@ -206,7 +224,7 @@ def main() -> None:
 
             _, atoms = _sample_ve(
                 model, noiser, aa, chains, res_idx, mask, esm,
-                device=device, generator=gen,
+                device=device, generator=gen, n_steps=args.n_steps,
             )
             atoms_np = atoms.squeeze(0).cpu().numpy().reshape(L, 4, 3)
             atoms_real = atoms_np * std + raw_centroid  # back to parquet frame
