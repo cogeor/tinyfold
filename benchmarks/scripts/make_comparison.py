@@ -16,7 +16,10 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SPLITS = ["le200", "200_400", "400_600", "600_1000", "ge1000"]
+SPLITS = [
+    "le200", "200_400", "400_600", "600_1000", "ge1000",
+    "clean_le200", "clean_200_400", "clean_400_600", "clean_600_1000", "clean_ge1000",
+]
 
 
 def _agg(values: list[float]) -> tuple[float, float]:

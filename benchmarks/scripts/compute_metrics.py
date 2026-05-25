@@ -26,7 +26,10 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from tinyfold.model.metrics.dockq import compute_dockq  # noqa: E402
 
 
-SPLITS = ["le200", "200_400", "400_600", "600_1000", "ge1000"]
+SPLITS = [
+    "le200", "200_400", "400_600", "600_1000", "ge1000",
+    "clean_le200", "clean_200_400", "clean_400_600", "clean_600_1000", "clean_ge1000",
+]
 
 
 def _kabsch_align(pred: np.ndarray, gt: np.ndarray, valid: np.ndarray) -> np.ndarray:
@@ -100,6 +103,17 @@ def _load_gt(table, sample_id: str, _id_cache: dict | None = None) -> dict | Non
     return {"atoms": atoms, "aa": aa, "chains": chains}
 
 
+_NAN_RESULT = {
+    "c_rmsd_raw_A": float("nan"),
+    "c_rmsd_aligned_A": float("nan"),
+    "interface_rmsd_ca_A": float("nan"),
+    "dockq": None,
+    "fnat": None,
+    "irms_dockq_A": None,
+    "lrms_dockq_A": None,
+}
+
+
 def score_one(
     pred_atoms: np.ndarray,
     gt_atoms: np.ndarray,
@@ -109,8 +123,11 @@ def score_one(
     """Run the full metric suite on one sample.
 
     All inputs in real Angstroms (NOT normalized). Returns a flat dict ready
-    to write as a CSV row.
+    to write as a CSV row. Returns NaN-valued metrics when ``pred_atoms``
+    contains NaN (used by external baselines that mark divergent predictions).
     """
+    if not np.isfinite(pred_atoms).all():
+        return dict(_NAN_RESULT)
     aligned = _kabsch_align(pred_atoms, gt_atoms, valid=np.ones(len(aa), dtype=bool))
     c_rmsd_raw = _complex_rmsd_atoms(pred_atoms, gt_atoms)
     c_rmsd_aligned = _complex_rmsd_atoms(aligned, gt_atoms)
