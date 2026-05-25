@@ -89,3 +89,7 @@ notes/
 
 # Outputs archive (binaries kept on disk, not in git)
 outputs/_archive/
+
+# Benchmarks: vendored upstream repos and large prediction NPZs stay local
+benchmarks/baselines/*/repo/
+benchmarks/predictions/
