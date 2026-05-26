@@ -604,6 +604,30 @@ def parse_args():
                              "encoding makes the model size-dependent — chain B's "
                              "positional features change with chain A's length. "
                              "See scripts/test_positional_invariance.py.")
+    parser.add_argument("--crop_strategy", type=str, default="none",
+                        choices=["none", "contiguous", "spatial", "interface"],
+                        help="Training-time crop strategy. 'none' = no crop "
+                             "(legacy behavior). 'interface' = bias center "
+                             "toward GT contact residues (recommended for PPI; "
+                             "see src/tinyfold/training/cropping.py).")
+    parser.add_argument("--crop_size", type=int, default=256,
+                        help="Token budget per cropped sample. With 12M params, "
+                             "256 gives ~46k params/token (vs 12k uncropped, vs "
+                             "AF-Multimer's 242k cropped).")
+    parser.add_argument("--crop_interface_prob", type=float, default=0.8,
+                        help="P(center on interface) for InterfaceCrop. The "
+                             "remaining 1-p crops are uniform random so non-"
+                             "interface regions still receive proportional signal.")
+    parser.add_argument("--relpos_bias", action="store_true",
+                        help="Add AF-M-style relative-position bias (clipped to "
+                             "±32 plus same-chain bit) to trunk + denoiser "
+                             "attention. Combined with --crop_strategy, this is "
+                             "the v2 fix for the cliff (see notes/phase_d_"
+                             "stratified_finding.md and the test_positional_"
+                             "invariance.py diagnostic).")
+    parser.add_argument("--relpos_clip", type=int, default=32,
+                        help="Clip distance for the relpos bucket (default 32, "
+                             "AF-M convention).")
     parser.add_argument("--load_split", type=str, default=None,
                         help="Load train/test split from JSON (for Stage 2 to reuse Stage 1 split)")
     parser.add_argument("--batch_size", type=int, default=64)
@@ -1410,6 +1434,8 @@ def _run_training(args, progress):
             c_token=args.c_token_s1,
             trunk_layers=args.trunk_layers,
             denoiser_blocks=args.denoiser_blocks,
+            relpos_bias=getattr(args, "relpos_bias", False),
+            relpos_clip=getattr(args, "relpos_clip", 32),
             atom_head_layers=args.atom_head_layers,
             atom_head_heads=args.atom_head_heads,
             n_timesteps=args.T,
@@ -1537,6 +1563,25 @@ def _run_training(args, progress):
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=0.0)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.n_steps, eta_min=args.min_lr)
 
+    # Build the training-time cropper. Eval paths never crop.
+    if getattr(args, "crop_strategy", "none") != "none":
+        from tinyfold.training.cropping import build_cropper
+        cropper = build_cropper(
+            args.crop_strategy,
+            interface_prob=args.crop_interface_prob,
+            interface_cutoff=8.0,
+        )
+        # Own RNG for crop sampling — seeded off args.seed so a rerun with the
+        # same seed produces the same crop sequence. CPU generator: croppers
+        # operate on CPU tensors (samples are preloaded in main memory).
+        crop_rng = torch.Generator(device="cpu").manual_seed(args.seed + 1)
+        logger.log(f"Cropper: {args.crop_strategy} @ crop_size={args.crop_size}"
+                   + (f" interface_prob={args.crop_interface_prob}"
+                      if args.crop_strategy == "interface" else ""))
+    else:
+        cropper = None
+        crop_rng = None
+
     # Training loop
     logger.log(f"Training for {args.n_steps} steps...")
     logger.log("=" * 70)
@@ -1563,7 +1608,11 @@ def _run_training(args, progress):
                 current_batch_size = args.batch_size
 
             batch_samples = [train_samples[idx] for idx in batch_indices]
-            batch = collate_batch(batch_samples, device)
+            batch = collate_batch(
+                batch_samples, device,
+                cropper=cropper, crop_size=args.crop_size if cropper is not None else None,
+                rng=crop_rng,
+            )
 
             # Sample noise levels and add noise to centroids (for Stage 1)
             noise = torch.randn_like(batch['centroids'])

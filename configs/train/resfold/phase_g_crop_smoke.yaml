@@ -1,0 +1,67 @@
+# Phase G smoke: F-medium-ESM recipe + InterfaceCrop(256) + relpos_bias.
+#
+# Purpose: prove the cropping + relpos plumbing trains for 200 steps without
+# blowing up. Loss should be finite, DockQ should be computed at the first
+# eval, gradients should flow. NOT a result run — that's phase_g_full.yaml.
+#
+# Differences from phase_f_medium_esm.yaml:
+#   + crop_strategy=interface, crop_size=256 (training token budget)
+#   + relpos_bias=true (AF-M-style relative-position bias in trunk + denoiser)
+#   - n_steps=200 (smoke), eval_every=100
+#   - batch_size=8 (cropping shrinks per-sample tokens; can fit smaller batch)
+
+model_kind: onestep
+mode: stage1_only
+load_split: data/processed/splits/phase_f_medium.json
+
+# --- Training (smoke) ---
+n_steps: 200
+eval_every: 100
+lr: 1.0e-04
+min_lr: 1.0e-05
+grad_accum: 1
+seed: 42
+batch_size: 8
+dynamic_batch: false
+use_bucketing: false
+
+# --- Architecture (same as F-medium-ESM) ---
+c_token_s1: 256
+trunk_layers: 6
+denoiser_blocks: 6
+atom_head_layers: 2
+atom_head_heads: 4
+
+aa_embed: esm2_35M
+per_chain_res_idx: true
+
+# --- NEW for Phase G ---
+crop_strategy: interface
+crop_size: 256
+crop_interface_prob: 0.8
+relpos_bias: true
+relpos_clip: 32
+
+# --- Diffusion ---
+T: 50
+continuous_sigma: true
+sigma_data: 1.0
+sigma_min: 0.002
+sigma_max: 10.0
+
+# --- Loss / sampler ---
+confidence_head: false
+loss_weighting: true
+augment_rotation: true
+multi_copy: 0
+self_cond_prob: 0.0
+dist_weight: 0.1
+geom_weight: 0.1
+contact_weight: 0.0
+atom_weight: 0.5
+atom_warmup_steps: 100
+one_shot_sample: true
+n_samples: 1
+eval_K_list: "1"
+
+output_dir: outputs/resfold/phase_g_crop_smoke

@@ -131,16 +131,41 @@ def load_sample(
     return out
 
 
-def collate_batch(samples: List[Dict], device: torch.device) -> Dict[str, Any]:
+def collate_batch(
+    samples: List[Dict],
+    device: torch.device,
+    cropper: Optional[Any] = None,
+    crop_size: Optional[int] = None,
+    rng: Optional[torch.Generator] = None,
+) -> Dict[str, Any]:
     """Collate residue-level samples into a padded batch.
 
     Args:
         samples: List of sample dicts from load_sample
         device: Target device
+        cropper: Optional ``tinyfold.training.cropping.Cropper``. Each sample
+            with ``n_res > crop_size`` is cropped before padding so the model
+            never sees more than ``crop_size`` tokens per gradient step. The
+            global ``res_idx`` is preserved by the cropper so positional
+            encoding stays consistent. Samples that already fit pass through.
+        crop_size: Token budget per sample when ``cropper`` is set. Ignored
+            when ``cropper`` is None.
+        rng: torch.Generator used by stochastic croppers. Stateful — pass a
+            generator owned by the training loop so crops are reproducible
+            from a seed. Ignored when ``cropper`` is None.
 
     Returns:
         Batched dict with padded tensors
     """
+    if cropper is not None:
+        if crop_size is None:
+            raise ValueError("crop_size must be provided when cropper is set")
+        if rng is None:
+            # Stochastic croppers REQUIRE an RNG; a fresh one each call would
+            # silently break reproducibility, so fail loudly.
+            raise ValueError("rng must be provided when cropper is set")
+        samples = [cropper(s, crop_size, rng) for s in samples]
+
     B = len(samples)
     max_res = max(s['n_res'] for s in samples)
     max_atoms = max_res * 4

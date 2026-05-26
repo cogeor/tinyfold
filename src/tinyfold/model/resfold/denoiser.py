@@ -20,6 +20,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from .base import BaseDecoder, sinusoidal_pos_enc
+from .relpos import RelposBias
 
 
 # =============================================================================
@@ -53,6 +54,113 @@ class SwiGLU(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         return self.dropout(self.w3(F.silu(self.w1(x)) * self.w2(x)))
+
+
+# =============================================================================
+# Trunk encoder layer with optional attention bias
+# =============================================================================
+
+
+class TrunkEncoderLayer(nn.Module):
+    """Pre-norm transformer encoder layer that accepts an attention bias.
+
+    Mirrors ``nn.TransformerEncoderLayer(norm_first=True)`` but uses SDPA so a
+    per-(batch, head, i, j) bias from ``RelposBias`` can be added to the
+    attention logits before softmax. We use this instead of the stock PyTorch
+    layer ONLY when ``relpos_bias=True``; the legacy code path (no bias) keeps
+    the original ``nn.TransformerEncoderLayer`` for byte-identical
+    checkpoint compatibility with Phase D/F runs.
+
+    NOTE: Parameter layout differs from ``nn.MultiheadAttention``
+    (separate q/k/v projections instead of bundled ``in_proj_weight``).
+    Phase G is a fresh retrain, so this is fine.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        dim_feedforward: int,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        if d_model % n_heads != 0:
+            raise ValueError(f"d_model={d_model} not divisible by n_heads={n_heads}")
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.head_dim = d_model // n_heads
+        self.dropout_p = dropout
+
+        self.norm1 = nn.LayerNorm(d_model)
+        self.q_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model, d_model)
+        self.v_proj = nn.Linear(d_model, d_model)
+        self.out_proj = nn.Linear(d_model, d_model)
+
+        self.norm2 = nn.LayerNorm(d_model)
+        # Match nn.TransformerEncoderLayer's GELU FFN structure so the
+        # behaviour is otherwise identical when attn_bias=None.
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, dim_feedforward),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim_feedforward, d_model),
+            nn.Dropout(dropout),
+        )
+
+    def forward(
+        self,
+        x: Tensor,
+        src_key_padding_mask: Optional[Tensor] = None,  # [B, L] bool, True = pad
+        attn_bias: Optional[Tensor] = None,             # [B, n_heads, L, L]
+    ) -> Tensor:
+        B, L, _ = x.shape
+
+        # Pre-norm attention
+        h = self.norm1(x)
+        q = self.q_proj(h).view(B, L, self.n_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(h).view(B, L, self.n_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(h).view(B, L, self.n_heads, self.head_dim).transpose(1, 2)
+
+        # Combine padding mask + bias into a single float attn_mask for SDPA.
+        # SDPA contract: float mask is added to attention logits before softmax
+        # (so -inf masks out, 0 is no-op).
+        if src_key_padding_mask is not None or attn_bias is not None:
+            attn_mask = torch.zeros(B, self.n_heads, L, L, device=x.device, dtype=q.dtype)
+            if attn_bias is not None:
+                attn_mask = attn_mask + attn_bias.to(q.dtype)
+            if src_key_padding_mask is not None:
+                # Mask out columns where key is padded.
+                neg_inf = torch.finfo(q.dtype).min
+                pad_cols = src_key_padding_mask.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, L]
+                attn_mask = attn_mask.masked_fill(pad_cols, neg_inf)
+        else:
+            attn_mask = None
+
+        out = F.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attn_mask,
+            dropout_p=self.dropout_p if self.training else 0.0,
+        )
+        out = out.transpose(1, 2).reshape(B, L, self.d_model)
+        x = x + self.out_proj(out)
+
+        # Pre-norm FFN
+        x = x + self.ffn(self.norm2(x))
+        return x
+
+
+class TrunkEncoder(nn.Module):
+    """Stack of ``TrunkEncoderLayer`` that broadcasts ``attn_bias`` to all layers."""
+
+    def __init__(self, layer_factory, n_layers: int):
+        super().__init__()
+        self.layers = nn.ModuleList([layer_factory() for _ in range(n_layers)])
+
+    def forward(self, x, src_key_padding_mask=None, attn_bias=None):
+        for layer in self.layers:
+            x = layer(x, src_key_padding_mask=src_key_padding_mask, attn_bias=attn_bias)
+        return x
 
 
 # =============================================================================
@@ -99,10 +207,14 @@ class ResidueEncoder(nn.Module):
         dropout: float = 0.0,
         aa_embed: str = "learned",
         esm_dim: Optional[int] = None,
+        relpos_bias: bool = False,
+        relpos_clip: int = 32,
     ):
         super().__init__()
         self.c_token = c_token
         self.aa_embed_mode = aa_embed
+        self.relpos_bias_enabled = bool(relpos_bias)
+        self.n_heads = n_heads
 
         if aa_embed == "learned":
             # Bit-for-bit identical to the historical path.
@@ -132,18 +244,35 @@ class ResidueEncoder(nn.Module):
         input_dim = c_token + (c_token // 4) + c_token
         self.input_proj = nn.Linear(input_dim, c_token)
 
-        # Transformer
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=c_token,
-            nhead=n_heads,
-            dim_feedforward=c_token * 4,
-            dropout=dropout,
-            batch_first=True,
-            norm_first=True,
-        )
-        self.transformer = nn.TransformerEncoder(
-            encoder_layer, num_layers=n_layers, enable_nested_tensor=False
-        )
+        # Transformer. Two backends:
+        # - relpos_bias=False (legacy / Phase D-F path): nn.TransformerEncoder.
+        #   Byte-identical to historical runs; old checkpoints load cleanly.
+        # - relpos_bias=True (Phase G+): custom TrunkEncoder that accepts an
+        #   additive [B, n_heads, L, L] attention bias from RelposBias.
+        if self.relpos_bias_enabled:
+            self.transformer = TrunkEncoder(
+                lambda: TrunkEncoderLayer(
+                    d_model=c_token,
+                    n_heads=n_heads,
+                    dim_feedforward=c_token * 4,
+                    dropout=dropout,
+                ),
+                n_layers=n_layers,
+            )
+            self.relpos = RelposBias(n_heads=n_heads, clip=relpos_clip)
+        else:
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=c_token,
+                nhead=n_heads,
+                dim_feedforward=c_token * 4,
+                dropout=dropout,
+                batch_first=True,
+                norm_first=True,
+            )
+            self.transformer = nn.TransformerEncoder(
+                encoder_layer, num_layers=n_layers, enable_nested_tensor=False
+            )
+            self.relpos = None
 
         self.output_norm = nn.LayerNorm(c_token)
 
@@ -189,7 +318,11 @@ class ResidueEncoder(nn.Module):
 
         # Apply transformer
         attn_mask = ~mask if mask is not None else None
-        h = self.transformer(h, src_key_padding_mask=attn_mask)
+        if self.relpos_bias_enabled:
+            attn_bias = self.relpos(res_idx, chain_ids)  # [B, n_heads, L, L]
+            h = self.transformer(h, src_key_padding_mask=attn_mask, attn_bias=attn_bias)
+        else:
+            h = self.transformer(h, src_key_padding_mask=attn_mask)
 
         return self.output_norm(h)
 
@@ -236,6 +369,7 @@ class DiffusionTransformerBlock(nn.Module):
         x: Tensor,           # [B, L, c_token]
         cond: Tensor,        # [B, L, c_token] timestep conditioning
         mask: Optional[Tensor] = None,  # [B, L] valid token mask
+        attn_bias: Optional[Tensor] = None,  # [B, n_heads, L, L] additive bias
     ) -> Tensor:
         B, L, _ = x.shape
 
@@ -246,12 +380,21 @@ class DiffusionTransformerBlock(nn.Module):
         k = self.k_proj(h).view(B, L, self.n_heads, self.head_dim).transpose(1, 2)
         v = self.v_proj(h).view(B, L, self.n_heads, self.head_dim).transpose(1, 2)
 
-        # Use scaled_dot_product_attention (FlashAttention when available)
-        # Convert mask to attention mask format: [B, 1, 1, L] for broadcasting
-        attn_mask = None
-        if mask is not None:
-            # SDPA expects True = attend, False = mask out (opposite of key_padding_mask)
-            attn_mask = mask.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, L]
+        # SDPA mask. Three sub-cases:
+        # 1) Neither mask nor bias: attn_mask=None (FlashAttention fast path).
+        # 2) Mask only: bool [B, 1, 1, L] — legacy fast path preserved.
+        # 3) Bias (with or without mask): float [B, n_heads, L, L]. Padding
+        #    is encoded as -inf in the same float tensor so SDPA sees one
+        #    combined argument.
+        if attn_bias is None:
+            attn_mask = mask.unsqueeze(1).unsqueeze(2) if mask is not None else None
+        else:
+            attn_mask = attn_bias.to(q.dtype)
+            if mask is not None:
+                neg_inf = torch.finfo(q.dtype).min
+                # mask: True = valid; we want -inf where key is INvalid.
+                pad_cols = (~mask).unsqueeze(1).unsqueeze(2)  # [B, 1, 1, L]
+                attn_mask = attn_mask.masked_fill(pad_cols, neg_inf)
 
         out = F.scaled_dot_product_attention(
             q, k, v,
@@ -283,6 +426,8 @@ class DiffusionTransformer(nn.Module):
         n_heads: int = 8,
         expansion: int = 2,
         dropout: float = 0.0,
+        relpos_bias: bool = False,
+        relpos_clip: int = 32,
     ):
         super().__init__()
         self.blocks = nn.ModuleList([
@@ -290,15 +435,29 @@ class DiffusionTransformer(nn.Module):
             for _ in range(n_blocks)
         ])
         self.final_norm = nn.LayerNorm(c_token)
+        # Single shared bias module across blocks (AF-M convention): the
+        # relative-position relationship is a property of the input pair,
+        # not of the block. Saves params vs per-block bias.
+        self.relpos = RelposBias(n_heads=n_heads, clip=relpos_clip) if relpos_bias else None
 
     def forward(
         self,
         tokens: Tensor,
         time_cond: Tensor,
         mask: Optional[Tensor] = None,
+        res_idx: Optional[Tensor] = None,    # [B, L] long, required when relpos is enabled
+        chain_ids: Optional[Tensor] = None,  # [B, L] long, required when relpos is enabled
     ) -> Tensor:
+        if self.relpos is not None:
+            assert res_idx is not None and chain_ids is not None, (
+                "DiffusionTransformer was built with relpos_bias=True; "
+                "forward() requires res_idx and chain_ids."
+            )
+            attn_bias = self.relpos(res_idx, chain_ids)  # [B, n_heads, L, L]
+        else:
+            attn_bias = None
         for block in self.blocks:
-            tokens = block(tokens, time_cond, mask)
+            tokens = block(tokens, time_cond, mask, attn_bias=attn_bias)
         return self.final_norm(tokens)
 
 

@@ -56,6 +56,8 @@ def _load(checkpoint_path: Path, device: str) -> tuple[ResFoldOneStep, dict]:
         aa_embed=cfg.get("aa_embed", "learned"),
         confidence_head=cfg.get("confidence_head", False),
         sigma_data=cfg.get("sigma_data", 1.0),
+        relpos_bias=cfg.get("relpos_bias", False),
+        relpos_clip=cfg.get("relpos_clip", 32),
     ).to(device)
     sd = torch.load(checkpoint_path, map_location=device)
     if isinstance(sd, dict) and "model_state_dict" in sd:

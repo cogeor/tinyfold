@@ -131,6 +131,8 @@ class ResFoldOneStep(BaseDecoder):
         esm_dim: Optional[int] = None,
         confidence_head: bool = False,
         sigma_data: float = 1.0,
+        relpos_bias: bool = False,
+        relpos_clip: int = 32,
     ):
         super().__init__()
         self.c_token = c_token
@@ -142,6 +144,7 @@ class ResFoldOneStep(BaseDecoder):
         # Angstroms and only centered.
         self.sigma_data = float(sigma_data)
         self.aa_embed_mode = aa_embed
+        self.relpos_bias_enabled = bool(relpos_bias)
 
         # === TRUNK (sequence-only, runs once) ===
         self.trunk = ResidueEncoder(
@@ -153,6 +156,8 @@ class ResFoldOneStep(BaseDecoder):
             dropout=dropout,
             aa_embed=aa_embed,
             esm_dim=esm_dim,
+            relpos_bias=relpos_bias,
+            relpos_clip=relpos_clip,
         )
 
         # === DENOISER (per-step) ===
@@ -169,6 +174,8 @@ class ResFoldOneStep(BaseDecoder):
             n_blocks=denoiser_blocks,
             n_heads=denoiser_heads,
             dropout=dropout,
+            relpos_bias=relpos_bias,
+            relpos_clip=relpos_clip,
         )
 
         # === HEADS (parallel) ===
@@ -226,14 +233,24 @@ class ResFoldOneStep(BaseDecoder):
         cond: Tensor,
         mask: Optional[Tensor] = None,
         x0_prev: Optional[Tensor] = None,
+        res_idx: Optional[Tensor] = None,
+        chain_ids: Optional[Tensor] = None,
     ) -> Tensor:
-        """Run the diffusion transformer and return final tokens [B, L, c_token]."""
+        """Run the diffusion transformer and return final tokens [B, L, c_token].
+
+        ``res_idx`` and ``chain_ids`` are forwarded to ``diff_transformer`` so
+        its (optional) relpos bias can index into them. Required when the
+        model was built with ``relpos_bias=True``; ignored otherwise.
+        """
         L = x_t.shape[1]
         tokens = self.coord_embed(x_t) + trunk_tokens
         if x0_prev is not None:
             tokens = tokens + self.self_cond_embed(x0_prev)
         cond_per_token = cond.unsqueeze(1).expand(-1, L, -1)
-        return self.diff_transformer(tokens, cond_per_token, mask)
+        return self.diff_transformer(
+            tokens, cond_per_token, mask,
+            res_idx=res_idx, chain_ids=chain_ids,
+        )
 
     def _heads_edm(
         self,
@@ -296,7 +313,10 @@ class ResFoldOneStep(BaseDecoder):
         c_skip, c_out, c_in, c_noise = self._edm_coefficients(sigma)
         trunk_tokens = self.trunk(aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed)
         cond = self._embed_c_noise(c_noise)
-        denoiser_tokens = self._denoiser_tokens(c_in * x_t, trunk_tokens, cond, mask, x0_prev)
+        denoiser_tokens = self._denoiser_tokens(
+            c_in * x_t, trunk_tokens, cond, mask, x0_prev,
+            res_idx=res_idx, chain_ids=chain_ids,
+        )
         centroid_pred, atoms_pred = self._heads_edm(
             denoiser_tokens, x_t, c_skip, c_out, mask
         )
@@ -321,7 +341,10 @@ class ResFoldOneStep(BaseDecoder):
             mask = torch.ones(B, L, dtype=torch.bool, device=x_t.device)
         c_skip, c_out, c_in, c_noise = self._edm_coefficients(sigma)
         cond = self._embed_c_noise(c_noise)
-        denoiser_tokens = self._denoiser_tokens(c_in * x_t, trunk_tokens, cond, mask, x0_prev)
+        denoiser_tokens = self._denoiser_tokens(
+            c_in * x_t, trunk_tokens, cond, mask, x0_prev,
+            res_idx=res_idx, chain_ids=chain_ids,
+        )
         centroid_pred, atoms_pred = self._heads_edm(
             denoiser_tokens, x_t, c_skip, c_out, mask
         )
@@ -349,7 +372,10 @@ class ResFoldOneStep(BaseDecoder):
             mask = torch.ones(B, L, dtype=torch.bool, device=x_t.device)
         trunk_tokens = self.trunk(aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed)
         cond = self.time_embed(t)
-        denoiser_tokens = self._denoiser_tokens(x_t, trunk_tokens, cond, mask, None)
+        denoiser_tokens = self._denoiser_tokens(
+            x_t, trunk_tokens, cond, mask, None,
+            res_idx=res_idx, chain_ids=chain_ids,
+        )
         F_centroid = self.centroid_proj(denoiser_tokens)
         atom_offsets = self.atom_head(denoiser_tokens, mask)
         atoms_pred = F_centroid.unsqueeze(2) + atom_offsets
