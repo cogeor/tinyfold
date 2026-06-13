@@ -48,6 +48,8 @@ data/processed/
 *.parquet
 *.tar.gz
 *.zip
+*.npy
+*.bak
 
 # Keep data directory structure
 !data/.gitkeep
