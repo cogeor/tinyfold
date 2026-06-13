@@ -10,11 +10,6 @@ class ShowcaseApp {
     }
 
     setupEvents() {
-        document.getElementById("split-filter").addEventListener("change", () => {
-            this.applyFilter();
-            this.renderList();
-        });
-
         document.querySelectorAll("[data-style]").forEach((btn) => {
             btn.addEventListener("click", () => {
                 document.querySelectorAll("[data-style]").forEach((b) => b.classList.remove("active"));
@@ -27,23 +22,30 @@ class ShowcaseApp {
     }
 
     async loadData() {
-        const res = await fetch("/assets/showcase_samples.json");
-        const payload = await res.json();
-        this.data = payload.samples || [];
+        try {
+            const res = await fetch("/assets/showcase_samples.json");
+            if (!res.ok) throw new Error(`HTTP ${res.status} fetching showcase data`);
+            const payload = await res.json();
+            this.data = payload.samples || [];
+            if (this.data.length === 0) throw new Error("showcase_samples.json has no samples");
 
-        document.getElementById("meta").textContent =
-            `${this.data.length} samples loaded`;
+            document.getElementById("meta").textContent =
+                `${this.data.length} held-out test complexes${payload.model ? ` · ${payload.model}` : ""}`;
 
-        this.applyFilter();
-        this.renderList();
-        if (this.filtered.length > 0) {
+            this.applyFilter();
+            this.renderList();
             this.select(this.filtered[0].sample_id);
+        } catch (err) {
+            document.getElementById("meta").textContent = "";
+            document.getElementById("info").textContent =
+                `Could not load showcase data: ${err.message}. ` +
+                `Regenerate with scripts/web/build_showcase.py, then reload.`;
+            console.error("loadData failed:", err);
         }
     }
 
     applyFilter() {
-        const split = document.getElementById("split-filter").value;
-        this.filtered = split === "all" ? this.data : this.data.filter((s) => s.split === split);
+        this.filtered = this.data;
     }
 
     renderList() {
@@ -51,10 +53,12 @@ class ShowcaseApp {
         list.innerHTML = this.filtered
             .map((s) => {
                 const selected = s.sample_id === this.selectedId ? "selected" : "";
+                const dockq = s.dockq != null ? s.dockq.toFixed(3) : "—";
+                const band = s.capri || "";
                 return `
                     <div class="sample ${selected}" data-id="${s.sample_id}">
-                        <div class="top">${s.sample_id}</div>
-                        <div class="bottom">${s.split} | RMSD ${s.rmsd.toFixed(2)} A | ${s.n_residues} residues</div>
+                        <div class="top">${s.sample_id} <span class="badge ${band}">${band}</span></div>
+                        <div class="bottom">DockQ ${dockq} | C-RMSD ${s.c_rmsd != null ? s.c_rmsd.toFixed(1) : "—"} Å | ${s.n_residues} res</div>
                     </div>
                 `;
             })
@@ -72,8 +76,14 @@ class ShowcaseApp {
         this.selectedId = sample.sample_id;
         this.renderList();
         this.viewer.load(sample.ground_truth_pdb, sample.prediction_pdb);
-        document.getElementById("info").textContent =
-            `${sample.sample_id} | split=${sample.split} | RMSD=${sample.rmsd.toFixed(2)} A | inference=${sample.inference_time.toFixed(3)} s`;
+        const dq = sample.dockq != null ? sample.dockq.toFixed(3) : "—";
+        const cr = sample.c_rmsd != null ? `${sample.c_rmsd.toFixed(2)} Å` : "—";
+        document.getElementById("info").innerHTML =
+            `<b>${sample.sample_id}</b> · held-out test · ` +
+            `<b>DockQ ${dq}</b> (${sample.capri || "—"}) · C-RMSD ${cr} · ` +
+            `${sample.n_residues} residues · ${sample.inference_time.toFixed(3)}s/sample &nbsp; ` +
+            `<span class="legend"><span class="sw gt"></span>ground truth ` +
+            `<span class="sw pred"></span>prediction</span>`;
     }
 }
 

@@ -127,6 +127,48 @@ body {
     font-size: 0.9rem;
 }
 
+.blurb {
+    margin: 0 0 16px;
+    font-size: 0.8rem;
+    line-height: 1.45;
+    color: #45506a;
+    background: #eef3fb;
+    border: 1px solid #dde4ef;
+    border-radius: 8px;
+    padding: 10px;
+}
+
+.badge {
+    display: inline-block;
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 1px 6px;
+    border-radius: 999px;
+    vertical-align: middle;
+}
+.badge.high     { background: #d3f9d8; color: #2b8a3e; }
+.badge.medium   { background: #d0ebff; color: #1971c2; }
+.badge.acceptable { background: #fff3bf; color: #e67700; }
+.badge.incorrect  { background: #ffe3e3; color: #c92a2a; }
+
+.legend {
+    color: #5a6475;
+    font-size: 0.82rem;
+    white-space: nowrap;
+}
+.legend .sw {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    margin: 0 4px 0 10px;
+    vertical-align: middle;
+}
+.legend .sw.gt   { background: #1c7ed6; }
+.legend .sw.pred { background: #d94841; }
+
 @media (max-width: 900px) {
     .layout {
         grid-template-columns: 1fr;
