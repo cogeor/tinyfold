@@ -8,7 +8,11 @@ Provides:
 
 from tinyfold.data.datasets.ppi_dataset import PPIDataset
 from tinyfold.data.collate import collate_ppi
-from tinyfold.data.split import (
+# Canonical split implementation lives in tinyfold.training.data_split (a strict
+# superset of the old data/split.py: adds stratified test sampling + size bins,
+# random-path indices are byte-identical). Re-exported here so the public
+# `tinyfold.data` API is unchanged.
+from tinyfold.training.data_split import (
     DataSplitConfig,
     get_train_test_indices,
     get_split_info,

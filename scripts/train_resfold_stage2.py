@@ -67,7 +67,7 @@ from tinyfold.model.losses import (
     GeometryLoss,
 )
 
-from tinyfold.data.split import (
+from tinyfold.training.data_split import (
     DataSplitConfig, get_train_test_indices, get_split_info, save_split, load_split,
 )
 from tinyfold.model.metrics.dockq import compute_dockq
