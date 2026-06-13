@@ -158,7 +158,7 @@ def test_eval_only_k5_integration(tmp_path: Path) -> None:
     Asserts ``oracle@5 <= mean@5`` (oracle is a per-target min over the same
     pool the mean averages) and that the ranked@5 token is present.
     """
-    cfg = REPO_ROOT / "configs" / "train" / "resfold" / "phase_c_n8600.yaml"
+    cfg = REPO_ROOT / "configs" / "train" / "resfold" / "_archive" / "phase_c_n8600.yaml"
     out = tmp_path / "multisample_smoke"
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
