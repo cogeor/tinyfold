@@ -18,14 +18,8 @@ import pytest
 import torch
 import torch.nn as nn
 
-# Make ``scripts/`` importable so the test can pull in ``sample_centroids_ve``.
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPTS_DIR = REPO_ROOT / "scripts"
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-
-from train_resfold import sample_centroids_ve  # noqa: E402
-from tinyfold.model.diffusion import VENoiser, create_schedule  # noqa: E402
+from tinyfold.inference import sample_centroids_ve
+from tinyfold.model.diffusion import VENoiser, create_schedule
 
 
 # ---------------------------------------------------------------------------

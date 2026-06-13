@@ -29,16 +29,11 @@ import numpy as np
 import torch
 import pyarrow.parquet as pq
 
-# scripts/ is on sys.path[0] when run as `python scripts/web/...`? No — the
-# entry dir is scripts/web. Add scripts/ so `train_resfold` imports cleanly.
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from train_resfold import sample_k_centroids  # noqa: E402
-
-from tinyfold.training import load_sample_raw, collate_batch  # noqa: E402
-from tinyfold.model.resfold.onestep import ResFoldOneStep  # noqa: E402
-from tinyfold.model.diffusion import KarrasSchedule, VENoiser  # noqa: E402
-from tinyfold.model.geometry import kabsch_rigid  # noqa: E402
+from tinyfold.inference import sample_k_centroids
+from tinyfold.training import load_sample_raw, collate_batch
+from tinyfold.model.resfold.onestep import ResFoldOneStep
+from tinyfold.model.diffusion import KarrasSchedule, VENoiser
+from tinyfold.model.geometry import kabsch_rigid
 from tinyfold.model.metrics import compute_dockq  # noqa: E402
 from tinyfold.model.losses import compute_c_rmsd, compute_rmse  # noqa: E402
 

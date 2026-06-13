@@ -26,10 +26,7 @@ import numpy as np
 import torch
 import pyarrow.parquet as pq
 
-# scripts/ is on sys.path[0] when run as `python scripts/...`, so train_resfold
-# and its module-level helpers import cleanly (argparse only runs under main).
-from train_resfold import sample_k_centroids
-
+from tinyfold.inference import sample_k_centroids
 from tinyfold.training import load_sample_raw, collate_batch
 from tinyfold.model.resfold.onestep import ResFoldOneStep
 from tinyfold.model.diffusion import KarrasSchedule, VENoiser
