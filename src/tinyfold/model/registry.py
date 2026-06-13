@@ -7,7 +7,7 @@ Usage:
     from tinyfold.model.registry import create_model, list_models
     from tinyfold.model.registry import create_schedule, create_noiser
 
-    model = create_model("attention_v2", h_dim=128, n_layers=6)
+    model = create_model("resfold_onestep")
     schedule = create_schedule("cosine", T=50)
     noiser = create_noiser("gaussian", schedule)
 """
@@ -18,12 +18,7 @@ import importlib
 
 # Lazy imports to avoid circular dependencies
 _MODEL_CLASSES: Dict[str, str] = {
-    # Archive models (deprecated but kept for backward compatibility)
-    "attention_v2": "tinyfold.model.archive.attention_v2.AttentionDiffusionV2",
-    "hierarchical": "tinyfold.model.archive.hierarchical.HierarchicalDecoder",
-    "pairformer": "tinyfold.model.archive.pairformer_decoder.PairformerDecoder",
-    "af3_style": "tinyfold.model.archive.af3_style.AF3StyleDecoder",
-    # Current models
+    # resfold line; resfold_onestep is the supported headline model.
     "resfold_stage1": "tinyfold.model.resfold.denoiser.ResidueDenoiser",
     "resfold_stage2": "tinyfold.model.resfold.refiner.AtomRefinerV2",
     "resfold_stage2_multi": "tinyfold.model.resfold.atomrefine_multi_sample.AtomRefinerV2MultiSample",
@@ -31,7 +26,6 @@ _MODEL_CLASSES: Dict[str, str] = {
     "resfold_e2e": "tinyfold.model.resfold.e2e.ResFoldE2E",
     "resfold_assembler": "tinyfold.model.resfold.assembler.ResFoldAssembler",
     "resfold_onestep": "tinyfold.model.resfold.onestep.ResFoldOneStep",
-    "iterfold": "tinyfold.model.iterfold.model.IterFold",
 }
 
 _SCHEDULE_CLASSES: Dict[str, str] = {

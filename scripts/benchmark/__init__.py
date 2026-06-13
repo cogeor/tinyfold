@@ -1,13 +1,10 @@
 """Unified benchmarking system for TinyFold models.
 
-Provides standardized evaluation across all model architectures:
-- af3_style: Atom-level diffusion
-- resfold: Two-stage (residue -> atom)
-- resfold_e2e: End-to-end with multi-sampling
-- iterfold: Anchor-conditioned prediction
+Provides standardized evaluation for the resfold model line:
+- resfold: residue-centroid diffusion + atom refinement (incl. onestep)
 
 Usage:
-    python -m scripts.benchmark.cli evaluate --model af3_style --checkpoint path/to/model.pt
+    python -m scripts.benchmark.cli evaluate --model resfold --checkpoint path/to/model.pt
     python -m scripts.benchmark.cli compare results/a.json results/b.json
 """
 

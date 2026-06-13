@@ -11,9 +11,9 @@ except ImportError as e:
     print(f"resfold import FAILED: {e}")
 
 try:
-    from tinyfold.model.iterfold import IterFold, AnchorDecoder
-    print("iterfold import OK")
+    from tinyfold.model.resfold.onestep import ResFoldOneStep
+    print("resfold_onestep import OK")
 except ImportError as e:
-    print(f"iterfold import FAILED: {e}")
+    print(f"resfold_onestep import FAILED: {e}")
 
 print("Done")
