@@ -19,9 +19,9 @@ def test_web_light_showcase_payload_shape():
     assert isinstance(samples, list)
     assert len(samples) > 0
 
+    # The showcase is curated held-out TEST complexes (best DockQ).
     splits = {s["split"] for s in samples}
-    assert "train" in splits
-    assert "test" in splits
+    assert splits == {"test"}
 
     first = samples[0]
     for key in (
@@ -29,6 +29,9 @@ def test_web_light_showcase_payload_shape():
         "split",
         "n_atoms",
         "n_residues",
+        "dockq",
+        "capri",
+        "c_rmsd",
         "rmsd",
         "inference_time",
         "ground_truth_pdb",

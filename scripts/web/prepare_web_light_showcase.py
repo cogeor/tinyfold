@@ -11,61 +11,13 @@ import numpy as np
 import pyarrow.parquet as pq
 
 from tinyfold.training.data_split import DataSplitConfig, get_train_test_indices
+# Canonical PDB writer (single source of truth; correct seq->resname mapping).
+from tinyfold.viz.io.structure_writer import coords_to_pdb_string
 
 
 PREDICTIONS_PATH = Path("assets/showcase_predictions.json")
 DATA_PATH = Path("data/processed/samples.parquet")
 OUTPUT_PATH = Path("assets/showcase_samples.json")
-
-ATOM_NAMES = ["N", "CA", "C", "O"]
-AA_3LETTER = [
-    "ALA", "CYS", "ASP", "GLU", "PHE", "GLY", "HIS", "ILE", "LYS", "LEU",
-    "MET", "ASN", "PRO", "GLN", "ARG", "SER", "THR", "VAL", "TRP", "TYR", "UNK",
-]
-
-
-def coords_to_pdb_string(
-    xyz: np.ndarray,
-    atom_to_res: np.ndarray,
-    atom_types: np.ndarray,
-    chain_res: np.ndarray,
-    res_idx: np.ndarray,
-    seq_res: np.ndarray,
-) -> str:
-    lines: list[str] = []
-    atom_serial = 1
-    prev_chain = None
-
-    for i in range(len(xyz)):
-        x, y, z = xyz[i]
-        res = int(atom_to_res[i])
-        atype = int(atom_types[i])
-        chain = int(chain_res[res])
-        resnum = int(res_idx[res]) + 1
-
-        atom_name = ATOM_NAMES[atype] if 0 <= atype < 4 else "X"
-        element = atom_name[0]
-        chain_label = "A" if chain == 0 else "B"
-        aa_idx = int(seq_res[res])
-        resname = AA_3LETTER[aa_idx] if 0 <= aa_idx < len(AA_3LETTER) else "UNK"
-
-        if prev_chain is not None and chain != prev_chain:
-            lines.append("TER")
-        prev_chain = chain
-
-        atom_name_fmt = f" {atom_name:<3}" if len(atom_name) < 4 else f"{atom_name:<4}"
-        line = (
-            f"ATOM  {atom_serial:5d} {atom_name_fmt} {resname:>3} "
-            f"{chain_label}{resnum:4d}    "
-            f"{x:8.3f}{y:8.3f}{z:8.3f}"
-            f"  1.00  0.00          {element:>2}"
-        )
-        lines.append(line)
-        atom_serial += 1
-
-    lines.append("TER")
-    lines.append("END")
-    return "\n".join(lines)
 
 
 def _load_json(path: Path) -> dict:

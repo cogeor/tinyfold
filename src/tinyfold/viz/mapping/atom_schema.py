@@ -39,12 +39,16 @@ class AtomSchema:
         return self.chain_labels[chain_id] if chain_id < len(self.chain_labels) else "X"
 
 
-# Standard amino acid 3-letter codes
+# Standard amino acid 3-letter codes.
+# MUST match the data pipeline's encoding: constants.AA_CODES = "ACDEFGHIKLMNPQRSTVWY"
+# (AA_TO_IDX is 1-letter alphabetical). The previous table was 3-letter
+# alphabetical, which mislabeled residue names in every PDB written from seq
+# indices (e.g. idx 5 -> "GLN" instead of the correct "GLY").
 AA_INDEX_TO_THREE = {
-    0: "ALA", 1: "ARG", 2: "ASN", 3: "ASP", 4: "CYS",
-    5: "GLN", 6: "GLU", 7: "GLY", 8: "HIS", 9: "ILE",
-    10: "LEU", 11: "LYS", 12: "MET", 13: "PHE", 14: "PRO",
-    15: "SER", 16: "THR", 17: "TRP", 18: "TYR", 19: "VAL",
+    0: "ALA", 1: "CYS", 2: "ASP", 3: "GLU", 4: "PHE",
+    5: "GLY", 6: "HIS", 7: "ILE", 8: "LYS", 9: "LEU",
+    10: "MET", 11: "ASN", 12: "PRO", 13: "GLN", 14: "ARG",
+    15: "SER", 16: "THR", 17: "VAL", 18: "TRP", 19: "TYR",
     20: "UNK",  # Unknown
 }
 

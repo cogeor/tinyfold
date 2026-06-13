@@ -36,12 +36,7 @@ from tinyfold.model.diffusion import KarrasSchedule, VENoiser
 from tinyfold.model.geometry import kabsch_rigid
 from tinyfold.model.metrics import compute_dockq  # noqa: E402
 from tinyfold.model.losses import compute_c_rmsd, compute_rmse  # noqa: E402
-
-ATOM_NAMES = ["N", "CA", "C", "O"]
-AA_3LETTER = [
-    "ALA", "CYS", "ASP", "GLU", "PHE", "GLY", "HIS", "ILE", "LYS", "LEU",
-    "MET", "ASN", "PRO", "GLN", "ARG", "SER", "THR", "VAL", "TRP", "TYR", "UNK",
-]
+from tinyfold.viz.io.structure_writer import coords_to_pdb_string  # noqa: E402
 
 
 def capri_band(dq: float) -> str:
@@ -56,31 +51,12 @@ def capri_band(dq: float) -> str:
 
 def coords_res_to_pdb(coords_res: np.ndarray, chain_ids: np.ndarray,
                       res_idx: np.ndarray, aa_seq: np.ndarray) -> str:
-    """[L,4,3] (N,CA,C,O per residue) -> PDB string."""
-    lines: list[str] = []
-    serial = 1
-    prev_chain = None
+    """[L,4,3] (N,CA,C,O per residue) -> PDB string via the canonical writer."""
     L = coords_res.shape[0]
-    for r in range(L):
-        chain = int(chain_ids[r])
-        if prev_chain is not None and chain != prev_chain:
-            lines.append("TER")
-        prev_chain = chain
-        chain_label = "A" if chain == 0 else "B"
-        resnum = int(res_idx[r]) + 1
-        aa = int(aa_seq[r])
-        resname = AA_3LETTER[aa] if 0 <= aa < len(AA_3LETTER) else "UNK"
-        for a in range(4):
-            x, y, z = coords_res[r, a]
-            name = ATOM_NAMES[a]
-            lines.append(
-                f"ATOM  {serial:5d}  {name:<3} {resname:>3} {chain_label}{resnum:4d}    "
-                f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00          {name[0]:>2}"
-            )
-            serial += 1
-    lines.append("TER")
-    lines.append("END")
-    return "\n".join(lines)
+    xyz = coords_res.reshape(L * 4, 3)
+    atom_to_res = np.repeat(np.arange(L), 4)
+    atom_type = np.tile(np.arange(4), L)  # 0=N,1=CA,2=C,3=O
+    return coords_to_pdb_string(xyz, atom_to_res, atom_type, chain_ids, res_idx, seq=aa_seq)
 
 
 def build(args) -> None:
