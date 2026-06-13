@@ -314,12 +314,6 @@ class TestImports:
             compute_distance_consistency_loss,
         )
 
-    # TODO(phase-0): `BOND_LENGTHS` / `BOND_ANGLES` constants are no longer
-    # re-exported from `tinyfold.model.losses.__init__` post-refactor (they live
-    # in `tinyfold.model.losses.geometry` / similar). This is a runtime-import
-    # mismatch inside the test body, not a collection-time import. Out of scope
-    # for Phase 0 (import-only at module top); revisit alongside the losses
-    # package re-export decision in a later phase.
     def test_all_geometry_imports(self):
         """All geometry functions should be importable."""
         from tinyfold.model.losses import (
@@ -329,7 +323,7 @@ class TestImports:
             omega_loss,
             o_chirality_loss,
             dihedral_angle,
-            BOND_LENGTHS,
+            BOND_LENGTHS_ANGSTROM,
             BOND_ANGLES,
         )
 

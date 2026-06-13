@@ -9,7 +9,6 @@ Provides:
 """
 
 from tinyfold.model.config import ModelConfig
-from tinyfold.model.ppi_model import PPIModel
 
 # Registry (factory functions)
 from tinyfold.model.registry import (
@@ -53,7 +52,6 @@ from tinyfold.model.losses import (
 __all__ = [
     # Core
     "ModelConfig",
-    "PPIModel",
     # Registry
     "create_model",
     "create_schedule",

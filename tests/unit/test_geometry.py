@@ -220,12 +220,10 @@ class TestGeometryLossIntegration:
         assert 'total' in losses_with
         assert 'total' in losses_without
 
-    # TODO(phase-0): Flaky / numerical — random offsets occasionally yield total
-    # loss within ~0.01 of GT (e.g. 0.85 vs 0.86). Not an import issue; needs
-    # either a seed, a margin, or a re-think of the assertion. Out of scope for
-    # Phase 0 (import-only).
     def test_random_vs_gt_comparison(self, backbone_coords):
-        """Random coords should have higher geometry loss than GT."""
+        """A heavily distorted structure should have higher geometry loss than the
+        reference. Seeded for determinism; the perturbation (sigma=1.0, large vs
+        the fixture's ~0.4 A scale) reliably worsens bond/angle geometry."""
         geom_loss = GeometryLoss(
             bond_length_weight=1.0,
             bond_angle_weight=0.1,
@@ -234,11 +232,9 @@ class TestGeometryLossIntegration:
 
         gt_losses = geom_loss(backbone_coords)
 
-        # Random offsets from centroids
-        centroids = backbone_coords.mean(dim=2, keepdim=True)
-        random_offsets = 0.2 * torch.randn(1, 10, 4, 3)
-        random_coords = centroids + random_offsets
+        torch.manual_seed(0)
+        random_coords = backbone_coords + 1.0 * torch.randn_like(backbone_coords)
         random_losses = geom_loss(random_coords)
 
         assert random_losses['total'] > gt_losses['total'], \
-            f"Random should have higher loss: {random_losses['total']:.4f} vs {gt_losses['total']:.4f}"
+            f"Distorted should have higher loss: {random_losses['total']:.4f} vs {gt_losses['total']:.4f}"

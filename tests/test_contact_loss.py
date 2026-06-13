@@ -441,11 +441,12 @@ class TestContactLossRealData:
     def test_on_real_protein(self):
         """Test contact loss on a real protein from dataset."""
         import pyarrow.parquet as pq
+        from pathlib import Path
 
-        try:
-            table = pq.read_table('C:/Users/costa/src/tinyfold/data/processed/samples.parquet')
-        except FileNotFoundError:
+        data_path = Path(__file__).parent.parent / "data" / "processed" / "samples.parquet"
+        if not data_path.exists():
             pytest.skip("Dataset not found")
+        table = pq.read_table(str(data_path))
 
         # Load first protein
         idx = 0
