@@ -410,7 +410,8 @@ def sample_k_centroids(
                 B, L, 3, device=device, generator=gen
             )
             centroid_pred, atoms_pred, pred_lddt = model.forward_sigma_with_trunk(
-                x, trunk_tokens, sigma_init, mask, x0_prev=None
+                x, trunk_tokens, sigma_init, mask, x0_prev=None,
+                res_idx=batch['res_idx'], chain_ids=batch['chain_ids'],
             )
             centroid_list.append(centroid_pred)
             atom_list.append(atoms_pred)
@@ -581,6 +582,14 @@ def parse_args():
     parser.add_argument("--n_train", type=int, default=80)
     parser.add_argument("--n_test", type=int, default=14)
     parser.add_argument("--n_eval_train", type=int, default=200)
+    parser.add_argument("--eval_train_dockq", action="store_true",
+                        help="Also compute DockQ + C-RMSD on the train-eval "
+                             "subset (onestep + one_shot only). Default off so "
+                             "legacy runs stay byte-identical. Essential for "
+                             "overfit / capacity-ladder experiments where the "
+                             "question is whether the model can memorise the "
+                             "INTERFACE (train DockQ), not just the backbone "
+                             "(train centroid RMSE).")
     parser.add_argument("--min_atoms", type=int, default=200)
     parser.add_argument("--max_atoms", type=int, default=400)
     parser.add_argument("--select_smallest", action="store_true",
@@ -628,6 +637,21 @@ def parse_args():
     parser.add_argument("--relpos_clip", type=int, default=32,
                         help="Clip distance for the relpos bucket (default 32, "
                              "AF-M convention).")
+    parser.add_argument("--pair_repr", action="store_true",
+                        help="Add a minimal Pairmixer-style pair representation "
+                             "(triangle multiplication + transition, no triangle "
+                             "attention) to the trunk; emits a per-head attention "
+                             "bias. Phase H: the decisive test of whether an "
+                             "explicit (i,j) channel moves the >=200-res cliff. "
+                             "Pair track runs once per sample (trunk); pair with "
+                             "--crop_strategy interface to keep L^2 affordable.")
+    parser.add_argument("--c_pair", type=int, default=64,
+                        help="Pair-channel width for --pair_repr (default 64).")
+    parser.add_argument("--pair_layers", type=int, default=3,
+                        help="Number of triangle-mul+transition blocks for "
+                             "--pair_repr (default 3).")
+    parser.add_argument("--pair_hidden", type=int, default=64,
+                        help="Triangle hidden width for --pair_repr (default 64).")
     parser.add_argument("--load_split", type=str, default=None,
                         help="Load train/test split from JSON (for Stage 2 to reuse Stage 1 split)")
     parser.add_argument("--batch_size", type=int, default=64)
@@ -1436,6 +1460,10 @@ def _run_training(args, progress):
             denoiser_blocks=args.denoiser_blocks,
             relpos_bias=getattr(args, "relpos_bias", False),
             relpos_clip=getattr(args, "relpos_clip", 32),
+            pair_repr=getattr(args, "pair_repr", False),
+            c_pair=getattr(args, "c_pair", 64),
+            pair_layers=getattr(args, "pair_layers", 3),
+            pair_hidden=getattr(args, "pair_hidden", 64),
             atom_head_layers=args.atom_head_layers,
             atom_head_heads=args.atom_head_heads,
             n_timesteps=args.T,
@@ -2058,6 +2086,7 @@ def _run_training(args, progress):
                 n_eval = min(args.n_eval_train, len(train_indices))
                 eval_train_indices = random.sample(train_indices, n_eval)
                 train_rmses = []
+                train_dockq_scores = []  # only filled when --eval_train_dockq
                 for idx in eval_train_indices:
                     s = train_samples[idx]
                     batch = collate_batch([s], device)
@@ -2087,6 +2116,28 @@ def _run_training(args, progress):
                                 recenter=args.recenter
                             )
                         rmse = compute_rmse(centroids_pred, batch['centroids'], batch['mask_res']).item() * s['std']
+
+                        # Optional train-set DockQ (overfit/capacity experiments):
+                        # mirrors the test-eval DockQ using the same one-shot atom
+                        # head output. Gated so default runs are unchanged.
+                        if (
+                            args.eval_train_dockq
+                            and is_onestep
+                            and args.one_shot_sample
+                            and isinstance(sample_out, tuple)
+                            and len(sample_out) > 1
+                            and sample_out[1] is not None
+                        ):
+                            n_res_t = s['n_res']
+                            dq = compute_dockq(
+                                sample_out[1][0, :n_res_t],
+                                batch['coords_res'][0, :n_res_t],
+                                batch['aa_seq'][0, :n_res_t],
+                                batch['chain_ids'][0, :n_res_t],
+                                std=s['std'],
+                            )
+                            if dq['dockq'] is not None:
+                                train_dockq_scores.append(dq['dockq'])
                     elif args.mode == "stage2_only" and 'centroids_pred' in batch:
                         # For Stage 2 with cached predictions: use Stage 1 predictions directly
                         atoms_pred = model.forward_stage2(
@@ -2106,6 +2157,15 @@ def _run_training(args, progress):
                         rmse = compute_rmse(atoms_pred, batch['coords'], batch['mask_atom']).item() * s['std']
                     train_rmses.append(rmse)
                 train_avg = sum(train_rmses) / len(train_rmses)
+
+                # Train-set DockQ summary (overfit/capacity experiments only).
+                if train_dockq_scores:
+                    tdq = sum(train_dockq_scores) / len(train_dockq_scores)
+                    tdq_succ = 100.0 * sum(1 for d in train_dockq_scores if d >= 0.23) / len(train_dockq_scores)
+                    logger.log(
+                        f"         >>> Train DockQ ({len(train_dockq_scores)}): "
+                        f"{tdq:.4f} (succ {tdq_succ:.1f}%)"
+                    )
 
                 # Evaluate on test set (delegated; see _run_test_eval).
                 test_avg, dockq_avg, dockq_success_pct, c_rmsd_avg, extra_tokens = _run_test_eval(

@@ -1,0 +1,103 @@
+# Phase D-recreate — regression test of the current codebase on Phase D's
+# exact training recipe.
+#
+# Hypothesis under test: "training on cropped (256) is confusing the network,
+# OR there's another bug that landed since Phase D shipped."
+#
+# This run:
+#   - reuses Phase D's exact train/test split (split.json) so the data is
+#     bit-identical
+#   - uses the current codebase (cropping module, relpos module, etc. all
+#     present but disabled here)
+#   - explicitly turns OFF cropping and relpos so any delta vs original
+#     Phase D is attributable to non-cropping changes in the codebase
+#
+# Decision gate:
+#   - If Phase D-recreate matches original Phase D within ~0.5 A test RMSE
+#     and within ~0.02 mean DockQ -> codebase is fine; the small-complex
+#     regression in Phase G is caused by cropping/relpos.
+#   - If Phase D-recreate is noticeably worse -> a codebase change since
+#     2026-05-24 broke things; bisect to find which.
+#
+# Original Phase D numbers to beat / match (from REGISTRY):
+#   test RMSE 9.02 A on the random 100-sample test split (mixed sizes within
+#   80-300 res training distribution)
+#   On the small-complex eval (phase_d_bin_le200, 30 samples ID-clean):
+#   test RMSE 7.66 A, C-RMSD 11.61 A, DockQ 0.239, succ 46.7%
+
+model_kind: onestep
+mode: stage1_only
+
+# Reuse Phase D's exact split for bit-identical training data.
+load_split: outputs/resfold/phase_d_n8600_full/resfold_s1_8K_20260524_085326/split.json
+
+# --- Training (matches Phase D's config.json) ---
+n_train: 8600
+n_test: 100
+n_eval_train: 200
+min_atoms: 200
+max_atoms: 1200
+batch_size: 32
+dynamic_batch: false
+use_bucketing: false
+n_buckets: 8
+max_tokens: 30000
+
+n_steps: 50000
+eval_every: 5000
+lr: 1.0e-04
+min_lr: 1.0e-05
+grad_accum: 1
+seed: 42
+
+# --- Architecture (matches Phase D exactly) ---
+c_token_s1: 256
+trunk_layers: 6
+denoiser_blocks: 6
+atom_head_layers: 2
+atom_head_heads: 4
+
+aa_embed: esm2_35M
+
+# NOTE: per_chain_res_idx NOT set -> defaults to False, matching Phase D.
+
+# Confidence head + ranking (matches Phase D).
+confidence_head: true
+confidence_head_weight: 0.1
+rank_by: confidence
+
+loss_weighting: true
+stratified_sigma: true
+
+n_samples: 5
+eval_K_list: "1,5"
+cluster_radius: 5.0
+
+# --- Diffusion (matches Phase D) ---
+T: 50
+continuous_sigma: true
+sigma_data: 1.0
+sigma_min: 0.002
+sigma_max: 10.0
+
+# --- Augmentation (matches Phase D) ---
+augment_rotation: true
+multi_copy: 0
+translate_aug: 0.0
+self_cond_prob: 0.0
+
+# --- Loss weights (matches Phase D) ---
+dist_weight: 0.1
+geom_weight: 0.1
+contact_weight: 0.0
+atom_weight: 0.5
+atom_warmup_steps: 500
+
+# --- Eval sampler (matches Phase D) ---
+one_shot_sample: true
+
+# --- NEW machinery EXPLICITLY DISABLED for the regression test ---
+crop_strategy: none
+relpos_bias: false
+
+output_dir: outputs/resfold/phase_d_recreate

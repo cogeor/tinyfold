@@ -21,6 +21,7 @@ from torch import Tensor
 
 from .base import BaseDecoder, sinusoidal_pos_enc
 from .relpos import RelposBias
+from .pair_track import PairTrack
 
 
 # =============================================================================
@@ -209,11 +210,16 @@ class ResidueEncoder(nn.Module):
         esm_dim: Optional[int] = None,
         relpos_bias: bool = False,
         relpos_clip: int = 32,
+        pair_repr: bool = False,
+        c_pair: int = 64,
+        pair_layers: int = 3,
+        pair_hidden: int = 64,
     ):
         super().__init__()
         self.c_token = c_token
         self.aa_embed_mode = aa_embed
         self.relpos_bias_enabled = bool(relpos_bias)
+        self.pair_repr_enabled = bool(pair_repr)
         self.n_heads = n_heads
 
         if aa_embed == "learned":
@@ -245,11 +251,13 @@ class ResidueEncoder(nn.Module):
         self.input_proj = nn.Linear(input_dim, c_token)
 
         # Transformer. Two backends:
-        # - relpos_bias=False (legacy / Phase D-F path): nn.TransformerEncoder.
+        # - no bias (legacy / Phase D-F path): nn.TransformerEncoder.
         #   Byte-identical to historical runs; old checkpoints load cleanly.
-        # - relpos_bias=True (Phase G+): custom TrunkEncoder that accepts an
-        #   additive [B, n_heads, L, L] attention bias from RelposBias.
-        if self.relpos_bias_enabled:
+        # - bias enabled (Phase G+): custom TrunkEncoder that accepts an
+        #   additive [B, n_heads, L, L] attention bias. The bias is the sum of
+        #   the (optional) RelposBias and the (optional) PairTrack output.
+        self.bias_backend = self.relpos_bias_enabled or self.pair_repr_enabled
+        if self.bias_backend:
             self.transformer = TrunkEncoder(
                 lambda: TrunkEncoderLayer(
                     d_model=c_token,
@@ -259,7 +267,19 @@ class ResidueEncoder(nn.Module):
                 ),
                 n_layers=n_layers,
             )
-            self.relpos = RelposBias(n_heads=n_heads, clip=relpos_clip)
+            self.relpos = RelposBias(n_heads=n_heads, clip=relpos_clip) if self.relpos_bias_enabled else None
+            self.pair_track = (
+                PairTrack(
+                    c_token=c_token,
+                    n_heads=n_heads,
+                    c_pair=c_pair,
+                    n_layers=pair_layers,
+                    c_hidden=pair_hidden,
+                    relpos_clip=relpos_clip,
+                )
+                if self.pair_repr_enabled
+                else None
+            )
         else:
             encoder_layer = nn.TransformerEncoderLayer(
                 d_model=c_token,
@@ -273,6 +293,7 @@ class ResidueEncoder(nn.Module):
                 encoder_layer, num_layers=n_layers, enable_nested_tensor=False
             )
             self.relpos = None
+            self.pair_track = None
 
         self.output_norm = nn.LayerNorm(c_token)
 
@@ -318,8 +339,16 @@ class ResidueEncoder(nn.Module):
 
         # Apply transformer
         attn_mask = ~mask if mask is not None else None
-        if self.relpos_bias_enabled:
-            attn_bias = self.relpos(res_idx, chain_ids)  # [B, n_heads, L, L]
+        if self.bias_backend:
+            attn_bias = None  # [B, n_heads, L, L], built additively below
+            if self.relpos is not None:
+                attn_bias = self.relpos(res_idx, chain_ids)
+            if self.pair_track is not None:
+                valid = mask if mask is not None else torch.ones(
+                    B, L, dtype=torch.bool, device=h.device
+                )
+                pair_bias = self.pair_track(h, res_idx, chain_ids, valid)
+                attn_bias = pair_bias if attn_bias is None else attn_bias + pair_bias
             h = self.transformer(h, src_key_padding_mask=attn_mask, attn_bias=attn_bias)
         else:
             h = self.transformer(h, src_key_padding_mask=attn_mask)

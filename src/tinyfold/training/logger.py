@@ -53,7 +53,10 @@ class TrainingLogger:
             msg: Message to log
             level: Log level (currently unused, for future extension)
         """
-        print(msg)
+        # flush=True so stdout is line-flushed even when redirected to a pipe
+        # or file (non-TTY stdout is block-buffered by default, which makes
+        # live monitoring of a backgrounded run show nothing until exit).
+        print(msg, flush=True)
         self._file.write(msg + "\n")
         self._file.flush()
 

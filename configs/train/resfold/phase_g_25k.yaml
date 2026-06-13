@@ -1,0 +1,67 @@
+# Phase G — 25K-step decision-read on cropping + relpos bias.
+#
+# Reuses F-medium-ESM recipe + split exactly, with two deltas:
+#   + crop_strategy: interface @ crop_size 256 (28K -> 12k params/token)
+#   + relpos_bias: true (AF-M-style attn bias, +-32 clipped, same-chain bit)
+#
+# 25K vs 50K: F-medium-ESM converged around step 20K, so 25K is enough to
+# tell whether the cliff moves. Halves wall time (~3.5h vs ~7h). If cliff
+# closes meaningfully, queue a 50K final run.
+
+model_kind: onestep
+mode: stage1_only
+load_split: data/processed/splits/phase_f_medium.json
+
+# --- Training ---
+n_steps: 25000
+eval_every: 2500
+lr: 1.0e-04
+min_lr: 1.0e-05
+grad_accum: 1
+seed: 42
+batch_size: 16
+dynamic_batch: true
+use_bucketing: true
+n_buckets: 4
+max_tokens: 20000
+
+# --- Architecture (same as F-medium-ESM) ---
+c_token_s1: 256
+trunk_layers: 6
+denoiser_blocks: 6
+atom_head_layers: 2
+atom_head_heads: 4
+
+aa_embed: esm2_35M
+per_chain_res_idx: true
+
+# --- NEW for Phase G ---
+crop_strategy: interface
+crop_size: 256
+crop_interface_prob: 0.8
+relpos_bias: true
+relpos_clip: 32
+
+# --- Diffusion ---
+T: 50
+continuous_sigma: true
+sigma_data: 1.0
+sigma_min: 0.002
+sigma_max: 10.0
+
+# --- Loss / sampler ---
+confidence_head: false
+loss_weighting: true
+augment_rotation: true
+multi_copy: 0
+self_cond_prob: 0.0
+dist_weight: 0.1
+geom_weight: 0.1
+contact_weight: 0.0
+atom_weight: 0.5
+atom_warmup_steps: 200
+one_shot_sample: true
+n_samples: 1
+eval_K_list: "1"
+
+output_dir: outputs/resfold/phase_g_25k

@@ -1,0 +1,101 @@
+# Overfit / capacity ladder — PAIR arm (Phase H recipe).
+#
+# Purpose: the cheap "are we on the right track" experiment to run BEFORE
+# committing to a full 25k Phase H run. Two questions:
+#   1. Can the model still overfit small proteins quickly? (regression check on
+#      the current codebase + the pair track + the NameError fix.)
+#   2. As the training set grows (N: 100 -> 3000), can we STILL overfit -- i.e.
+#      memorise the INTERFACE (train DockQ), not just the backbone (centroid
+#      RMSE)? Where train DockQ collapses locates the capacity wall.
+#
+# Read it against overfit_ladder_nopair.yaml (identical minus pair_repr) to
+# isolate the pair representation's contribution to fitting interfaces.
+#
+# GO/NO-GO logic for the full Phase H run:
+#   - pair overfits interface (train DockQ high) AND beats no-pair  -> pair adds
+#     usable capacity; full run is worth it.
+#   - neither arm overfits interface even at N=100  -> the architecture cannot
+#     represent interfaces; full training will not help -> pivot.
+#   - both overfit small but train DockQ decays with N  -> capacity-per-token
+#     wall (consistent with the known constraint); cropping/scale needed.
+#
+# Fixed small-protein range [200,800] atoms (50-200 res): per-token capacity is
+# roughly constant across the ladder, every sample fits crop_size so cropping is
+# a no-op (isolates pair-rep + capacity from cropping), and there are 3352
+# eligible samples (supports N up to 3000).
+#
+# n_train / n_steps / output_dir are overridden per rung on the CLI; the values
+# here are the N=100 defaults.
+
+model_kind: onestep
+mode: stage1_only
+
+# --- Data: fixed small-protein range, fresh size-filtered split (NOT load_split,
+#     which ignores n_train). select N deterministically at seed 42. ---
+n_train: 100
+n_test: 30
+n_eval_train: 100
+min_atoms: 200
+max_atoms: 800
+batch_size: 16
+dynamic_batch: false
+use_bucketing: false
+n_buckets: 4
+max_tokens: 20000
+
+# --- Training (overridden per rung) ---
+n_steps: 5000
+eval_every: 1000
+lr: 1.0e-04
+min_lr: 1.0e-05
+grad_accum: 1
+seed: 42
+
+# --- Architecture: Phase H (ESM + relpos + pair). ---
+c_token_s1: 256
+trunk_layers: 6
+denoiser_blocks: 6
+atom_head_layers: 2
+atom_head_heads: 4
+
+aa_embed: esm2_35M
+per_chain_res_idx: true
+
+# Cropping disabled: all samples <= 200 res fit, so it would be a no-op anyway.
+crop_strategy: none
+relpos_bias: true
+relpos_clip: 32
+
+# --- THE pair representation under test ---
+pair_repr: true
+c_pair: 64
+pair_layers: 3
+pair_hidden: 64
+
+# --- Diffusion ---
+T: 50
+continuous_sigma: true
+sigma_data: 1.0
+sigma_min: 0.002
+sigma_max: 10.0
+
+# --- Loss / sampler ---
+confidence_head: false
+loss_weighting: true
+# Augmentation OFF for a clean overfit signal (Phase A discipline).
+augment_rotation: false
+multi_copy: 0
+self_cond_prob: 0.0
+dist_weight: 0.1
+geom_weight: 0.1
+contact_weight: 0.0
+atom_weight: 0.5
+atom_warmup_steps: 200
+one_shot_sample: true
+n_samples: 1
+eval_K_list: "1"
+
+# Measure interface memorisation on the train set, not just backbone RMSE.
+eval_train_dockq: true
+
+output_dir: outputs/resfold/overfit_ladder_pair_n100

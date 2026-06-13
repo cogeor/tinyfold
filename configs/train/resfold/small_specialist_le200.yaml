@@ -1,0 +1,95 @@
+# Small-Specialist Confirmation (SSC) — does the diffusion pipeline genuinely
+# GENERALIZE on small complexes (not just overfit), and break on large?
+#
+# Mirrors the Phase D recipe EXACTLY except:
+#   1. Data filter: total residues <= 200 ONLY (atoms <= 800) instead of the
+#      50-300-res full range. Concentrates the ~6M-param budget on the small
+#      regime -> best params/token (the capacity-per-token constraint says the
+#      generalist's le200 score of 0.239/46.7% is only a LOWER bound).
+#   2. per_chain_res_idx + relpos_bias ON (positional-invariance fixes from
+#      Phase G) so size-generalization is fair.
+#   3. eval_train_dockq ON -> the overfit control: train DockQ next to test DockQ.
+#
+# Read-out:
+#   * test DockQ as a CAPRI-band histogram (incorrect/acceptable/medium/high),
+#     not just the mean -> "good preds" made concrete.
+#   * train-vs-test DockQ gap -> memorisation vs generalisation.
+#   * then --eval_only this ckpt on phase_d_bin_{200_400,...,ge1000}.json to
+#     confirm the cliff with the SAME weights (isolates size from capacity).
+
+model_kind: onestep
+mode: stage1_only
+
+# --- Data: SMALL ONLY (total residues <= 200 == atoms <= 800) ---
+# Eligible pool = 3,352 complexes. 3000 train + 200 test leaves margin; the
+# train-eval overfit probe (n_eval_train) is drawn from the train indices.
+n_train: 3000
+n_test: 200
+n_eval_train: 200
+min_atoms: 0
+max_atoms: 800
+batch_size: 32
+dynamic_batch: false
+use_bucketing: false
+
+# --- Training ---
+# Phase D (8600 samples) converged ~step 20k; with a narrower distribution and
+# smaller inputs, 30k is ample and runs in ~2-3h.
+n_steps: 30000
+eval_every: 3000
+lr: 1.0e-04
+min_lr: 1.0e-05
+grad_accum: 1
+seed: 42
+
+# --- Architecture (matches Phase D ~6M params) ---
+c_token_s1: 256
+trunk_layers: 6
+denoiser_blocks: 6
+atom_head_layers: 2
+atom_head_heads: 4
+
+aa_embed: esm2_35M
+per_chain_res_idx: true
+
+# --- Positional-invariance fixes (Phase G); cropping is a no-op at <=200 res ---
+crop_strategy: none
+relpos_bias: true
+relpos_clip: 32
+
+# --- Pair track OFF: that is the separate Phase H question; keep this clean ---
+pair_repr: false
+
+# --- Diffusion ---
+T: 50
+continuous_sigma: true
+sigma_data: 1.0
+sigma_min: 0.002
+sigma_max: 10.0
+
+# --- Confidence head + ranking (matches Phase D so the headline is comparable) ---
+confidence_head: true
+confidence_head_weight: 0.1
+rank_by: confidence
+
+# --- Loss / aug ---
+loss_weighting: true
+augment_rotation: true
+multi_copy: 0
+self_cond_prob: 0.0
+dist_weight: 0.1
+geom_weight: 0.1
+contact_weight: 0.0
+atom_weight: 0.5
+atom_warmup_steps: 500
+
+# --- Eval sampler ---
+one_shot_sample: true
+n_samples: 5
+eval_K_list: "1,5"
+cluster_radius: 5.0
+
+# --- THE overfit control ---
+eval_train_dockq: true
+
+output_dir: outputs/resfold/small_specialist_le200

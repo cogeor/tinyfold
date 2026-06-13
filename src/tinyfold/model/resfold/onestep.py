@@ -133,6 +133,10 @@ class ResFoldOneStep(BaseDecoder):
         sigma_data: float = 1.0,
         relpos_bias: bool = False,
         relpos_clip: int = 32,
+        pair_repr: bool = False,
+        c_pair: int = 64,
+        pair_layers: int = 3,
+        pair_hidden: int = 64,
     ):
         super().__init__()
         self.c_token = c_token
@@ -158,6 +162,10 @@ class ResFoldOneStep(BaseDecoder):
             esm_dim=esm_dim,
             relpos_bias=relpos_bias,
             relpos_clip=relpos_clip,
+            pair_repr=pair_repr,
+            c_pair=c_pair,
+            pair_layers=pair_layers,
+            pair_hidden=pair_hidden,
         )
 
         # === DENOISER (per-step) ===
@@ -330,15 +338,28 @@ class ResFoldOneStep(BaseDecoder):
         sigma: Tensor,
         mask: Optional[Tensor] = None,
         x0_prev: Optional[Tensor] = None,
+        res_idx: Optional[Tensor] = None,
+        chain_ids: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor, Optional[Tensor]]:
         """Continuous-sigma forward with precomputed trunk tokens (EDM-preconditioned).
 
         Returns ``(centroid_pred, atoms_pred, pred_lddt_or_None)`` — same
         contract as :meth:`forward_sigma`.
+
+        ``res_idx`` and ``chain_ids`` are forwarded to the denoiser so its
+        (optional) relpos bias can index into them. They are required when the
+        model was built with ``relpos_bias=True`` (the trunk tokens are already
+        computed, but the denoiser still needs the indices for its own bias);
+        ignored otherwise.
         """
         B, L, _ = x_t.shape
         if mask is None:
             mask = torch.ones(B, L, dtype=torch.bool, device=x_t.device)
+        if self.relpos_bias_enabled and (res_idx is None or chain_ids is None):
+            raise ValueError(
+                "forward_sigma_with_trunk requires res_idx and chain_ids when "
+                "the model was built with relpos_bias=True."
+            )
         c_skip, c_out, c_in, c_noise = self._edm_coefficients(sigma)
         cond = self._embed_c_noise(c_noise)
         denoiser_tokens = self._denoiser_tokens(

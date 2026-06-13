@@ -1,0 +1,69 @@
+# Overfit / capacity ladder — NO-PAIR control arm (Phase G recipe).
+#
+# Identical to overfit_ladder_pair.yaml with ONE delta: pair_repr: false.
+# This is the control that isolates the pair representation's contribution to
+# fitting interfaces. See overfit_ladder_pair.yaml for the full rationale and
+# the GO/NO-GO logic.
+#
+# n_train / n_steps / output_dir are overridden per rung on the CLI.
+
+model_kind: onestep
+mode: stage1_only
+
+n_train: 100
+n_test: 30
+n_eval_train: 100
+min_atoms: 200
+max_atoms: 800
+batch_size: 16
+dynamic_batch: false
+use_bucketing: false
+n_buckets: 4
+max_tokens: 20000
+
+n_steps: 5000
+eval_every: 1000
+lr: 1.0e-04
+min_lr: 1.0e-05
+grad_accum: 1
+seed: 42
+
+c_token_s1: 256
+trunk_layers: 6
+denoiser_blocks: 6
+atom_head_layers: 2
+atom_head_heads: 4
+
+aa_embed: esm2_35M
+per_chain_res_idx: true
+
+crop_strategy: none
+relpos_bias: true
+relpos_clip: 32
+
+# --- pair representation DISABLED (the control delta) ---
+pair_repr: false
+
+T: 50
+continuous_sigma: true
+sigma_data: 1.0
+sigma_min: 0.002
+sigma_max: 10.0
+
+confidence_head: false
+loss_weighting: true
+augment_rotation: false
+multi_copy: 0
+self_cond_prob: 0.0
+dist_weight: 0.1
+geom_weight: 0.1
+contact_weight: 0.0
+atom_weight: 0.5
+atom_warmup_steps: 200
+one_shot_sample: true
+n_samples: 1
+eval_K_list: "1"
+
+eval_train_dockq: true
+
+output_dir: outputs/resfold/overfit_ladder_nopair_n100

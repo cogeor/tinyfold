@@ -1,0 +1,93 @@
+# Phase H — the decisive pair-representation test.
+#
+# Identical to Phase G (phase_g_25k.yaml: interface crop @256 + relpos bias,
+# F-medium-ESM recipe + split) with ONE delta:
+#   + pair_repr: true  — a minimal Pairmixer-style pair track in the trunk
+#     (triangle multiplication + transition, NO triangle attention), emitting a
+#     per-head attention bias on top of the relpos bias.
+#
+# Why: every non-architectural lever tried so far (wider data, ESM, K-sample +
+# ranking, sampler steps, interface cropping) leaves >=200-res DockQ pinned at
+# the random-docking floor (~0.01-0.05). The one untested lever is an explicit
+# (i,j) pair channel — the mechanism the whole AF3/Boltz/Protenix family uses
+# to reason about inter-chain contacts. The active trunk is single-track and has
+# nowhere to store interface geometry.
+#
+# Clean A/B: Phase G (relpos, no pair) vs Phase H (relpos + pair), same split,
+# same steps, read out in DockQ on the leakage-controlled cliff bins.
+#
+# DECISION GATE:
+#   - If pair_repr moves >=200-res mean DockQ off the floor (e.g. 0.02 -> 0.10+):
+#     the bottleneck is identified -> scale the pair track (more layers / wider
+#     c_pair / extend the bias into the denoiser).
+#   - If it does NOT move: the cliff is capacity/data-limited, not architectural;
+#     the honest move is the negative scaling result (smallest open AF3-class PPI
+#     model; first params-vs-DockQ data point in this regime).
+#
+# Cost: pair track adds ~0.24M params (~2%) and an O(L^2) trunk pass run ONCE
+# per sample (not per diffusion step). At crop 256 the L^2 tensors fit a 16GB
+# GPU at batch 16. Wall time ~ Phase G + pair overhead (~4-5h for 25k steps).
+
+model_kind: onestep
+mode: stage1_only
+load_split: data/processed/splits/phase_f_medium.json
+
+# --- Training ---
+n_steps: 25000
+eval_every: 2500
+lr: 1.0e-04
+min_lr: 1.0e-05
+grad_accum: 1
+seed: 42
+batch_size: 16
+dynamic_batch: true
+use_bucketing: true
+n_buckets: 4
+max_tokens: 20000
+
+# --- Architecture (same as Phase G / F-medium-ESM) ---
+c_token_s1: 256
+trunk_layers: 6
+denoiser_blocks: 6
+atom_head_layers: 2
+atom_head_heads: 4
+
+aa_embed: esm2_35M
+per_chain_res_idx: true
+
+# --- Cropping + relpos (same as Phase G) ---
+crop_strategy: interface
+crop_size: 256
+crop_interface_prob: 0.8
+relpos_bias: true
+relpos_clip: 32
+
+# --- NEW for Phase H: pair representation ---
+pair_repr: true
+c_pair: 64
+pair_layers: 3
+pair_hidden: 64
+
+# --- Diffusion ---
+T: 50
+continuous_sigma: true
+sigma_data: 1.0
+sigma_min: 0.002
+sigma_max: 10.0
+
+# --- Loss / sampler ---
+confidence_head: false
+loss_weighting: true
+augment_rotation: true
+multi_copy: 0
+self_cond_prob: 0.0
+dist_weight: 0.1
+geom_weight: 0.1
+contact_weight: 0.0
+atom_weight: 0.5
+atom_warmup_steps: 200
+one_shot_sample: true
+n_samples: 1
+eval_K_list: "1"
+
+output_dir: outputs/resfold/phase_h_pair
