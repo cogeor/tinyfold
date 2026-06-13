@@ -205,10 +205,21 @@ The config trains an `onestep` model on complexes ≤200 total residues (pool 3,
 
 ### Inference
 
-Inference currently runs over **dataset samples** (DIPS-Plus parquet rows), via
-`scripts/eval_dockq_histogram.py` (scoring) and `scripts/web/build_showcase.py`
-(PDB export), or interactively through the `web/` UI. A standalone
-"two raw PDB chains → predicted complex" CLI is not yet built (see the Roadmap).
+Predict + export a single complex from a **dataset sample**:
+
+```bash
+python scripts/predict.py \
+    --checkpoint outputs/resfold/small_specialist_le200/<run>/best_model.pt \
+    --sample_id 3lz0.pdb1_5 --out pred.pdb --write_gt
+```
+
+This composes the inference primitives in `tinyfold.inference` (architecture read
+from the run's `config.json`, K-sample confidence-ranked one-shot sampling) and
+writes the predicted complex (and optionally ground truth) to PDB, reporting DockQ.
+Batch scoring/export go through `scripts/eval_dockq_histogram.py` and
+`scripts/web/build_showcase.py`. Prediction from a **raw FASTA/PDB pair** (no
+dataset row) additionally needs live ESM-2 inference + a de-novo coordinate-scale
+convention — see the Roadmap.
 
 ### Web Frontend
 
@@ -256,6 +267,7 @@ python scripts/data/prepare_data.py --output-dir data/processed
 - [x] Web frontend for visualization (`web/` and `web-light/`)
 - [x] Confirm the pipeline generalizes on small complexes (SSC experiment)
 - [ ] Move the size cliff: interface cropping + relpos at scale, or the pair track (Phase H)
-- [ ] Standalone "two PDB chains → complex" inference CLI
+- [x] Single-sample predict/export CLI (`scripts/predict.py`, dataset samples)
+- [ ] Raw FASTA/PDB-pair inference (live ESM-2 + de-novo coordinate scale)
 - [ ] Energy-based auxiliary losses (Lennard-Jones, electrostatics)
 - [ ] Extension to small molecules / DNA / other macromolecules
