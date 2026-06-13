@@ -1,4 +1,12 @@
-"""Kabsch alignment utilities."""
+"""Kabsch alignment utilities (NumPy, visualization layer).
+
+This is the intentional NumPy sibling of the canonical Torch implementation in
+``tinyfold.model.geometry.kabsch_rigid`` (which the diffusion/loss paths use via
+thin adapters). It is kept separate on purpose: the viz/report stack is NumPy
+end-to-end and dependency-light, operates on ``[N, 3]`` arrays, and is covered by
+its own tests. Do not route it through the Torch core (it would add a Torch
+dependency to rendering and shift float64->float32 numerics under the viz tests).
+"""
 
 import numpy as np
 
