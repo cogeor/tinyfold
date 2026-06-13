@@ -26,9 +26,8 @@ import numpy as np
 import torch
 import pyarrow.parquet as pq
 
-from tinyfold.inference import sample_k_centroids
+from tinyfold.inference import sample_k_centroids, load_onestep_run
 from tinyfold.training import load_sample_raw, collate_batch
-from tinyfold.model.resfold.onestep import ResFoldOneStep
 from tinyfold.model.diffusion import KarrasSchedule, VENoiser
 from tinyfold.model.metrics import compute_dockq
 from tinyfold.model.losses import compute_c_rmsd
@@ -116,16 +115,10 @@ def main():
     print("Loading parquet...")
     table = pq.read_table(args.parquet)
 
-    model = ResFoldOneStep(
-        c_token=256, trunk_layers=6, denoiser_blocks=6,
-        relpos_bias=True, relpos_clip=32, pair_repr=False,
-        atom_head_layers=2, atom_head_heads=4, n_timesteps=50, dropout=0.0,
-        aa_embed="esm2_35M", esm_dim=480, confidence_head=True, sigma_data=1.0,
-    ).to(device)
-    ckpt = torch.load(args.checkpoint, map_location=device)
-    model.load_state_dict(ckpt["model_state_dict"], strict=False)
-    model.eval()
-    print(f"Loaded checkpoint from step {ckpt.get('step', '?')}")
+    # Architecture is read from the run's config.json (next to the checkpoint),
+    # so this matches whatever the checkpoint was trained with.
+    model, _ = load_onestep_run(args.checkpoint, device)
+    print(f"Loaded checkpoint {args.checkpoint}")
 
     schedule = KarrasSchedule(n_steps=50, sigma_min=0.002, sigma_max=10.0, rho=7.0)
     noiser = VENoiser(schedule, sigma_data=1.0).to(device)
