@@ -33,7 +33,9 @@ import torch  # noqa: E402
 from tinyfold.inference.build import load_onestep_run  # noqa: E402
 from tinyfold.inference.samplers import sample_k_centroids  # noqa: E402
 from tinyfold.model.diffusion import KarrasSchedule, VENoiser  # noqa: E402
-from tinyfold.model.metrics import compute_dockq, compute_rmse  # noqa: E402
+from tinyfold.model.metrics import compute_dockq  # noqa: E402
+from tinyfold.model.losses import compute_rmse  # noqa: E402
+from tinyfold.retrieval import make_template_inputs  # noqa: E402
 from tinyfold.training import load_sample_raw, collate_batch  # noqa: E402
 
 
@@ -69,6 +71,11 @@ def main():
                     help="Use self-conditioning in the VE sampler (set only for "
                          "models TRAINED with self_cond_prob>0).")
     ap.add_argument("--out", default="benchmarks/results/sampler_sweep.csv")
+    ap.add_argument("--template-source", default=None,
+                    help="Override template source (else read from cfg). "
+                         "oracle/oracle_monomer/retrieved/none.")
+    ap.add_argument("--template-cache-dir", default=None,
+                    help="Template npz dir for --template-source retrieved.")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
@@ -86,12 +93,17 @@ def main():
     esm_dir = cfg.get("esm_cache_dir") if cfg.get("aa_embed", "learned") != "learned" else None
     gscale = cfg.get("global_scale")
     per_chain = cfg.get("per_chain_res_idx", False)
+    tsource = args.template_source or cfg.get("template_source", "none")
+    tcache = args.template_cache_dir or cfg.get("template_cache_dir")
+    tcache = tcache if tsource == "retrieved" else None
     samples = []
     for sid in test_ids:
         row = id_to_row[sid]
         samples.append(load_sample_raw(table, row, normalize=True, esm_cache_dir=esm_dir,
-                                       per_chain_res_idx=per_chain, global_scale=gscale))
-    print(f"Loaded {len(samples)} test targets; grid T={T_list} x K={K_list}")
+                                       per_chain_res_idx=per_chain, global_scale=gscale,
+                                       template_cache_dir=tcache))
+    print(f"Loaded {len(samples)} test targets; grid T={T_list} x K={K_list}; "
+          f"template_source={tsource}")
 
     rows = []
     for T in T_list:
@@ -102,6 +114,11 @@ def main():
                    "rmse_oracle": [], "consist": []} for K in K_list}
         for ti, s in enumerate(samples):
             batch = collate_batch([s], device)
+            tc, tm, tf = make_template_inputs(batch, source=tsource)
+            if tc is not None:
+                batch["template_coords_res"] = tc
+                batch["template_mask"] = tm
+                batch["template_frame_id"] = tf
             with torch.no_grad():
                 sc, sa, slddt = sample_k_centroids(
                     model, batch, noiser, device, K=Kmax, base_seed=args.seed,

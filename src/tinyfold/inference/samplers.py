@@ -184,6 +184,18 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
     # OneStep models expose forward_sigma directly; pipeline exposes it on .stage1
     denoiser = model if is_onestep else model.stage1
 
+    # Trunk caching: the trunk (sequence + template + relpos/pair track) does NOT
+    # depend on x_t or sigma, so for onestep models we compute it ONCE and reuse
+    # it across all Euler steps via forward_sigma_with_trunk. This is exact and
+    # avoids re-running the O(L^2) pair track every step (~T x faster for
+    # template-conditioned models). The pipeline path keeps forward_sigma.
+    trunk_tokens = None
+    if is_onestep:
+        trunk_tokens = model.get_trunk_tokens(
+            batch['aa_seq'], batch['chain_ids'], batch['res_idx'], mask,
+            esm_embed=batch.get('esm_embed'), **_template_kwargs(batch),
+        )
+
     # Euler sampling loop
     for i in range(len(sigmas) - 1):
         sigma = sigmas[i]
@@ -199,12 +211,19 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
         x_prev = x.clone() if kabsch_interp else None
 
         # Predict x0 using continuous sigma conditioning (with self-conditioning)
-        out = denoiser.forward_sigma(
-            x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
-            sigma_batch, mask, x0_prev=x0_prev if self_cond else None,
-            esm_embed=batch.get('esm_embed'),
-            **_template_kwargs(batch),
-        )
+        if is_onestep:
+            out = model.forward_sigma_with_trunk(
+                x, trunk_tokens, sigma_batch, mask,
+                x0_prev=x0_prev if self_cond else None,
+                res_idx=batch['res_idx'], chain_ids=batch['chain_ids'],
+            )
+        else:
+            out = denoiser.forward_sigma(
+                x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
+                sigma_batch, mask, x0_prev=x0_prev if self_cond else None,
+                esm_embed=batch.get('esm_embed'),
+                **_template_kwargs(batch),
+            )
         x0_pred = out[0] if is_onestep else out
         x0_pred = torch.clamp(x0_pred, -clamp_val, clamp_val)
 
@@ -249,13 +268,11 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
         # See PLAN D5.
         sigma_min_batch = sigmas[-1].expand(B)
         # Loop 06: ResFoldOneStep.forward_sigma is now a 3-tuple
-        # (centroid, atoms, pred_lddt_or_None). Index by position so we work
-        # for both the legacy and head-on configurations.
-        sigma_out = denoiser.forward_sigma(
-            x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
-            sigma_min_batch, mask, x0_prev=x0_prev if self_cond else None,
-            esm_embed=batch.get('esm_embed'),
-            **_template_kwargs(batch),
+        # (centroid, atoms, pred_lddt_or_None). Reuse the cached trunk.
+        sigma_out = model.forward_sigma_with_trunk(
+            x, trunk_tokens, sigma_min_batch, mask,
+            x0_prev=x0_prev if self_cond else None,
+            res_idx=batch['res_idx'], chain_ids=batch['chain_ids'],
         )
         atoms_pred = sigma_out[1]
         return x, atoms_pred
