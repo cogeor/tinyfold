@@ -33,6 +33,8 @@ def build_onestep_from_config(cfg: dict) -> ResFoldOneStep:
         template_rbf=cfg.get("template_rbf", 32),
         template_d_max=cfg.get("template_d_max", 4.0),
         pair_to_single=cfg.get("pair_to_single", False),
+        frame_atom_head=cfg.get("frame_atom_head", False),
+        global_scale=(cfg.get("global_scale") or 11.0),
         atom_head_layers=cfg["atom_head_layers"],
         atom_head_heads=cfg["atom_head_heads"],
         n_timesteps=cfg.get("T", 50),

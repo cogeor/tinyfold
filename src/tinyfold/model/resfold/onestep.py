@@ -101,6 +101,79 @@ class AtomHead(nn.Module):
         return offsets
 
 
+# Idealized backbone geometry (N, CA, C, O), CA-centred, in ANGSTROMS. Standard
+# bond lengths/angles; O placed off C in the peptide plane (psi averaged out).
+_IDEAL_BACKBONE_A = torch.tensor([
+    [-0.525,  1.363,  0.000],   # N
+    [ 0.000,  0.000,  0.000],   # CA
+    [ 1.526,  0.000,  0.000],   # C
+    [ 2.130,  1.128,  0.000],   # O (approx)
+], dtype=torch.float32)
+
+
+def _rot6d_to_matrix(x: Tensor) -> Tensor:
+    """[..., 6] -> [..., 3, 3] rotation via Gram-Schmidt (Zhou et al. 2019)."""
+    a1, a2 = x[..., :3], x[..., 3:]
+    e1 = torch.nn.functional.normalize(a1, dim=-1)
+    a2 = a2 - (e1 * a2).sum(-1, keepdim=True) * e1
+    e2 = torch.nn.functional.normalize(a2, dim=-1)
+    e3 = torch.cross(e1, e2, dim=-1)
+    return torch.stack([e1, e2, e3], dim=-1)  # columns = axes
+
+
+class FrameAtomHead(nn.Module):
+    """Frame-based backbone placement (AF3/IPA-style encoding).
+
+    Instead of predicting 12 free global-frame offsets, predict a per-residue
+    rigid frame (6D rotation + 3D translation) and place a LEARNABLE idealized
+    backbone template into it. This guarantees near-rigid backbone geometry and
+    only asks the network to learn orientation + position -- far more precise and
+    learnable than free offsets. Returns offsets relative to the centroid, so it
+    is a drop-in replacement for :class:`AtomHead`.
+
+    The template is a learnable ``[4, 3]`` parameter (init to ideal backbone /
+    ``template_scale`` so it starts near-physical in the model's NORMALIZED
+    coordinate units) and is mean-centred at use so ``mean(atoms) ~= centroid``.
+    """
+
+    def __init__(self, c_token: int = 128, n_layers: int = 2, n_heads: int = 4,
+                 dropout: float = 0.0, template_scale: float = 11.0):
+        super().__init__()
+        self.c_token = c_token
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=c_token, nhead=n_heads, dim_feedforward=c_token * 2,
+            dropout=dropout, batch_first=True, norm_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer, num_layers=n_layers, enable_nested_tensor=False)
+        self.norm = nn.LayerNorm(c_token)
+        # 6 (rotation) + 3 (CA translation vs centroid) per residue.
+        self.proj = nn.Linear(c_token, 9)
+        nn.init.zeros_(self.proj.weight)
+        # Init rotation to identity (6D = first two columns of I) so at start the
+        # template is placed un-rotated; translation starts at zero.
+        bias = torch.zeros(9)
+        bias[0] = 1.0  # e1 = x
+        bias[4] = 1.0  # e2 = y
+        self.proj.bias.data.copy_(bias)
+        self.template = nn.Parameter(_IDEAL_BACKBONE_A / float(template_scale))
+
+    def forward(self, tokens: Tensor, mask: Optional[Tensor] = None) -> Tensor:
+        B, L, _ = tokens.shape
+        attn_mask = ~mask if mask is not None else None
+        x = self.norm(self.transformer(tokens, src_key_padding_mask=attn_mask))
+        out = self.proj(x)                                  # [B, L, 9]
+        R = _rot6d_to_matrix(out[..., :6])                  # [B, L, 3, 3]
+        t = out[..., 6:]                                    # [B, L, 3] CA vs centroid
+        tmpl = self.template - self.template.mean(0, keepdim=True)  # mean-centred [4,3]
+        # atoms_local = R @ tmpl^T  -> [B, L, 4, 3]; offset from centroid = that + t
+        placed = torch.einsum("blij,kj->blki", R, tmpl)     # [B, L, 4, 3]
+        offsets = placed + t.unsqueeze(2)                   # relative to centroid
+        if mask is not None:
+            offsets = offsets * mask.unsqueeze(-1).unsqueeze(-1).float()
+        return offsets
+
+
 class ResFoldOneStep(BaseDecoder):
     """One-step ResFold: residue-centroid diffusion with a co-trained atom head.
 
@@ -142,6 +215,8 @@ class ResFoldOneStep(BaseDecoder):
         template_d_max: float = 4.0,
         grad_checkpoint: bool = False,
         pair_to_single: bool = False,
+        frame_atom_head: bool = False,
+        global_scale: float = 11.0,
     ):
         super().__init__()
         self.c_token = c_token
@@ -199,12 +274,21 @@ class ResFoldOneStep(BaseDecoder):
 
         # === HEADS (parallel) ===
         self.centroid_proj = nn.Linear(c_token, 3)
-        self.atom_head = AtomHead(
-            c_token=c_token,
-            n_layers=atom_head_layers,
-            n_heads=atom_head_heads,
-            dropout=dropout,
-        )
+        if frame_atom_head:
+            self.atom_head = FrameAtomHead(
+                c_token=c_token,
+                n_layers=atom_head_layers,
+                n_heads=atom_head_heads,
+                dropout=dropout,
+                template_scale=global_scale,
+            )
+        else:
+            self.atom_head = AtomHead(
+                c_token=c_token,
+                n_layers=atom_head_layers,
+                n_heads=atom_head_heads,
+                dropout=dropout,
+            )
 
         # Optional per-target confidence head (Loop 06). Disabled by default so
         # legacy training runs stay byte-identical. When enabled, returns a

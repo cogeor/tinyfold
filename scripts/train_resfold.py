@@ -275,6 +275,11 @@ def parse_args():
                              "pair representation back into the token content "
                              "(not just the per-head attention logit bias). "
                              "Requires --pair_repr.")
+    parser.add_argument("--frame_atom_head", action="store_true",
+                        help="Frame-based atom head: predict a per-residue rigid "
+                             "frame (rotation+translation) and place an idealized "
+                             "backbone template, instead of free global offsets. "
+                             "Guarantees near-rigid backbone geometry.")
     # --- Template conditioning (retrieval library) ---
     parser.add_argument("--template_cond", action="store_true",
                         help="Enable AF3-style template conditioning: relative "
@@ -1142,6 +1147,8 @@ def _run_training(args, progress):
             template_d_max=getattr(args, "template_d_max", 4.0),
             grad_checkpoint=getattr(args, "grad_checkpoint", False),
             pair_to_single=getattr(args, "pair_to_single", False),
+            frame_atom_head=getattr(args, "frame_atom_head", False),
+            global_scale=(getattr(args, "global_scale", None) or 11.0),
             atom_head_layers=args.atom_head_layers,
             atom_head_heads=args.atom_head_heads,
             n_timesteps=args.T,
