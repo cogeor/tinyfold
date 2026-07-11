@@ -141,6 +141,7 @@ class ResFoldOneStep(BaseDecoder):
         template_rbf: int = 32,
         template_d_max: float = 4.0,
         grad_checkpoint: bool = False,
+        pair_to_single: bool = False,
     ):
         super().__init__()
         self.c_token = c_token
@@ -175,6 +176,7 @@ class ResFoldOneStep(BaseDecoder):
             template_rbf=template_rbf,
             template_d_max=template_d_max,
             grad_checkpoint=grad_checkpoint,
+            pair_to_single=pair_to_single,
         )
 
         # === DENOISER (per-step) ===

@@ -267,7 +267,14 @@ def parse_args():
                              "activation memory -> larger batch / L.")
     parser.add_argument("--amp", action="store_true",
                         help="bf16 autocast for the training forward/backward "
-                             "(halves activation memory, faster on Ampere+).")
+                             "(halves activation memory, faster on Ampere+). "
+                             "WARNING: diverges EDM training (large loss weights "
+                             "-> NaN in bf16); leave off unless guarded.")
+    parser.add_argument("--pair_to_single", action="store_true",
+                        help="Higher-bandwidth template conditioning: inject the "
+                             "pair representation back into the token content "
+                             "(not just the per-head attention logit bias). "
+                             "Requires --pair_repr.")
     # --- Template conditioning (retrieval library) ---
     parser.add_argument("--template_cond", action="store_true",
                         help="Enable AF3-style template conditioning: relative "
@@ -1134,6 +1141,7 @@ def _run_training(args, progress):
             template_rbf=getattr(args, "template_rbf", 32),
             template_d_max=getattr(args, "template_d_max", 4.0),
             grad_checkpoint=getattr(args, "grad_checkpoint", False),
+            pair_to_single=getattr(args, "pair_to_single", False),
             atom_head_layers=args.atom_head_layers,
             atom_head_heads=args.atom_head_heads,
             n_timesteps=args.T,

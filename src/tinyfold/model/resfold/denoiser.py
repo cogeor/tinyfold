@@ -218,6 +218,7 @@ class ResidueEncoder(nn.Module):
         template_rbf: int = 32,
         template_d_max: float = 4.0,
         grad_checkpoint: bool = False,
+        pair_to_single: bool = False,
     ):
         super().__init__()
         self.c_token = c_token
@@ -290,6 +291,7 @@ class ResidueEncoder(nn.Module):
                     template_rbf=template_rbf,
                     template_d_max=template_d_max,
                     grad_checkpoint=grad_checkpoint,
+                    pair_to_single=pair_to_single,
                 )
                 if self.pair_repr_enabled
                 else None
@@ -364,13 +366,18 @@ class ResidueEncoder(nn.Module):
                 valid = mask if mask is not None else torch.ones(
                     B, L, dtype=torch.bool, device=h.device
                 )
-                pair_bias = self.pair_track(
+                pair_bias, single_update = self.pair_track(
                     h, res_idx, chain_ids, valid,
                     template_coords_res=template_coords_res,
                     template_mask=template_mask,
                     template_frame_id=template_frame_id,
                 )
                 attn_bias = pair_bias if attn_bias is None else attn_bias + pair_bias
+                # Higher-bandwidth pair->single injection (zero-init -> no-op at
+                # start): the pair rep flows into the token CONTENT, not just the
+                # attention logits.
+                if single_update is not None:
+                    h = h + single_update
             h = self.transformer(h, src_key_padding_mask=attn_mask, attn_bias=attn_bias)
         else:
             h = self.transformer(h, src_key_padding_mask=attn_mask)

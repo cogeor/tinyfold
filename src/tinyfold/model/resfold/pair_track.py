@@ -146,6 +146,7 @@ class PairTrack(nn.Module):
         template_rbf: int = 32,
         template_d_max: float = 4.0,
         grad_checkpoint: bool = False,
+        pair_to_single: bool = False,
     ):
         super().__init__()
         if c_pair < 1 or n_layers < 1 or c_hidden < 1:
@@ -201,6 +202,19 @@ class PairTrack(nn.Module):
         nn.init.zeros_(self.to_bias.weight)
         nn.init.zeros_(self.to_bias.bias)
 
+        # Pair -> single injection (higher-bandwidth conditioning): the attention
+        # bias above only carries n_heads scalars per (i,j) into the ATTENTION
+        # LOGITS -- too lossy to reconstruct a precise interface from the
+        # template. This head projects each token's pair row back into the token
+        # CONTENT, so the template's (cross-chain) geometry directly shapes the
+        # single representation. Zero-init -> no-op at start.
+        self.pair_to_single = bool(pair_to_single)
+        if self.pair_to_single:
+            self.single_ln = nn.LayerNorm(c_pair)
+            self.to_single = nn.Linear(c_pair, c_token)
+            nn.init.zeros_(self.to_single.weight)
+            nn.init.zeros_(self.to_single.bias)
+
     def _run_block(self, block, z: Tensor, pair_mask: Tensor) -> Tensor:
         """One (TriMulOut + TriMulIn + Transition) residual block, pair-masked."""
         tri_out, tri_in, transition = block
@@ -226,8 +240,11 @@ class PairTrack(nn.Module):
         template_coords_res: Tensor = None,  # [B, L, 4, 3] template backbone (normalized units)
         template_mask: Tensor = None,        # [B, L] bool coverage
         template_frame_id: Tensor = None,    # [B, L] long rigid-group id
-    ) -> Tensor:
-        """Return per-head additive attention bias ``[B, n_heads, L, L]``.
+    ):
+        """Return ``(attn_bias [B, n_heads, L, L], single_update or None)``.
+
+        ``single_update`` is ``[B, L, c_token]`` when ``pair_to_single`` is
+        enabled (the pair rep projected back into the token content), else None.
 
         When ``template_cond`` is enabled and ``template_coords_res`` is passed,
         AF3-style relative pair features are built from the template coords and
@@ -267,4 +284,14 @@ class PairTrack(nn.Module):
                 z = self._run_block(block, z, pair_mask)
 
         bias = self.to_bias(self.out_ln(z))            # [B, L, L, n_heads]
-        return bias.permute(0, 3, 1, 2).contiguous()   # [B, n_heads, L, L]
+        bias = bias.permute(0, 3, 1, 2).contiguous()   # [B, n_heads, L, L]
+
+        single_update = None
+        if self.pair_to_single:
+            # Masked mean over j of the pair row -> per-token geometric summary.
+            zf = self.to_single(self.single_ln(z))     # [B, L, L, c_token]
+            m = pair_mask.unsqueeze(-1).to(zf.dtype)    # [B, L, L, 1]
+            denom = m.sum(2).clamp(min=1.0)             # [B, L, 1]
+            single_update = (zf * m).sum(2) / denom     # [B, L, c_token]
+
+        return bias, single_update
