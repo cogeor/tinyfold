@@ -9,11 +9,13 @@ description = "AlphaFold3-style binary PPI predictor"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "torch>=2.0",
+    "torch>=2.5,<2.7",
     "gemmi>=0.6",
     "pyarrow>=14.0",
     "pandas>=2.0",
     "numpy>=1.24",
+    "scipy>=1.10",
+    "dill>=0.3",
     "tqdm",
     "requests",
     "matplotlib>=3.5",
@@ -30,6 +32,20 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tinyfold"]
+
+# --- CUDA torch via uv --------------------------------------------------------
+# PyPI only ships CPU torch on Windows; CUDA builds live on the PyTorch index.
+# Pull the cu124 wheel on win32/linux (both have cu124 builds); fall back to
+# PyPI elsewhere (macOS -> mps/cpu). This makes `uv sync` produce a GPU env.
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu124", marker = "sys_platform == 'win32' or sys_platform == 'linux'" },
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
