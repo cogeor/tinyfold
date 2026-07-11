@@ -207,6 +207,13 @@ def parse_args():
                              "(5 bins; last is [1500, inf)).")
     parser.add_argument("--no_normalize", action="store_true",
                         help="Don't normalize coordinates to unit variance - work in Angstroms directly")
+    parser.add_argument("--global_scale", type=float, default=None,
+                        help="Fixed coordinate divisor (Angstroms) used INSTEAD of "
+                             "per-sample std when normalizing. Decouples coordinate "
+                             "scale from complex size (an 8A contact maps to the same "
+                             "normalized value at every size), addressing the OOD "
+                             "size-collapse. ~15 matches the dataset-global coord std / "
+                             "AF3's sigma_data convention. None = legacy per-sample std.")
     parser.add_argument("--per_chain_res_idx", action="store_true",
                         help="Use per-chain-reset res_idx ([0..LA-1] then [0..LB-1]) "
                              "instead of the legacy single arange(L_total). The legacy "
@@ -952,8 +959,11 @@ def _run_training(args, progress):
     logger.log(f"Preloading samples... (normalize={normalize})")
     _esm_dir = args.esm_cache_dir if args.aa_embed != "learned" else None
     per_chain = getattr(args, "per_chain_res_idx", False)
-    train_samples = {idx: load_sample_raw(table, idx, normalize=normalize, esm_cache_dir=_esm_dir, per_chain_res_idx=per_chain) for idx in train_indices}
-    test_samples = {idx: load_sample_raw(table, idx, normalize=normalize, esm_cache_dir=_esm_dir, per_chain_res_idx=per_chain) for idx in test_indices}
+    gscale = getattr(args, "global_scale", None)
+    if gscale is not None:
+        logger.log(f"  Fixed-scale normalization: coords / {gscale:.2f} A (size-invariant)")
+    train_samples = {idx: load_sample_raw(table, idx, normalize=normalize, esm_cache_dir=_esm_dir, per_chain_res_idx=per_chain, global_scale=gscale) for idx in train_indices}
+    test_samples = {idx: load_sample_raw(table, idx, normalize=normalize, esm_cache_dir=_esm_dir, per_chain_res_idx=per_chain, global_scale=gscale) for idx in test_indices}
     logger.log(f"  Loaded {len(train_samples)} train, {len(test_samples)} test samples")
 
     # If not normalizing, warn about sigma values

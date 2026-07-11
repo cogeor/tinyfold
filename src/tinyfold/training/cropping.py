@@ -82,6 +82,21 @@ def _apply_residue_indices(sample: Dict[str, Any], idx: Tensor) -> Dict[str, Any
     atom_idx = (idx.unsqueeze(1) * 4 + torch.arange(4, device=idx.device).unsqueeze(0)).reshape(-1)
     out['coords'] = sample['coords'][atom_idx]
     out['atom_types'] = sample['atom_types'][atom_idx]
+
+    # Re-center the crop on its OWN centroid. The parent complex was centered at
+    # load time, but a subset is not: a spatially-compact crop (Spatial/
+    # Interface) sits off-origin in the parent frame. The EDM preconditioning
+    # (sigma_data) and the sampler init (x = sigma_max * randn, origin-centered)
+    # both assume centered data, so feeding an off-center crop to the denoiser
+    # is a train/inference mismatch. Centering here restores the contract.
+    # Scale is left to the (fixed) global-scale convention: with a size-
+    # independent divisor a crop already carries the correct absolute scale, so
+    # no per-crop rescale is needed (and rescaling would re-introduce the
+    # size-coupling we are trying to remove).
+    crop_centroid = out['coords'].mean(dim=0, keepdim=True)  # [1, 3]
+    out['coords'] = out['coords'] - crop_centroid
+    out['centroids'] = sample['centroids'][idx] - crop_centroid
+    out['coords_res'] = out['coords'].view(L_crop, 4, 3)
     # atom_to_res maps to the NEW residue index (0..L_crop-1), not the global one.
     out['atom_to_res'] = torch.arange(L_crop, device=idx.device).repeat_interleave(4)
 

@@ -1,0 +1,85 @@
+# Scaling map — POINT 1: smaller model (6.7M) at the confirmed working regime.
+#
+# Purpose: measure how much we lose by halving capacity vs the 11.8M
+# small-specialist best (SSC: test DockQ 0.258, 43.5% succ, 53 medium @ <=200).
+# Everything matches the SSC recipe EXCEPT:
+#   - c_token 256 -> 192  (11.8M -> 6.7M params)
+#   - fixed-scale coords (global_scale=11.0) instead of per-sample std.
+#     On <=200 res, per-sample std ~10.5A so /11 keeps coords ~unit-std: this
+#     run is ~calibration-identical to SSC (sigma_data=1, clamp=3 unchanged),
+#     so the DockQ delta isolates CAPACITY, not the scale change. The
+#     size-invariance payoff of fixed-scale only appears once the cap widens.
+#   - eval K sweep adds K=20 (near-free: trunk runs once, denoiser reruns).
+#
+# Reference point for the model-size axis of the map.
+
+model_kind: onestep
+mode: stage1_only
+
+# --- Data: SMALL ONLY (total residues <= 200 == atoms <= 800), same as SSC ---
+n_train: 3000
+n_test: 200
+n_eval_train: 200
+min_atoms: 0
+max_atoms: 800
+batch_size: 32
+dynamic_batch: false
+use_bucketing: false
+
+# --- Training ---
+n_steps: 30000
+eval_every: 3000
+lr: 1.0e-04
+min_lr: 1.0e-05
+grad_accum: 1
+seed: 42
+
+# --- Architecture: ~6.7M params (c192 vs SSC's c256=11.8M) ---
+c_token_s1: 192
+trunk_layers: 6
+denoiser_blocks: 6
+atom_head_layers: 2
+atom_head_heads: 4
+
+aa_embed: esm2_35M
+per_chain_res_idx: true
+
+# --- Fixed-scale coordinates (size-invariant; see header) ---
+global_scale: 11.0
+crop_strategy: none
+relpos_bias: true
+relpos_clip: 32
+pair_repr: false
+
+# --- Diffusion ---
+T: 50
+continuous_sigma: true
+sigma_data: 1.0
+sigma_min: 0.002
+sigma_max: 10.0
+
+# --- Confidence head + ranking (matches SSC) ---
+confidence_head: true
+confidence_head_weight: 0.1
+rank_by: confidence
+
+# --- Loss / aug (matches SSC) ---
+loss_weighting: true
+augment_rotation: true
+multi_copy: 0
+self_cond_prob: 0.0
+dist_weight: 0.1
+geom_weight: 0.1
+contact_weight: 0.0
+atom_weight: 0.5
+atom_warmup_steps: 500
+
+# --- Eval sampler: K sweep now includes 20 ---
+one_shot_sample: true
+n_samples: 20
+eval_K_list: "1,5,20"
+cluster_radius: 5.0
+
+eval_train_dockq: true
+
+output_dir: outputs/resfold/scale_6M_le200

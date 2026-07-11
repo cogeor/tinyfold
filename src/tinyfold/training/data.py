@@ -18,6 +18,7 @@ def load_sample(
     normalize: bool = True,
     esm_cache_dir: Optional[str | Path] = None,
     per_chain_res_idx: bool = False,
+    global_scale: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Load sample at residue level (4 atoms per residue).
 
@@ -25,6 +26,17 @@ def load_sample(
         table: PyArrow table from samples.parquet
         i: Sample index
         normalize: If True, normalize coords to unit variance
+        global_scale: If set (and ``normalize`` is True), divide coords by this
+            FIXED constant instead of the per-sample std. This decouples the
+            coordinate scale from complex size: a physical Ångström maps to the
+            same normalized value at every size, so a model trained on one size
+            regime represents interface geometry at the right absolute scale on
+            another. (Per-sample std normalization couples the scale to size —
+            an 8 Å contact is 0.77 normalized units at <=200 res but 0.36 at
+            >1000 res — which is a measured driver of the OOD size collapse.)
+            The stored ``std`` is set to ``global_scale`` so the ``* std``
+            un-normalization at eval/export is unchanged. Matches the AF3/Boltz
+            fixed-``sigma_data`` convention. Ignored when ``normalize`` is False.
         esm_cache_dir: Optional directory containing per-sample ESM-2 embeddings
             (NPZ files keyed by ``sample_id``). When given, the returned dict
             includes ``'esm_embed'``: float32 [L, esm_dim]. The cache key is
@@ -64,8 +76,14 @@ def load_sample(
     original_std = coords.std()
 
     if normalize:
-        coords = coords / original_std
-        std = original_std
+        if global_scale is not None:
+            # Fixed-scale: size-invariant divisor (see docstring).
+            coords = coords / global_scale
+            std = torch.tensor(float(global_scale))
+        else:
+            # Legacy per-sample normalization (couples scale to complex size).
+            coords = coords / original_std
+            std = original_std
     else:
         std = torch.tensor(1.0)
 

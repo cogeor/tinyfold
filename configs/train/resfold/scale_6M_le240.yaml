@@ -1,0 +1,79 @@
+# Scaling map — POINT 2: smaller model (6.7M) at +20% protein size (<=240 res).
+#
+# Moves TWO axes vs SSC at once (deliberately, to trace the frontier cheaply):
+#   - protein size cap 200 -> 240 res (+20%, the target "working-size" bump)
+#   - dataset pool 3352 -> 5259 (+57%); n_train 3000 -> 5000
+# Same 6.7M / fixed-scale recipe as scale_6M_le200. Read against scale_6M_le200
+# to see whether the smaller model holds quality as size+data grow together.
+#
+# fixed-scale (global_scale=11.0): at <=240 res, per-sample std ~10.7A, so /11
+# keeps coords ~unit-std -> sigma_data=1 / clamp=3 stay calibrated. This is the
+# regime where fixed-scale starts to matter: it guarantees a 240-res complex's
+# interface sits at the SAME normalized scale as a 120-res one, which per-sample
+# std would not.
+
+model_kind: onestep
+mode: stage1_only
+
+# --- Data: total residues <= 240 (atoms <= 960); pool 5259 ---
+n_train: 5000
+n_test: 200
+n_eval_train: 200
+min_atoms: 0
+max_atoms: 960
+batch_size: 32
+dynamic_batch: false
+use_bucketing: false
+
+# --- Training (more data -> a few more steps) ---
+n_steps: 36000
+eval_every: 3000
+lr: 1.0e-04
+min_lr: 1.0e-05
+grad_accum: 1
+seed: 42
+
+# --- Architecture: ~6.7M params (c192) ---
+c_token_s1: 192
+trunk_layers: 6
+denoiser_blocks: 6
+atom_head_layers: 2
+atom_head_heads: 4
+
+aa_embed: esm2_35M
+per_chain_res_idx: true
+
+global_scale: 11.0
+crop_strategy: none
+relpos_bias: true
+relpos_clip: 32
+pair_repr: false
+
+T: 50
+continuous_sigma: true
+sigma_data: 1.0
+sigma_min: 0.002
+sigma_max: 10.0
+
+confidence_head: true
+confidence_head_weight: 0.1
+rank_by: confidence
+
+loss_weighting: true
+augment_rotation: true
+multi_copy: 0
+self_cond_prob: 0.0
+dist_weight: 0.1
+geom_weight: 0.1
+contact_weight: 0.0
+atom_weight: 0.5
+atom_warmup_steps: 500
+
+one_shot_sample: true
+n_samples: 20
+eval_K_list: "1,5,20"
+cluster_radius: 5.0
+
+eval_train_dockq: true
+
+output_dir: outputs/resfold/scale_6M_le240

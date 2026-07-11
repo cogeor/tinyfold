@@ -46,13 +46,14 @@ def band(dq):
 
 
 def eval_split(model, noiser, table, test_indices, device, esm_dir,
-               per_chain, K, seed, label):
+               per_chain, K, seed, label, global_scale=None):
     bands = {"incorrect": 0, "acceptable": 0, "medium": 0, "high": 0}
     dockqs, c_rmsds = [], []
     n_skip = 0
     for pos, idx in enumerate(test_indices):
         s = load_sample_raw(table, idx, normalize=True,
-                            esm_cache_dir=esm_dir, per_chain_res_idx=per_chain)
+                            esm_cache_dir=esm_dir, per_chain_res_idx=per_chain,
+                            global_scale=global_scale)
         batch = collate_batch([s], device)
         n_res = s["n_res"]
         cents, atoms, lddts = sample_k_centroids(
@@ -120,6 +121,16 @@ def main():
     model, _ = load_onestep_run(args.checkpoint, device)
     print(f"Loaded checkpoint {args.checkpoint}")
 
+    # Match the training-time coordinate normalization. If the run used
+    # fixed-scale (global_scale in its config.json), eval MUST divide by the
+    # same constant or the model sees coords at the wrong scale.
+    global_scale = None
+    cfg_path = os.path.join(os.path.dirname(args.checkpoint), "config.json")
+    if os.path.exists(cfg_path):
+        global_scale = json.load(open(cfg_path)).get("global_scale")
+    if global_scale is not None:
+        print(f"Using fixed-scale normalization: coords / {global_scale:.2f} A")
+
     schedule = KarrasSchedule(n_steps=50, sigma_min=0.002, sigma_max=10.0, rho=7.0)
     noiser = VENoiser(schedule, sigma_data=1.0).to(device)
 
@@ -137,6 +148,7 @@ def main():
         results.append(eval_split(
             model, noiser, table, test_idx, device, args.esm_dir,
             per_chain=True, K=args.K, seed=args.seed, label=label,
+            global_scale=global_scale,
         ))
 
     if args.out:

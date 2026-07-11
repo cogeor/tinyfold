@@ -1,0 +1,74 @@
+# Scaling map — POINT 3: best model size (11.8M) at +20% protein size (<=240).
+#
+# Same data as scale_6M_le240 (<=240 res, 5000 train). Only the model differs:
+# c_token 192 -> 256 (6.7M -> 11.8M). Read as a PAIR with scale_6M_le240 to
+# isolate the model-size effect at the wider frontier, and against the existing
+# 11.8M SSC (<=200, DockQ 0.258) to see the size-cap effect at full capacity.
+#
+# This is the config to widen further (<=300, <=400 ...) once we know how far
+# 11.8M holds at <=240.
+
+model_kind: onestep
+mode: stage1_only
+
+# --- Data: total residues <= 240 (atoms <= 960); pool 5259 ---
+n_train: 5000
+n_test: 200
+n_eval_train: 200
+min_atoms: 0
+max_atoms: 960
+batch_size: 32
+dynamic_batch: false
+use_bucketing: false
+
+n_steps: 36000
+eval_every: 3000
+lr: 1.0e-04
+min_lr: 1.0e-05
+grad_accum: 1
+seed: 42
+
+# --- Architecture: 11.8M params (c256, matches SSC best) ---
+c_token_s1: 256
+trunk_layers: 6
+denoiser_blocks: 6
+atom_head_layers: 2
+atom_head_heads: 4
+
+aa_embed: esm2_35M
+per_chain_res_idx: true
+
+global_scale: 11.0
+crop_strategy: none
+relpos_bias: true
+relpos_clip: 32
+pair_repr: false
+
+T: 50
+continuous_sigma: true
+sigma_data: 1.0
+sigma_min: 0.002
+sigma_max: 10.0
+
+confidence_head: true
+confidence_head_weight: 0.1
+rank_by: confidence
+
+loss_weighting: true
+augment_rotation: true
+multi_copy: 0
+self_cond_prob: 0.0
+dist_weight: 0.1
+geom_weight: 0.1
+contact_weight: 0.0
+atom_weight: 0.5
+atom_warmup_steps: 500
+
+one_shot_sample: true
+n_samples: 20
+eval_K_list: "1,5,20"
+cluster_radius: 5.0
+
+eval_train_dockq: true
+
+output_dir: outputs/resfold/scale_12M_le240
