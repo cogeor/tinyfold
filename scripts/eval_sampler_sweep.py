@@ -34,6 +34,10 @@ from tinyfold.inference.build import load_onestep_run  # noqa: E402
 from tinyfold.inference.samplers import sample_k_centroids  # noqa: E402
 from tinyfold.model.diffusion import KarrasSchedule, VENoiser  # noqa: E402
 from tinyfold.model.metrics import compute_dockq  # noqa: E402
+from tinyfold.model.metrics.cluster import (  # noqa: E402
+    score_geometric_energy,
+    score_self_consistency,
+)
 from tinyfold.model.losses import compute_rmse  # noqa: E402
 from tinyfold.retrieval import make_template_inputs  # noqa: E402
 from tinyfold.training import load_sample_raw, collate_batch  # noqa: E402
@@ -99,19 +103,24 @@ def main():
     samples = []
     for sid in test_ids:
         row = id_to_row[sid]
-        samples.append(load_sample_raw(table, row, normalize=True, esm_cache_dir=esm_dir,
-                                       per_chain_res_idx=per_chain, global_scale=gscale,
-                                       template_cache_dir=tcache))
+        s = load_sample_raw(table, row, normalize=True, esm_cache_dir=esm_dir,
+                            per_chain_res_idx=per_chain, global_scale=gscale,
+                            template_cache_dir=tcache)
+        s["iface_mask"] = torch.tensor(table["iface_mask"][row].as_py(), dtype=torch.bool)
+        samples.append(s)
     print(f"Loaded {len(samples)} test targets; grid T={T_list} x K={K_list}; "
           f"template_source={tsource}")
 
+    # Rankers compared per cell (all training-free except confidence).
+    RANKERS = ["conf", "consist", "energy", "oracle"]
     rows = []
     for T in T_list:
         noiser = _noiser_for_T(T, cfg, device)
         one_shot = (T == 1)
-        # accumulators keyed by K
-        acc = {K: {"dq_rank": [], "dq_best": [], "succ": [], "rmse_rank": [],
-                   "rmse_oracle": [], "consist": []} for K in K_list}
+        acc = {K: {f"dq_{r}": [] for r in RANKERS} for K in K_list}
+        for K in K_list:
+            acc[K]["rmse_oracle"] = []
+            acc[K]["consist"] = []
         for ti, s in enumerate(samples):
             batch = collate_batch([s], device)
             tc, tm, tf = make_template_inputs(batch, source=tsource)
@@ -128,45 +137,48 @@ def main():
             n_res = s["n_res"]
             gt_c = batch["centroids"]
             std = s["std"]
-            # per-sample centroid RMSE + confidence
+            iface = s["iface_mask"].to(device)
+            chain = batch["chain_ids"][0, :n_res]
+            valid = batch["mask_res"][0, :n_res]
             rmses = [compute_rmse(sc[k], gt_c, batch["mask_res"]).item() * std for k in range(Kmax)]
             confs = [float(slddt[k]) if slddt is not None else 0.0 for k in range(Kmax)]
+
+            def dockq_of(idx, _cache={}):
+                if idx not in _cache:
+                    _cache[idx] = compute_dockq(
+                        sa[idx][0, :n_res], batch["coords_res"][0, :n_res],
+                        batch["aa_seq"][0, :n_res], chain, std=std)["dockq"]
+                return _cache[idx]
+
             for K in K_list:
                 sub_r = rmses[:K]
-                rank = max(range(K), key=lambda i: confs[i]) if slddt is not None else 0
-                best = min(range(K), key=lambda i: sub_r[i])
-                dq_rank = compute_dockq(sa[rank][0, :n_res], batch["coords_res"][0, :n_res],
-                                        batch["aa_seq"][0, :n_res], batch["chain_ids"][0, :n_res],
-                                        std=std)["dockq"]
-                dq_best = compute_dockq(sa[best][0, :n_res], batch["coords_res"][0, :n_res],
-                                        batch["aa_seq"][0, :n_res], batch["chain_ids"][0, :n_res],
-                                        std=std)["dockq"]
+                # per-ranker pick
+                pick = {}
+                pick["conf"] = max(range(K), key=lambda i: confs[i]) if slddt is not None else 0
+                cons_scores = score_self_consistency(sc[:K, 0, :n_res], iface)
+                pick["consist"] = int(torch.argmin(cons_scores).item()) if K > 1 else 0
+                en_scores = score_geometric_energy(sa[:K, 0, :n_res], chain, valid)
+                pick["energy"] = int(torch.argmin(en_scores).item()) if K > 1 else 0
+                pick["oracle"] = min(range(K), key=lambda i: sub_r[i])
                 a = acc[K]
-                if dq_rank is not None:
-                    a["dq_rank"].append(dq_rank)
-                    a["succ"].append(1.0 if dq_rank >= 0.23 else 0.0)
-                if dq_best is not None:
-                    a["dq_best"].append(dq_best)
-                a["rmse_rank"].append(sub_r[rank])
-                a["rmse_oracle"].append(sub_r[best])
+                for r in RANKERS:
+                    dq = dockq_of(pick[r])
+                    if dq is not None:
+                        a[f"dq_{r}"].append(dq)
+                a["rmse_oracle"].append(sub_r[pick["oracle"]])
                 a["consist"].append(_consistency(sc, K, std))
         for K in K_list:
             a = acc[K]
             mean = lambda xs: (sum(xs) / len(xs)) if xs else float("nan")
-            row = {
-                "T": T, "K": K, "n": len(samples),
-                "dockq_ranked": round(mean(a["dq_rank"]), 4),
-                "dockq_best": round(mean(a["dq_best"]), 4),
-                "succ_pct": round(100 * mean(a["succ"]), 1),
-                "rmse_ranked": round(mean(a["rmse_rank"]), 3),
-                "rmse_oracle": round(mean(a["rmse_oracle"]), 3),
-                "consistency_A": round(mean(a["consist"]), 3),
-            }
+            row = {"T": T, "K": K, "n": len(samples)}
+            for r in RANKERS:
+                row[f"dockq_{r}"] = round(mean(a[f"dq_{r}"]), 4)
+            row["rmse_oracle"] = round(mean(a["rmse_oracle"]), 3)
+            row["consistency_A"] = round(mean(a["consist"]), 3)
             rows.append(row)
-            print(f"  T={T:>2} K={K:>2} | DockQ rank {row['dockq_ranked']:.3f} "
-                  f"best {row['dockq_best']:.3f} succ {row['succ_pct']:.0f}% | "
-                  f"RMSE rank {row['rmse_ranked']:.2f} oracle {row['rmse_oracle']:.2f} | "
-                  f"consist {row['consistency_A']:.2f} A")
+            print(f"  T={T:>2} K={K:>2} | DockQ conf {row['dockq_conf']:.3f} "
+                  f"consist {row['dockq_consist']:.3f} energy {row['dockq_energy']:.3f} "
+                  f"| oracle {row['dockq_oracle']:.3f} | consistency {row['consistency_A']:.2f} A")
 
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, "w", newline="") as f:
