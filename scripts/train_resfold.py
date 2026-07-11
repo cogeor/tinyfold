@@ -280,6 +280,24 @@ def parse_args():
                              "frame (rotation+translation) and place an idealized "
                              "backbone template, instead of free global offsets. "
                              "Guarantees near-rigid backbone geometry.")
+    parser.add_argument("--atom_diffusion", action="store_true",
+                        help="Replace the one-shot atom head with an atom-DIFFUSION "
+                             "stage: EDM diffusion over per-residue backbone offsets, "
+                             "conditioned on the centroid stage's tokens. Iterative "
+                             "refinement (sees current atom state). Use with "
+                             "--no augment (frame-consistent offsets).")
+    parser.add_argument("--atom_sigma_data", type=float, default=0.15,
+                        help="EDM sigma_data for the atom-offset diffusion "
+                             "(offset std in normalized units; ~1.5A/scale).")
+    parser.add_argument("--atom_sigma_min", type=float, default=0.002)
+    parser.add_argument("--atom_sigma_max", type=float, default=1.0)
+    parser.add_argument("--atom_steps", type=int, default=8,
+                        help="Atom-diffusion sampling steps at eval.")
+    parser.add_argument("--fixed_sigma", type=float, default=None,
+                        help="Isolation test: train at this single fixed sigma "
+                             "(near-clean input) to decouple the atom head from "
+                             "diffusion noise. Pair with --sigma_max = same value "
+                             "so eval one-shot uses the same near-clean sigma.")
     # --- Template conditioning (retrieval library) ---
     parser.add_argument("--template_cond", action="store_true",
                         help="Enable AF3-style template conditioning: relative "
@@ -1149,6 +1167,10 @@ def _run_training(args, progress):
             pair_to_single=getattr(args, "pair_to_single", False),
             frame_atom_head=getattr(args, "frame_atom_head", False),
             global_scale=(getattr(args, "global_scale", None) or 11.0),
+            atom_diffusion=getattr(args, "atom_diffusion", False),
+            atom_sigma_data=getattr(args, "atom_sigma_data", 0.15),
+            atom_sigma_min=getattr(args, "atom_sigma_min", 0.002),
+            atom_sigma_max=getattr(args, "atom_sigma_max", 1.0),
             atom_head_layers=args.atom_head_layers,
             atom_head_heads=args.atom_head_heads,
             n_timesteps=args.T,
@@ -1158,6 +1180,7 @@ def _run_training(args, progress):
             confidence_head=args.confidence_head,
             sigma_data=args.sigma_data,
         ).to(device)
+        model._atom_eval_steps = getattr(args, "atom_steps", 8)
         # In OneStep the model itself is the "stage 1" denoiser; alias for forward calls.
         stage1_module = model
         if args.checkpoint:
@@ -1335,7 +1358,13 @@ def _run_training(args, progress):
 
             if args.continuous_sigma:
                 # AF3-style: continuous sigma with VE noise (x_t = x0 + sigma * noise)
-                if args.stratified_sigma:
+                if getattr(args, "fixed_sigma", None) is not None:
+                    # Isolation test: train at a single small sigma so the
+                    # denoiser input is near-clean (x_t ~= GT centroids) and the
+                    # atom head trains as a regression, decoupled from diffusion
+                    # noise. Used to compare atom-head encodings cleanly.
+                    sigma = torch.full((current_batch_size,), float(args.fixed_sigma), device=device)
+                elif args.stratified_sigma:
                     sigma = noiser.sample_sigma_stratified(current_batch_size, device)
                 else:
                     sigma = noiser.sample_sigma_af3(current_batch_size, device)
@@ -1463,25 +1492,39 @@ def _run_training(args, progress):
                                 x0_prev = (sc_out[0] if is_onestep else sc_out).detach()
 
                         # Main forward pass (with or without self-conditioning)
+                        atom_cond_tokens = None
+                        _atom_diff = is_onestep and getattr(stage1_module, "atom_diffusion", False)
                         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=_amp):
-                            fwd_out = stage1_module.forward_sigma(
-                                x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
-                                sigma, batch['mask_res'], x0_prev=x0_prev,
-                                esm_embed=batch.get('esm_embed'),
-                                template_coords_res=tmpl_coords,
-                                template_mask=tmpl_mask,
-                                template_frame_id=tmpl_frame,
-                            )
+                            if _atom_diff:
+                                # Atom-diffusion path: centroid stage returns tokens;
+                                # atoms come from the atom-diffusion loss below.
+                                centroids_pred, atom_cond_tokens, pred_lddt = stage1_module.centroid_tokens(
+                                    x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
+                                    sigma, batch['mask_res'], x0_prev=x0_prev,
+                                    esm_embed=batch.get('esm_embed'),
+                                    template_coords_res=tmpl_coords,
+                                    template_mask=tmpl_mask,
+                                    template_frame_id=tmpl_frame,
+                                )
+                                atoms_pred = None
+                            else:
+                                fwd_out = stage1_module.forward_sigma(
+                                    x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
+                                    sigma, batch['mask_res'], x0_prev=x0_prev,
+                                    esm_embed=batch.get('esm_embed'),
+                                    template_coords_res=tmpl_coords,
+                                    template_mask=tmpl_mask,
+                                    template_frame_id=tmpl_frame,
+                                )
                         # Cast predictions back to fp32 for the loss (stable).
-                        if is_onestep:
+                        if _atom_diff:
+                            centroids_pred = centroids_pred.float()
+                            atom_cond_tokens = atom_cond_tokens.float()
+                        elif is_onestep:
                             fwd_out = tuple(o.float() if torch.is_tensor(o) else o for o in fwd_out)
-                        else:
-                            fwd_out = fwd_out.float()
-                        if is_onestep:
-                            # Loop 06: 3-tuple (centroid, atoms, pred_lddt_or_None).
                             centroids_pred, atoms_pred, pred_lddt = fwd_out
                         else:
-                            centroids_pred = fwd_out
+                            centroids_pred = fwd_out.float()
                             atoms_pred = None
                     else:
                         # Original behavior with discrete timesteps
@@ -1529,7 +1572,46 @@ def _run_training(args, progress):
                     loss_angle = 0.0
                     loss_omega = 0.0
                     alpha_atom = 0.0
-                    if is_onestep and atoms_pred is not None:
+                    if _atom_diff and atom_cond_tokens is not None:
+                        # === ATOM-DIFFUSION loss ===
+                        B, L = centroids_pred.shape[:2]
+                        adh = stage1_module.atom_diff_head
+                        sd_a = adh.sigma_data
+                        # Offsets from GT centroids (aug off -> same frame).
+                        delta0 = batch['coords_res'] - batch['centroids'].unsqueeze(2)  # [B,L,4,3]
+                        # log-uniform atom sigma in [atom_sigma_min, atom_sigma_max]
+                        lo = math.log(stage1_module.atom_sigma_min); hi = math.log(stage1_module.atom_sigma_max)
+                        sig_a = torch.exp(torch.rand(B, device=delta0.device) * (hi - lo) + lo)
+                        eps_a = torch.randn_like(delta0)
+                        delta_t = delta0 + sig_a.view(B, 1, 1, 1) * eps_a
+                        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=_amp):
+                            delta_pred = stage1_module.denoise_atoms(delta_t, atom_cond_tokens, sig_a, batch['mask_res'])
+                        delta_pred = delta_pred.float()
+                        # EDM loss on the OFFSET (well-conditioned: lambda*c_out^2=1).
+                        # NOT on absolute atoms -- that would multiply the (un-scaled)
+                        # centroid error by the huge low-sigma weight. Offsets are in
+                        # a fixed frame (aug off) so no Kabsch.
+                        lam_a = (sig_a ** 2 + sd_a ** 2) / (sig_a * sd_a) ** 2        # EDM weight [B]
+                        per_sample_atom = compute_mse_loss(
+                            delta_pred.reshape(B, L * 4, 3),
+                            delta0.reshape(B, L * 4, 3),
+                            batch['mask_atom'], use_kabsch=False, reduction='per_sample',
+                        )
+                        atom_loss_t = (per_sample_atom * lam_a).mean()
+                        warmup = args.atom_warmup_steps
+                        ramp = min(1.0, float(step) / float(warmup)) if warmup > 0 else 1.0
+                        alpha_atom = ramp * args.atom_weight
+                        loss = loss + alpha_atom * atom_loss_t
+                        loss_atom = atom_loss_t.item()
+                        atoms_pred_ad = batch['centroids'].unsqueeze(2) + delta_pred   # GT centroid + pred offset
+                        if geom_loss_fn is not None and args.geom_weight > 0:
+                            geom_losses = geom_loss_fn(atoms_pred_ad, batch['mask_res'], gt_coords=batch['coords_res'])
+                            loss = loss + args.geom_weight * geom_losses['total']
+                            loss_geom = geom_losses['total'].item()
+                            loss_bond = geom_losses['bond_length'].item()
+                            loss_angle = geom_losses['bond_angle'].item()
+                            loss_omega = geom_losses['omega'].item()
+                    elif is_onestep and atoms_pred is not None:
                         B, L = centroids_pred.shape[:2]
                         atoms_target_BL43 = batch['coords_res']  # [B, L, 4, 3]
                         # Flatten to [B, L*4, 3] for compute_mse_loss with mask_atom.

@@ -10,6 +10,31 @@ from tinyfold.model.diffusion import kabsch_align_to_target
 from tinyfold.model.geometry import kabsch_rigid
 
 
+@torch.no_grad()
+def sample_atoms_diffusion(model, tokens, centroids, mask, n_steps=8,
+                           sigma_min=0.002, sigma_max=1.0, generator=None):
+    """Iterative atom-diffusion sampling of backbone offsets, given centroids.
+
+    Deterministic Euler over a Karras sigma schedule; returns atoms
+    ``[B, L, 4, 3] = centroids + delta``. ``tokens`` are the centroid-stage
+    denoiser tokens (from ``model.centroid_tokens``).
+    """
+    from tinyfold.model.diffusion import KarrasSchedule
+    B, L = mask.shape
+    device = centroids.device
+    sched = KarrasSchedule(n_steps=n_steps, sigma_min=sigma_min, sigma_max=sigma_max, rho=7.0)
+    sigmas = sched.sigmas.to(device)
+    delta = sigmas[0] * torch.randn(B, L, 4, 3, device=device, generator=generator)
+    for i in range(len(sigmas) - 1):
+        s = sigmas[i].expand(B)
+        d0 = model.denoise_atoms(delta, tokens, s, mask)
+        d_dir = (delta - d0) / sigmas[i]
+        delta = delta + d_dir * (sigmas[i + 1] - sigmas[i])
+    # final clean estimate at the smallest sigma
+    delta = model.denoise_atoms(delta, tokens, sigmas[-1].expand(B), mask)
+    return centroids.unsqueeze(2) + delta
+
+
 def _template_kwargs(batch):
     """Template forward-kwargs, only when a template is present in the batch.
 
@@ -119,6 +144,20 @@ def sample_centroids_one_shot(model, batch, noiser, device, is_onestep=False,
     sigma_init = torch.as_tensor(sigma_init, device=device).view(1).expand(B)
     x = sigma_init.view(B, 1, 1) * torch.randn(B, L, 3, device=device, generator=generator)
     denoiser = model if is_onestep else model.stage1
+    # Atom-diffusion models: one-shot centroids, then iterative atom diffusion.
+    if is_onestep and getattr(model, "atom_diffusion", False):
+        centroid_pred, tokens, _ = model.centroid_tokens(
+            x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
+            sigma_init, mask, x0_prev=None, esm_embed=batch.get('esm_embed'),
+            **_template_kwargs(batch),
+        )
+        atoms_pred = sample_atoms_diffusion(
+            model, tokens, centroid_pred, mask,
+            n_steps=getattr(model, "_atom_eval_steps", 8),
+            sigma_min=model.atom_sigma_min, sigma_max=model.atom_sigma_max,
+            generator=generator,
+        )
+        return centroid_pred, atoms_pred
     out = denoiser.forward_sigma(
         x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
         sigma_init, mask, x0_prev=None,

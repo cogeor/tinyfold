@@ -217,11 +217,18 @@ class ResFoldOneStep(BaseDecoder):
         pair_to_single: bool = False,
         frame_atom_head: bool = False,
         global_scale: float = 11.0,
+        atom_diffusion: bool = False,
+        atom_sigma_data: float = 0.15,
+        atom_sigma_min: float = 0.002,
+        atom_sigma_max: float = 1.0,
     ):
         super().__init__()
         self.c_token = c_token
         self.n_timesteps = n_timesteps
         self.template_cond_enabled = bool(template_cond)
+        self.atom_diffusion = bool(atom_diffusion)
+        self.atom_sigma_min = float(atom_sigma_min)
+        self.atom_sigma_max = float(atom_sigma_max)
         # sigma_data is the EDM preconditioning constant; should match the
         # std of the data distribution in the units the model trains in.
         # 1.0 is correct when coords are per-sample-normalized to unit std;
@@ -289,6 +296,22 @@ class ResFoldOneStep(BaseDecoder):
                 n_heads=atom_head_heads,
                 dropout=dropout,
             )
+
+        # Optional atom-DIFFUSION stage (replaces the one-shot atom head at
+        # eval; co-trained). Diffuses per-residue backbone offsets conditioned on
+        # the denoiser tokens (which encode the centroid layout) + current atom
+        # state. See atom_diffusion.py.
+        if self.atom_diffusion:
+            from .atom_diffusion import AtomDiffusionHead
+            self.atom_diff_head = AtomDiffusionHead(
+                c_token=c_token,
+                n_layers=atom_head_layers,
+                n_heads=atom_head_heads,
+                dropout=dropout,
+                sigma_data=atom_sigma_data,
+            )
+        else:
+            self.atom_diff_head = None
 
         # Optional per-target confidence head (Loop 06). Disabled by default so
         # legacy training runs stay byte-identical. When enabled, returns a
@@ -433,6 +456,61 @@ class ResFoldOneStep(BaseDecoder):
         )
         pred_lddt = self._predict_confidence(denoiser_tokens, mask)
         return centroid_pred, atoms_pred, pred_lddt
+
+    def centroid_tokens(
+        self,
+        x_t: Tensor,
+        aa_seq: Tensor,
+        chain_ids: Tensor,
+        res_idx: Tensor,
+        sigma: Tensor,
+        mask: Optional[Tensor] = None,
+        x0_prev: Optional[Tensor] = None,
+        esm_embed: Optional[Tensor] = None,
+        template_coords_res: Optional[Tensor] = None,
+        template_mask: Optional[Tensor] = None,
+        template_frame_id: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Tensor, Optional[Tensor]]:
+        """Centroid forward that also returns the denoiser tokens.
+
+        For the atom-diffusion stage: returns ``(centroid_pred, denoiser_tokens,
+        pred_lddt)``. The atom stage conditions on ``denoiser_tokens`` (which
+        encode the denoised centroid layout).
+        """
+        B, L, _ = x_t.shape
+        if mask is None:
+            mask = torch.ones(B, L, dtype=torch.bool, device=x_t.device)
+        c_skip, c_out, c_in, c_noise = self._edm_coefficients(sigma)
+        trunk_tokens = self.trunk(
+            aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed,
+            template_coords_res=template_coords_res,
+            template_mask=template_mask,
+            template_frame_id=template_frame_id,
+        )
+        cond = self._embed_c_noise(c_noise)
+        denoiser_tokens = self._denoiser_tokens(
+            c_in * x_t, trunk_tokens, cond, mask, x0_prev,
+            res_idx=res_idx, chain_ids=chain_ids,
+        )
+        F_centroid = self.centroid_proj(denoiser_tokens)
+        centroid_pred = c_skip * x_t + c_out * F_centroid
+        pred_lddt = self._predict_confidence(denoiser_tokens, mask)
+        return centroid_pred, denoiser_tokens, pred_lddt
+
+    def denoise_atoms(
+        self,
+        delta_t: Tensor,
+        denoiser_tokens: Tensor,
+        sigma_a: Tensor,
+        mask: Optional[Tensor] = None,
+    ) -> Tensor:
+        """One atom-diffusion denoise step: noised offsets -> denoised offsets.
+
+        ``delta`` are per-residue backbone offsets from the centroid. Conditions
+        on ``denoiser_tokens`` from :meth:`centroid_tokens`.
+        """
+        assert self.atom_diff_head is not None, "atom_diffusion=False"
+        return self.atom_diff_head(delta_t, denoiser_tokens, sigma_a, mask)
 
     def forward_sigma_with_trunk(
         self,
