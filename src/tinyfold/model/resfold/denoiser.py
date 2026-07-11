@@ -217,6 +217,7 @@ class ResidueEncoder(nn.Module):
         template_cond: bool = False,
         template_rbf: int = 32,
         template_d_max: float = 4.0,
+        grad_checkpoint: bool = False,
     ):
         super().__init__()
         self.c_token = c_token
@@ -288,6 +289,7 @@ class ResidueEncoder(nn.Module):
                     template_cond=self.template_cond_enabled,
                     template_rbf=template_rbf,
                     template_d_max=template_d_max,
+                    grad_checkpoint=grad_checkpoint,
                 )
                 if self.pair_repr_enabled
                 else None

@@ -40,6 +40,7 @@ from typing import Literal
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint
 from torch import Tensor
 
 from ...retrieval.template_features import (
@@ -144,6 +145,7 @@ class PairTrack(nn.Module):
         template_cond: bool = False,
         template_rbf: int = 32,
         template_d_max: float = 4.0,
+        grad_checkpoint: bool = False,
     ):
         super().__init__()
         if c_pair < 1 or n_layers < 1 or c_hidden < 1:
@@ -151,6 +153,9 @@ class PairTrack(nn.Module):
         self.c_pair = c_pair
         self.n_heads = n_heads
         self.relpos_clip = int(relpos_clip)
+        # Recompute the O(L^2) triangle activations in backward instead of
+        # storing them (frees the pair track's dominant memory cost).
+        self.grad_checkpoint = bool(grad_checkpoint)
 
         # Pair init: outer sum of two projections of the single rep.
         self.left = nn.Linear(c_token, c_pair)
@@ -195,6 +200,14 @@ class PairTrack(nn.Module):
         # the optimiser introduces the pair signal gradually.
         nn.init.zeros_(self.to_bias.weight)
         nn.init.zeros_(self.to_bias.bias)
+
+    def _run_block(self, block, z: Tensor, pair_mask: Tensor) -> Tensor:
+        """One (TriMulOut + TriMulIn + Transition) residual block, pair-masked."""
+        tri_out, tri_in, transition = block
+        z = z + tri_out(z, pair_mask)
+        z = z + tri_in(z, pair_mask)
+        z = z + transition(z, pair_mask)
+        return z * pair_mask.unsqueeze(-1).to(z.dtype)
 
     def _relpos_bucket(self, res_idx: Tensor, chain_ids: Tensor) -> Tensor:
         """[B, L] indices -> [B, L, L] long bucket ids for ``relpos_emb``."""
@@ -245,11 +258,13 @@ class PairTrack(nn.Module):
 
         z = z * pair_mask.unsqueeze(-1).to(z.dtype)
 
-        for tri_out, tri_in, transition in self.blocks:
-            z = z + tri_out(z, pair_mask)
-            z = z + tri_in(z, pair_mask)
-            z = z + transition(z, pair_mask)
-            z = z * pair_mask.unsqueeze(-1).to(z.dtype)
+        for block in self.blocks:
+            if self.grad_checkpoint and self.training and z.requires_grad:
+                z = torch.utils.checkpoint.checkpoint(
+                    self._run_block, block, z, pair_mask, use_reentrant=False
+                )
+            else:
+                z = self._run_block(block, z, pair_mask)
 
         bias = self.to_bias(self.out_ln(z))            # [B, L, L, n_heads]
         return bias.permute(0, 3, 1, 2).contiguous()   # [B, n_heads, L, L]

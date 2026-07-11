@@ -260,6 +260,14 @@ def parse_args():
                              "--pair_repr (default 3).")
     parser.add_argument("--pair_hidden", type=int, default=64,
                         help="Triangle hidden width for --pair_repr (default 64).")
+    # --- Efficiency: "everyone does this" ---
+    parser.add_argument("--grad_checkpoint", action="store_true",
+                        help="Gradient-checkpoint the pair-track triangle-mul "
+                             "blocks (recompute in backward). Frees the O(L^2) "
+                             "activation memory -> larger batch / L.")
+    parser.add_argument("--amp", action="store_true",
+                        help="bf16 autocast for the training forward/backward "
+                             "(halves activation memory, faster on Ampere+).")
     # --- Template conditioning (retrieval library) ---
     parser.add_argument("--template_cond", action="store_true",
                         help="Enable AF3-style template conditioning: relative "
@@ -1125,6 +1133,7 @@ def _run_training(args, progress):
             template_cond=getattr(args, "template_cond", False),
             template_rbf=getattr(args, "template_rbf", 32),
             template_d_max=getattr(args, "template_d_max", 4.0),
+            grad_checkpoint=getattr(args, "grad_checkpoint", False),
             atom_head_layers=args.atom_head_layers,
             atom_head_heads=args.atom_head_heads,
             n_timesteps=args.T,
@@ -1424,8 +1433,9 @@ def _run_training(args, progress):
                         # AF3-style with continuous sigma
                         # Self-conditioning: with probability p, first run model to get x0_prev
                         x0_prev = None
+                        _amp = getattr(args, "amp", False) and torch.cuda.is_available()
                         if args.self_cond_prob > 0 and torch.rand(1).item() < args.self_cond_prob:
-                            with torch.no_grad():
+                            with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=_amp):
                                 sc_out = stage1_module.forward_sigma(
                                     x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
                                     sigma, batch['mask_res'], x0_prev=None,
@@ -1438,14 +1448,20 @@ def _run_training(args, progress):
                                 x0_prev = (sc_out[0] if is_onestep else sc_out).detach()
 
                         # Main forward pass (with or without self-conditioning)
-                        fwd_out = stage1_module.forward_sigma(
-                            x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
-                            sigma, batch['mask_res'], x0_prev=x0_prev,
-                            esm_embed=batch.get('esm_embed'),
-                            template_coords_res=tmpl_coords,
-                            template_mask=tmpl_mask,
-                            template_frame_id=tmpl_frame,
-                        )
+                        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=_amp):
+                            fwd_out = stage1_module.forward_sigma(
+                                x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
+                                sigma, batch['mask_res'], x0_prev=x0_prev,
+                                esm_embed=batch.get('esm_embed'),
+                                template_coords_res=tmpl_coords,
+                                template_mask=tmpl_mask,
+                                template_frame_id=tmpl_frame,
+                            )
+                        # Cast predictions back to fp32 for the loss (stable).
+                        if is_onestep:
+                            fwd_out = tuple(o.float() if torch.is_tensor(o) else o for o in fwd_out)
+                        else:
+                            fwd_out = fwd_out.float()
                         if is_onestep:
                             # Loop 06: 3-tuple (centroid, atoms, pred_lddt_or_None).
                             centroids_pred, atoms_pred, pred_lddt = fwd_out
