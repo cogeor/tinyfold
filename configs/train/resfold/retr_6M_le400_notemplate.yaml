@@ -61,7 +61,7 @@ sigma_max: 10.0
 
 confidence_head: true
 confidence_head_weight: 0.1
-rank_by: confidence
+rank_by: self_consistency
 
 loss_weighting: true
 augment_rotation: true

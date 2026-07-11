@@ -1,4 +1,4 @@
-# Retrieval library — le400 template: 6M pair track, <=400 res.
+# Capacity test — 12M oracle (c256) + easy wins: does more capacity raise the 0.44 reconstruction ceiling?
 #
 # Matched arm for the template runs (retr_6M_le240_oracle / _template): identical
 # architecture INCLUDING the pair track (pair_repr: true), so the ONLY difference
@@ -17,8 +17,8 @@ n_train: 5000
 n_test: 200
 n_eval_train: 200
 min_atoms: 0
-max_atoms: 1600
-batch_size: 2
+max_atoms: 960
+batch_size: 8
 grad_accum: 4
 dynamic_batch: false
 use_bucketing: false
@@ -31,7 +31,7 @@ min_lr: 1.0e-05
 seed: 42
 
 # --- Architecture: ~6.7M params (c192) + pair track ---
-c_token_s1: 192
+c_token_s1: 256
 trunk_layers: 6
 denoiser_blocks: 6
 atom_head_layers: 2
@@ -51,7 +51,7 @@ pair_hidden: 64
 
 # --- Template: OFF ---
 template_cond: true
-template_source: retrieved
+template_source: oracle
 
 T: 50
 continuous_sigma: true
@@ -66,7 +66,7 @@ rank_by: self_consistency
 loss_weighting: true
 augment_rotation: true
 multi_copy: 0
-self_cond_prob: 0.0
+self_cond_prob: 0.5
 dist_weight: 0.1
 geom_weight: 0.1
 contact_weight: 0.0
@@ -80,4 +80,4 @@ cluster_radius: 5.0
 
 eval_train_dockq: true
 
-output_dir: outputs/resfold/retr_6M_le400_template
+output_dir: outputs/resfold/retr_12M_le240_oracle
