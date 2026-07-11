@@ -16,6 +16,7 @@ dependencies = [
     "numpy>=1.24",
     "scipy>=1.10",
     "dill>=0.3",
+    "DockQ>=2.1",
     "tqdm",
     "requests",
     "matplotlib>=3.5",
