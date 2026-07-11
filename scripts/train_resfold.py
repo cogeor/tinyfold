@@ -1748,6 +1748,12 @@ def _run_training(args, progress):
 
         if step % args.eval_every == 0:
             model.eval()
+            # Release cached-but-unallocated blocks before eval. The pair track
+            # is O(L^2); thousands of training steps fragment the caching
+            # allocator, so eval's large contiguous allocation can fail
+            # ("reserved but unallocated") even though total free memory suffices.
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             with torch.no_grad():
                 # Evaluate on train set
                 n_eval = min(args.n_eval_train, len(train_indices))
@@ -1902,10 +1908,17 @@ def _run_training(args, progress):
                     rmse_viz = compute_rmse(pred_aligned, target_c).item()
                     chain_ids_plot = batch['chain_ids'][0].unsqueeze(-1).expand(-1, 4).reshape(-1)[:n]
 
-                plot_path = os.path.join(plots_dir, f'step_{step:06d}.png')
-                plot_prediction(pred_aligned[0], target_c[0], chain_ids_plot,
-                               s['sample_id'], rmse_viz, plot_path)
-                logger.log(f"         >>> Saved plot: {plot_path}")
+                # Plotting is cosmetic; never let a viz/IO error abort a long
+                # training run. (Also recreate plots_dir defensively in case it
+                # was removed mid-run.)
+                try:
+                    os.makedirs(plots_dir, exist_ok=True)
+                    plot_path = os.path.join(plots_dir, f'step_{step:06d}.png')
+                    plot_prediction(pred_aligned[0], target_c[0], chain_ids_plot,
+                                   s['sample_id'], rmse_viz, plot_path)
+                    logger.log(f"         >>> Saved plot: {plot_path}")
+                except Exception as e:
+                    logger.log(f"         >>> Plot skipped ({type(e).__name__}: {e})")
 
                 # Save best model
                 if test_avg < best_rmse:
