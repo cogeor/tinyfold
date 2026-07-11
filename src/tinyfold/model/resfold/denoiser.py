@@ -214,13 +214,22 @@ class ResidueEncoder(nn.Module):
         c_pair: int = 64,
         pair_layers: int = 3,
         pair_hidden: int = 64,
+        template_cond: bool = False,
+        template_rbf: int = 32,
+        template_d_max: float = 4.0,
     ):
         super().__init__()
         self.c_token = c_token
         self.aa_embed_mode = aa_embed
         self.relpos_bias_enabled = bool(relpos_bias)
         self.pair_repr_enabled = bool(pair_repr)
+        self.template_cond_enabled = bool(template_cond)
         self.n_heads = n_heads
+        if self.template_cond_enabled and not self.pair_repr_enabled:
+            raise ValueError(
+                "template_cond=True requires pair_repr=True (templates are "
+                "injected into the pair track)."
+            )
 
         if aa_embed == "learned":
             # Bit-for-bit identical to the historical path.
@@ -276,6 +285,9 @@ class ResidueEncoder(nn.Module):
                     n_layers=pair_layers,
                     c_hidden=pair_hidden,
                     relpos_clip=relpos_clip,
+                    template_cond=self.template_cond_enabled,
+                    template_rbf=template_rbf,
+                    template_d_max=template_d_max,
                 )
                 if self.pair_repr_enabled
                 else None
@@ -304,6 +316,9 @@ class ResidueEncoder(nn.Module):
         res_idx: Tensor,         # [B, L]
         mask: Optional[Tensor] = None,  # [B, L]
         esm_embed: Optional[Tensor] = None,  # [B, L, esm_dim], required in ESM mode
+        template_coords_res: Optional[Tensor] = None,  # [B, L, 4, 3]
+        template_mask: Optional[Tensor] = None,        # [B, L]
+        template_frame_id: Optional[Tensor] = None,    # [B, L]
     ) -> Tensor:
         """Encode residue-level sequence features (NO coordinates).
 
@@ -347,7 +362,12 @@ class ResidueEncoder(nn.Module):
                 valid = mask if mask is not None else torch.ones(
                     B, L, dtype=torch.bool, device=h.device
                 )
-                pair_bias = self.pair_track(h, res_idx, chain_ids, valid)
+                pair_bias = self.pair_track(
+                    h, res_idx, chain_ids, valid,
+                    template_coords_res=template_coords_res,
+                    template_mask=template_mask,
+                    template_frame_id=template_frame_id,
+                )
                 attn_bias = pair_bias if attn_bias is None else attn_bias + pair_bias
             h = self.transformer(h, src_key_padding_mask=attn_mask, attn_bias=attn_bias)
         else:

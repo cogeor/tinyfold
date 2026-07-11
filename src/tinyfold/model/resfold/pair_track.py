@@ -42,6 +42,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
+from ...retrieval.template_features import (
+    build_template_pair_features,
+    template_feat_dim,
+)
+
 
 class TriangleMultiplication(nn.Module):
     """Batched triangle multiplicative update (AF3 Alg. 12/13).
@@ -136,6 +141,9 @@ class PairTrack(nn.Module):
         c_hidden: int = 64,
         relpos_clip: int = 32,
         transition_expansion: int = 2,
+        template_cond: bool = False,
+        template_rbf: int = 32,
+        template_d_max: float = 4.0,
     ):
         super().__init__()
         if c_pair < 1 or n_layers < 1 or c_hidden < 1:
@@ -151,6 +159,21 @@ class PairTrack(nn.Module):
         # buckets x 2 (same / cross chain). Same bucketing as RelposBias.
         n_buckets = (2 * self.relpos_clip + 1) * 2
         self.relpos_emb = nn.Embedding(n_buckets, c_pair)
+
+        # Template conditioning (C7): embed AF3-style relative pair features
+        # (built here from per-residue template coords) into the pair channel.
+        # Zero-init the projection so a template-conditioned model starts
+        # byte-equivalent to its no-template arm and learns to use the template
+        # gradually. When disabled this is a pure no-op.
+        self.template_cond = bool(template_cond)
+        self.template_rbf = int(template_rbf)
+        self.template_d_max = float(template_d_max)
+        if self.template_cond:
+            self.template_proj = nn.Linear(template_feat_dim(self.template_rbf), c_pair)
+            nn.init.zeros_(self.template_proj.weight)
+            nn.init.zeros_(self.template_proj.bias)
+        else:
+            self.template_proj = None
 
         self.blocks = nn.ModuleList(
             [
@@ -187,13 +210,39 @@ class PairTrack(nn.Module):
         res_idx: Tensor,    # [B, L] long, per-chain-reset global indices
         chain_ids: Tensor,  # [B, L] long
         mask: Tensor,       # [B, L] bool, True = valid residue
+        template_coords_res: Tensor = None,  # [B, L, 4, 3] template backbone (normalized units)
+        template_mask: Tensor = None,        # [B, L] bool coverage
+        template_frame_id: Tensor = None,    # [B, L] long rigid-group id
     ) -> Tensor:
-        """Return per-head additive attention bias ``[B, n_heads, L, L]``."""
+        """Return per-head additive attention bias ``[B, n_heads, L, L]``.
+
+        When ``template_cond`` is enabled and ``template_coords_res`` is passed,
+        AF3-style relative pair features are built from the template coords and
+        added into the pair channel before the triangle blocks. If templates are
+        enabled but not supplied for this call, the template term is skipped
+        (equivalent to a fully-uncovered template).
+        """
         pair_mask = mask.unsqueeze(2) & mask.unsqueeze(1)  # [B, L, L]
 
         # Init pair from single (outer sum) + relpos/same-chain embedding.
         z = self.left(s).unsqueeze(2) + self.right(s).unsqueeze(1)  # [B, L, L, c_pair]
         z = z + self.relpos_emb(self._relpos_bucket(res_idx, chain_ids))
+
+        # Template term (C7): relative pair features -> zero-init projection.
+        if self.template_proj is not None and template_coords_res is not None:
+            if template_mask is None:
+                template_mask = mask
+            if template_frame_id is None:
+                template_frame_id = torch.zeros_like(chain_ids)
+            tmpl_feats, _ = build_template_pair_features(
+                template_coords_res,
+                template_mask,
+                template_frame_id,
+                n_rbf=self.template_rbf,
+                d_max=self.template_d_max,
+            )
+            z = z + self.template_proj(tmpl_feats)
+
         z = z * pair_mask.unsqueeze(-1).to(z.dtype)
 
         for tri_out, tri_in, transition in self.blocks:

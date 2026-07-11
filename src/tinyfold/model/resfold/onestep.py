@@ -137,10 +137,14 @@ class ResFoldOneStep(BaseDecoder):
         c_pair: int = 64,
         pair_layers: int = 3,
         pair_hidden: int = 64,
+        template_cond: bool = False,
+        template_rbf: int = 32,
+        template_d_max: float = 4.0,
     ):
         super().__init__()
         self.c_token = c_token
         self.n_timesteps = n_timesteps
+        self.template_cond_enabled = bool(template_cond)
         # sigma_data is the EDM preconditioning constant; should match the
         # std of the data distribution in the units the model trains in.
         # 1.0 is correct when coords are per-sample-normalized to unit std;
@@ -166,6 +170,9 @@ class ResFoldOneStep(BaseDecoder):
             c_pair=c_pair,
             pair_layers=pair_layers,
             pair_hidden=pair_hidden,
+            template_cond=template_cond,
+            template_rbf=template_rbf,
+            template_d_max=template_d_max,
         )
 
         # === DENOISER (per-step) ===
@@ -304,6 +311,9 @@ class ResFoldOneStep(BaseDecoder):
         mask: Optional[Tensor] = None,
         x0_prev: Optional[Tensor] = None,
         esm_embed: Optional[Tensor] = None,
+        template_coords_res: Optional[Tensor] = None,
+        template_mask: Optional[Tensor] = None,
+        template_frame_id: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor, Optional[Tensor]]:
         """Continuous-sigma forward (EDM-preconditioned).
 
@@ -319,7 +329,12 @@ class ResFoldOneStep(BaseDecoder):
         if mask is None:
             mask = torch.ones(B, L, dtype=torch.bool, device=x_t.device)
         c_skip, c_out, c_in, c_noise = self._edm_coefficients(sigma)
-        trunk_tokens = self.trunk(aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed)
+        trunk_tokens = self.trunk(
+            aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed,
+            template_coords_res=template_coords_res,
+            template_mask=template_mask,
+            template_frame_id=template_frame_id,
+        )
         cond = self._embed_c_noise(c_noise)
         denoiser_tokens = self._denoiser_tokens(
             c_in * x_t, trunk_tokens, cond, mask, x0_prev,
@@ -381,6 +396,9 @@ class ResFoldOneStep(BaseDecoder):
         t: Tensor,
         mask: Optional[Tensor] = None,
         esm_embed: Optional[Tensor] = None,
+        template_coords_res: Optional[Tensor] = None,
+        template_mask: Optional[Tensor] = None,
+        template_frame_id: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
         """Discrete-timestep forward (legacy path).
 
@@ -391,7 +409,12 @@ class ResFoldOneStep(BaseDecoder):
         B, L, _ = x_t.shape
         if mask is None:
             mask = torch.ones(B, L, dtype=torch.bool, device=x_t.device)
-        trunk_tokens = self.trunk(aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed)
+        trunk_tokens = self.trunk(
+            aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed,
+            template_coords_res=template_coords_res,
+            template_mask=template_mask,
+            template_frame_id=template_frame_id,
+        )
         cond = self.time_embed(t)
         denoiser_tokens = self._denoiser_tokens(
             x_t, trunk_tokens, cond, mask, None,
@@ -409,8 +432,16 @@ class ResFoldOneStep(BaseDecoder):
         res_idx: Tensor,
         mask: Optional[Tensor] = None,
         esm_embed: Optional[Tensor] = None,
+        template_coords_res: Optional[Tensor] = None,
+        template_mask: Optional[Tensor] = None,
+        template_frame_id: Optional[Tensor] = None,
     ) -> Tensor:
-        return self.trunk(aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed)
+        return self.trunk(
+            aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed,
+            template_coords_res=template_coords_res,
+            template_mask=template_mask,
+            template_frame_id=template_frame_id,
+        )
 
     def count_parameters(self) -> dict:
         trunk = sum(p.numel() for p in self.trunk.parameters())
