@@ -10,6 +10,21 @@ from tinyfold.model.diffusion import kabsch_align_to_target
 from tinyfold.model.geometry import kabsch_rigid
 
 
+def _template_kwargs(batch):
+    """Template forward-kwargs, only when a template is present in the batch.
+
+    Returns an empty dict when there is no template, so denoisers that do not
+    accept template kwargs (pipeline stage1, test doubles) are unaffected.
+    """
+    if batch.get('template_coords_res') is None:
+        return {}
+    return dict(
+        template_coords_res=batch.get('template_coords_res'),
+        template_mask=batch.get('template_mask'),
+        template_frame_id=batch.get('template_frame_id'),
+    )
+
+
 @torch.no_grad()
 def sample_centroids(model, batch, noiser, device, clamp_val=3.0,
                      align_per_step=False, recenter=False):
@@ -108,6 +123,7 @@ def sample_centroids_one_shot(model, batch, noiser, device, is_onestep=False,
         x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
         sigma_init, mask, x0_prev=None,
         esm_embed=batch.get('esm_embed'),
+        **_template_kwargs(batch),
     )
     if is_onestep:
         # Loop 06: ResFoldOneStep.forward_sigma returns a 3-tuple
@@ -187,6 +203,7 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
             x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
             sigma_batch, mask, x0_prev=x0_prev if self_cond else None,
             esm_embed=batch.get('esm_embed'),
+            **_template_kwargs(batch),
         )
         x0_pred = out[0] if is_onestep else out
         x0_pred = torch.clamp(x0_pred, -clamp_val, clamp_val)
@@ -238,6 +255,7 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
             x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
             sigma_min_batch, mask, x0_prev=x0_prev if self_cond else None,
             esm_embed=batch.get('esm_embed'),
+            **_template_kwargs(batch),
         )
         atoms_pred = sigma_out[1]
         return x, atoms_pred
@@ -320,6 +338,7 @@ def sample_k_centroids(
         trunk_tokens = model.get_trunk_tokens(
             batch['aa_seq'], batch['chain_ids'], batch['res_idx'], mask,
             esm_embed=batch.get('esm_embed'),
+            **_template_kwargs(batch),
         )
         sigmas = noiser.sigmas.to(device)
         sigma_init = sigmas[0].view(1).expand(B)
@@ -367,6 +386,7 @@ def sample_k_centroids(
                         batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
                         sigma_min_batch, mask, x0_prev=None,
                         esm_embed=batch.get('esm_embed'),
+                        **_template_kwargs(batch),
                     )
                     if pred_lddt is not None:
                         pred_lddt_list.append(pred_lddt)

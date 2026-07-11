@@ -17,10 +17,18 @@ from .template_features import (
     local_frames,
     template_feat_dim,
 )
+from .template_source import (
+    ORACLE_SOURCES,
+    VALID_SOURCES,
+    make_template_inputs,
+)
 
 __all__ = [
     "TEMPLATE_FEAT_DIM",
     "template_feat_dim",
     "build_template_pair_features",
     "local_frames",
+    "make_template_inputs",
+    "ORACLE_SOURCES",
+    "VALID_SOURCES",
 ]

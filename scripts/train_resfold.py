@@ -63,6 +63,7 @@ from tinyfold.model.diffusion import (
 )
 from tinyfold.model.geometry import kabsch_rigid
 from tinyfold.model.resfold import ResFoldPipeline
+from tinyfold.retrieval import make_template_inputs
 from tinyfold.model.metrics import (
     compute_dockq,
     cluster_poses,
@@ -259,6 +260,30 @@ def parse_args():
                              "--pair_repr (default 3).")
     parser.add_argument("--pair_hidden", type=int, default=64,
                         help="Triangle hidden width for --pair_repr (default 64).")
+    # --- Template conditioning (retrieval library) ---
+    parser.add_argument("--template_cond", action="store_true",
+                        help="Enable AF3-style template conditioning: relative "
+                             "pair features (distogram + local-frame unit "
+                             "vectors) built from per-residue template coords are "
+                             "injected into the pair track. Requires --pair_repr.")
+    parser.add_argument("--template_source", type=str, default="none",
+                        choices=["none", "oracle", "oracle_monomer", "retrieved"],
+                        help="Where template coords come from: 'oracle' "
+                             "(self-template from GT, whole-complex frame; the "
+                             "E2a positive control), 'oracle_monomer' (GT folds "
+                             "but per-chain frames; docking hidden), 'retrieved' "
+                             "(real retrieval, Milestone B), or 'none'.")
+    parser.add_argument("--template_rbf", type=int, default=32,
+                        help="Number of RBF distogram bins for template features "
+                             "(default 32).")
+    parser.add_argument("--template_d_max", type=float, default=4.0,
+                        help="Max CA-CA distance (in the model's normalized "
+                             "coord units) spanned by the distogram RBF centers. "
+                             "Default 4.0 ~= 40 A at global_scale ~= 11.")
+    parser.add_argument("--template_dropout", type=float, default=0.0,
+                        help="Bernoulli per-residue template coverage dropout at "
+                             "train time (0 = always full template; keep 0 for "
+                             "the pure oracle upper-bound probe).")
     parser.add_argument("--load_split", type=str, default=None,
                         help="Load train/test split from JSON (for Stage 2 to reuse Stage 1 split)")
     parser.add_argument("--batch_size", type=int, default=64)
@@ -530,6 +555,18 @@ def _run_test_eval(
         for target_pos, idx in enumerate(test_indices):
             s = test_samples[idx]
             batch = collate_batch([s], device)
+
+            # Template conditioning at eval: same source as training. For the
+            # oracle positive control this feeds the GT self-template; the
+            # samplers read batch['template_*'] (like esm_embed). No-op when
+            # --template_source none.
+            tmpl_c, tmpl_m, tmpl_f = make_template_inputs(
+                batch, source=getattr(args, "template_source", "none"),
+            )
+            if tmpl_c is not None:
+                batch['template_coords_res'] = tmpl_c
+                batch['template_mask'] = tmpl_m
+                batch['template_frame_id'] = tmpl_f
 
             if args.mode == "stage1_only":
                 atoms_pred_onestep = None
@@ -1074,6 +1111,9 @@ def _run_training(args, progress):
             c_pair=getattr(args, "c_pair", 64),
             pair_layers=getattr(args, "pair_layers", 3),
             pair_hidden=getattr(args, "pair_hidden", 64),
+            template_cond=getattr(args, "template_cond", False),
+            template_rbf=getattr(args, "template_rbf", 32),
+            template_d_max=getattr(args, "template_d_max", 4.0),
             atom_head_layers=args.atom_head_layers,
             atom_head_heads=args.atom_head_heads,
             n_timesteps=args.T,
@@ -1361,6 +1401,14 @@ def _run_training(args, progress):
                 else:
                     # === STANDARD TRAINING ===
                     pred_lddt = None  # Loop 06: confidence-head output (onestep only)
+                    # Template conditioning: build per-residue template inputs
+                    # once per batch (oracle self-template for E2a, etc.). Returns
+                    # (None, None, None) when --template_source none.
+                    tmpl_coords, tmpl_mask, tmpl_frame = make_template_inputs(
+                        batch,
+                        source=getattr(args, "template_source", "none"),
+                        dropout=getattr(args, "template_dropout", 0.0),
+                    )
                     if args.continuous_sigma:
                         # AF3-style with continuous sigma
                         # Self-conditioning: with probability p, first run model to get x0_prev
@@ -1371,6 +1419,9 @@ def _run_training(args, progress):
                                     x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
                                     sigma, batch['mask_res'], x0_prev=None,
                                     esm_embed=batch.get('esm_embed'),
+                                    template_coords_res=tmpl_coords,
+                                    template_mask=tmpl_mask,
+                                    template_frame_id=tmpl_frame,
                                 )
                                 # OneStep returns (centroid, atoms, pred_lddt); self-conditioning only uses centroids.
                                 x0_prev = (sc_out[0] if is_onestep else sc_out).detach()
@@ -1380,6 +1431,9 @@ def _run_training(args, progress):
                             x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
                             sigma, batch['mask_res'], x0_prev=x0_prev,
                             esm_embed=batch.get('esm_embed'),
+                            template_coords_res=tmpl_coords,
+                            template_mask=tmpl_mask,
+                            template_frame_id=tmpl_frame,
                         )
                         if is_onestep:
                             # Loop 06: 3-tuple (centroid, atoms, pred_lddt_or_None).
@@ -1394,6 +1448,9 @@ def _run_training(args, progress):
                                 x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
                                 t, batch['mask_res'],
                                 esm_embed=batch.get('esm_embed'),
+                                template_coords_res=tmpl_coords,
+                                template_mask=tmpl_mask,
+                                template_frame_id=tmpl_frame,
                             )
                         else:
                             centroids_pred = model.forward_stage1(
