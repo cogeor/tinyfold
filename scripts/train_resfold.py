@@ -284,6 +284,10 @@ def parse_args():
                         help="Bernoulli per-residue template coverage dropout at "
                              "train time (0 = always full template; keep 0 for "
                              "the pure oracle upper-bound probe).")
+    parser.add_argument("--template_cache_dir", type=str, default=None,
+                        help="Directory of per-sample retrieved-template npz "
+                             "(prepare_templates.py). Required for "
+                             "--template_source retrieved.")
     parser.add_argument("--load_split", type=str, default=None,
                         help="Load train/test split from JSON (for Stage 2 to reuse Stage 1 split)")
     parser.add_argument("--batch_size", type=int, default=64)
@@ -999,9 +1003,16 @@ def _run_training(args, progress):
     gscale = getattr(args, "global_scale", None)
     if gscale is not None:
         logger.log(f"  Fixed-scale normalization: coords / {gscale:.2f} A (size-invariant)")
-    train_samples = {idx: load_sample_raw(table, idx, normalize=normalize, esm_cache_dir=_esm_dir, per_chain_res_idx=per_chain, global_scale=gscale) for idx in train_indices}
-    test_samples = {idx: load_sample_raw(table, idx, normalize=normalize, esm_cache_dir=_esm_dir, per_chain_res_idx=per_chain, global_scale=gscale) for idx in test_indices}
+    _tmpl_dir = getattr(args, "template_cache_dir", None)
+    if getattr(args, "template_source", "none") == "retrieved" and _tmpl_dir is None:
+        raise ValueError("--template_source retrieved requires --template_cache_dir")
+    train_samples = {idx: load_sample_raw(table, idx, normalize=normalize, esm_cache_dir=_esm_dir, per_chain_res_idx=per_chain, global_scale=gscale, template_cache_dir=_tmpl_dir) for idx in train_indices}
+    test_samples = {idx: load_sample_raw(table, idx, normalize=normalize, esm_cache_dir=_esm_dir, per_chain_res_idx=per_chain, global_scale=gscale, template_cache_dir=_tmpl_dir) for idx in test_indices}
     logger.log(f"  Loaded {len(train_samples)} train, {len(test_samples)} test samples")
+    if _tmpl_dir is not None:
+        _cov = [float(s['template_mask'].float().mean()) for s in list(train_samples.values()) if 'template_mask' in s]
+        if _cov:
+            logger.log(f"  Template coverage (train): {100*sum(_cov)/len(_cov):.1f}% residues mean")
 
     # If not normalizing, warn about sigma values
     if args.no_normalize:

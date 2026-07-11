@@ -50,23 +50,29 @@ def make_template_inputs(
         raise ValueError(f"unknown template source {source!r}; expected {sorted(VALID_SOURCES)}")
     if source == "none":
         return None, None, None
-    if source == "retrieved":
-        raise NotImplementedError(
-            "template source 'retrieved' is wired in Milestone B (needs the "
-            "retriever + template cache)."
-        )
 
-    coords_res = batch["coords_res"]
-    mask = batch["mask_res"].clone()
     chain_ids = batch["chain_ids"]
+
+    if source == "retrieved":
+        # Real retrieved monomer folds, loaded into the batch by the dataloader
+        # (data.load_sample template_cache_dir). Per-chain frames so docking is
+        # hidden. If the batch has no template tensors, treat as template-free.
+        coords_res = batch.get("template_coords_res")
+        if coords_res is None:
+            return None, None, None
+        mask = batch["template_mask"].clone()
+        frame_id = chain_ids.clone()
+    else:
+        # Oracle self-template from the GT coords.
+        coords_res = batch["coords_res"]
+        mask = batch["mask_res"].clone()
+        if source == "oracle_monomer":
+            frame_id = chain_ids.clone()          # per-chain frames (docking hidden)
+        else:  # "oracle" — whole complex in one frame (docking included)
+            frame_id = torch.zeros_like(chain_ids)
 
     if dropout and dropout > 0.0:
         keep = torch.rand(mask.shape, device=mask.device, generator=generator) >= dropout
         mask = mask & keep
-
-    if source == "oracle_monomer":
-        frame_id = chain_ids.clone()
-    else:  # "oracle" — whole complex in one frame (docking included)
-        frame_id = torch.zeros_like(chain_ids)
 
     return coords_res, mask, frame_id

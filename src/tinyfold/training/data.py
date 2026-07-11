@@ -19,6 +19,7 @@ def load_sample(
     esm_cache_dir: Optional[str | Path] = None,
     per_chain_res_idx: bool = False,
     global_scale: Optional[float] = None,
+    template_cache_dir: Optional[str | Path] = None,
 ) -> Dict[str, Any]:
     """Load sample at residue level (4 atoms per residue).
 
@@ -146,6 +147,28 @@ def load_sample(
         # Cast fp16 -> fp32 here, off the GPU hot path.
         out['esm_embed'] = torch.from_numpy(emb_np).float()
 
+    if template_cache_dir is not None:
+        tpath = Path(template_cache_dir) / f"{sample_id}.npz"
+        if not tpath.exists():
+            raise ValueError(f"Template cache missing for {sample_id}: {tpath}")
+        with np.load(tpath) as npz:
+            tcoords = np.asarray(npz['template_coords_res']).astype('float32')  # [L,4,3] raw A
+            tmask = np.asarray(npz['template_mask']).astype(bool)               # [L]
+        if tcoords.shape[0] != n_res:
+            raise ValueError(
+                f"Template cache shape mismatch for {sample_id}: got "
+                f"{tcoords.shape[0]} residues, expected {n_res}."
+            )
+        tcoords_t = torch.from_numpy(tcoords)
+        # Normalize template coords to the SAME scale as coords so the distogram
+        # bins line up. Fixed-scale: divide by global_scale; per-sample std: use
+        # this sample's std (already applied to coords above).
+        if normalize:
+            scale = float(global_scale) if global_scale is not None else float(std)
+            tcoords_t = tcoords_t / scale
+        out['template_coords_res'] = tcoords_t          # [L, 4, 3]
+        out['template_mask'] = torch.from_numpy(tmask)  # [L]
+
     return out
 
 
@@ -214,6 +237,16 @@ def collate_batch(
         esm_dim = samples[0]['esm_embed'].shape[1]
         esm_embed_padded = torch.zeros(B, max_res, esm_dim)
 
+    # Optional retrieved-template pathway (mirrors ESM): per-residue template
+    # backbone coords + coverage mask, padded lazily so the default path is
+    # byte-identical.
+    have_template = any('template_coords_res' in s for s in samples)
+    template_coords_padded = None
+    template_mask_padded = None
+    if have_template:
+        template_coords_padded = torch.zeros(B, max_res, 4, 3)
+        template_mask_padded = torch.zeros(B, max_res, dtype=torch.bool)
+
     for i, s in enumerate(samples):
         L = s['n_res']
         N = s['n_atoms']
@@ -232,6 +265,10 @@ def collate_batch(
 
         if have_esm:
             esm_embed_padded[i, :L] = s['esm_embed']
+
+        if have_template and 'template_coords_res' in s:
+            template_coords_padded[i, :L] = s['template_coords_res']
+            template_mask_padded[i, :L] = s['template_mask']
 
         stds.append(s['std'])
 
@@ -253,6 +290,9 @@ def collate_batch(
     }
     if esm_embed_padded is not None:
         out['esm_embed'] = esm_embed_padded.to(device)
+    if template_coords_padded is not None:
+        out['template_coords_res'] = template_coords_padded.to(device)
+        out['template_mask'] = template_mask_padded.to(device)
     return out
 
 
