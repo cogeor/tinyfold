@@ -1584,13 +1584,15 @@ def _run_training(args, progress):
                         sig_a = torch.exp(torch.rand(B, device=delta0.device) * (hi - lo) + lo)
                         eps_a = torch.randn_like(delta0)
                         delta_t = delta0 + sig_a.view(B, 1, 1, 1) * eps_a
-                        # Detach the conditioning so the (stochastic-sigma) atom
-                        # loss does not add gradient noise to the shared trunk and
-                        # slow centroid convergence. Atom head trains on top of the
-                        # centroid representation (cascaded; anchored to the global
-                        # centroid scaffold -- the research-endorsed drift-free form).
+                        # Full e2e conditioning (NOT detached): measured decisively
+                        # better atom placement -- atoms given GT centroids reach
+                        # 0.32 A / DockQ 0.96 e2e vs 1.14 A / 0.77 when detached and
+                        # 1.37 A / 0.63 for the regression head. The e2e gradient
+                        # helps the atom head; the only cost is slightly slower
+                        # centroid convergence (loss-balance problem, handled
+                        # separately, not by starving the atom gradient).
                         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=_amp):
-                            delta_pred = stage1_module.denoise_atoms(delta_t, atom_cond_tokens.detach(), sig_a, batch['mask_res'])
+                            delta_pred = stage1_module.denoise_atoms(delta_t, atom_cond_tokens, sig_a, batch['mask_res'])
                         delta_pred = delta_pred.float()
                         # EDM loss on the OFFSET (well-conditioned: lambda*c_out^2=1).
                         # NOT on absolute atoms -- that would multiply the (un-scaled)
