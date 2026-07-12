@@ -1,0 +1,87 @@
+# SWEEP: atom-diffusion vs regression atom head across size (le400).
+# Matched within size (identical trunk/centroid/data/steps); ONLY the atom head
+# differs between the _regr and _atomdiff arms. Leakage-clean cluster-holdout
+# split pinned via load_split (both arms load the SAME file). Both arms train
+# with rotation augmentation ON (atom-diff offsets made frame-equivariant).
+
+model_kind: onestep
+mode: stage1_only
+
+# --- Data: leakage-clean cluster-holdout, <= 400 res ---
+load_split: data/processed/splits/clean_le400.json
+n_train: 5000
+n_test: 200
+n_eval_train: 100
+min_atoms: 0
+max_atoms: 1600
+batch_size: 2
+grad_accum: 4
+dynamic_batch: false
+use_bucketing: false
+grad_checkpoint: true
+
+# --- Training (matched across arms/sizes) ---
+n_steps: 15000
+eval_every: 5000
+lr: 1.0e-04
+min_lr: 1.0e-05
+seed: 42
+
+# --- Architecture: ~6.7M params (c192) + pair track ---
+c_token_s1: 192
+trunk_layers: 6
+denoiser_blocks: 6
+atom_head_layers: 2
+atom_head_heads: 4
+
+aa_embed: esm2_35M
+esm_cache_dir: data/processed/esm2_35M
+per_chain_res_idx: true
+
+global_scale: 11.0
+crop_strategy: none
+relpos_bias: true
+relpos_clip: 32
+pair_repr: true
+c_pair: 64
+pair_layers: 3
+pair_hidden: 64
+
+# --- Template: retrieved (realistic) ---
+template_cond: true
+template_source: retrieved
+
+T: 50
+continuous_sigma: true
+sigma_data: 1.0
+sigma_min: 0.002
+sigma_max: 10.0
+
+confidence_head: true
+confidence_head_weight: 0.1
+rank_by: self_consistency
+
+loss_weighting: true
+augment_rotation: true
+multi_copy: 0
+self_cond_prob: 0.0
+dist_weight: 0.1
+geom_weight: 0.1
+contact_weight: 0.0
+
+# --- ATOM DIFFUSION arm ---
+atom_diffusion: true
+atom_sigma_data: 0.15
+atom_sigma_min: 0.002
+atom_sigma_max: 1.0
+atom_steps: 8
+atom_weight: 1.0
+atom_warmup_steps: 1500
+
+one_shot_sample: true
+n_samples: 10
+eval_K_list: "1,5,10"
+cluster_radius: 5.0
+eval_train_dockq: true
+
+output_dir: outputs/resfold/sweep_6M_le400_atomdiff

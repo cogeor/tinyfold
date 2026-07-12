@@ -512,6 +512,37 @@ class ResFoldOneStep(BaseDecoder):
         assert self.atom_diff_head is not None, "atom_diffusion=False"
         return self.atom_diff_head(delta_t, denoiser_tokens, sigma_a, mask)
 
+    def centroid_tokens_with_trunk(
+        self,
+        x_t: Tensor,
+        trunk_tokens: Tensor,
+        sigma: Tensor,
+        mask: Optional[Tensor] = None,
+        x0_prev: Optional[Tensor] = None,
+        res_idx: Optional[Tensor] = None,
+        chain_ids: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Tensor, Optional[Tensor]]:
+        """Like :meth:`centroid_tokens` but with precomputed trunk tokens.
+
+        Lets the atom-diffusion sampler reuse a single trunk pass across K
+        centroid samples (the trunk is sequence/template-only, coord-independent)
+        and still expose the denoiser tokens the atom stage conditions on. Returns
+        ``(centroid_pred, denoiser_tokens, pred_lddt_or_None)``.
+        """
+        B, L, _ = x_t.shape
+        if mask is None:
+            mask = torch.ones(B, L, dtype=torch.bool, device=x_t.device)
+        c_skip, c_out, c_in, c_noise = self._edm_coefficients(sigma)
+        cond = self._embed_c_noise(c_noise)
+        denoiser_tokens = self._denoiser_tokens(
+            c_in * x_t, trunk_tokens, cond, mask, x0_prev,
+            res_idx=res_idx, chain_ids=chain_ids,
+        )
+        F_centroid = self.centroid_proj(denoiser_tokens)
+        centroid_pred = c_skip * x_t + c_out * F_centroid
+        pred_lddt = self._predict_confidence(denoiser_tokens, mask)
+        return centroid_pred, denoiser_tokens, pred_lddt
+
     def forward_sigma_with_trunk(
         self,
         x_t: Tensor,

@@ -1355,6 +1355,10 @@ def _run_training(args, progress):
 
             # Target for loss (may be rotated by augmentation)
             centroids_target = batch['centroids']
+            # Rotation applied to the centroid frame this step (None if aug off).
+            # The atom-diffusion offsets must live in the SAME frame as the
+            # conditioning tokens (derived from the rotated x_t), so we reuse it.
+            aug_R = None
 
             if args.continuous_sigma:
                 # AF3-style: continuous sigma with VE noise (x_t = x0 + sigma * noise)
@@ -1376,6 +1380,7 @@ def _run_training(args, progress):
                     R = random_rotation_matrix(current_batch_size, device)
                     x_t = torch.bmm(x_t, R.transpose(1, 2))
                     centroids_target = torch.bmm(centroids_target, R.transpose(1, 2))
+                    aug_R = R
 
                 # Translation augmentation: add small random shift to x_t
                 # This makes the model robust to drift during inference
@@ -1577,8 +1582,20 @@ def _run_training(args, progress):
                         B, L = centroids_pred.shape[:2]
                         adh = stage1_module.atom_diff_head
                         sd_a = adh.sigma_data
-                        # Offsets from GT centroids (aug off -> same frame).
-                        delta0 = batch['coords_res'] - batch['centroids'].unsqueeze(2)  # [B,L,4,3]
+                        # Offsets from GT centroids, in the SAME frame as the
+                        # conditioning tokens. With rotation augmentation the
+                        # centroid frame is rotated by aug_R, so rotate the GT
+                        # centroids AND atoms by the same R (offsets are
+                        # frame-equivariant: R*(atoms - centroid)). Translation
+                        # aug is irrelevant -- offsets are translation-invariant.
+                        cen_anchor = batch['centroids']                     # [B,L,3]
+                        coords_gt = batch['coords_res']                     # [B,L,4,3]
+                        if aug_R is not None:
+                            cen_anchor = torch.bmm(cen_anchor, aug_R.transpose(1, 2))
+                            coords_gt = torch.bmm(
+                                coords_gt.reshape(B, L * 4, 3), aug_R.transpose(1, 2)
+                            ).reshape(B, L, 4, 3)
+                        delta0 = coords_gt - cen_anchor.unsqueeze(2)        # [B,L,4,3]
                         # log-uniform atom sigma in [atom_sigma_min, atom_sigma_max]
                         lo = math.log(stage1_module.atom_sigma_min); hi = math.log(stage1_module.atom_sigma_max)
                         sig_a = torch.exp(torch.rand(B, device=delta0.device) * (hi - lo) + lo)
@@ -1610,9 +1627,9 @@ def _run_training(args, progress):
                         alpha_atom = ramp * args.atom_weight
                         loss = loss + alpha_atom * atom_loss_t
                         loss_atom = atom_loss_t.item()
-                        atoms_pred_ad = batch['centroids'].unsqueeze(2) + delta_pred   # GT centroid + pred offset
+                        atoms_pred_ad = cen_anchor.unsqueeze(2) + delta_pred   # GT centroid + pred offset (same frame)
                         if geom_loss_fn is not None and args.geom_weight > 0:
-                            geom_losses = geom_loss_fn(atoms_pred_ad, batch['mask_res'], gt_coords=batch['coords_res'])
+                            geom_losses = geom_loss_fn(atoms_pred_ad, batch['mask_res'], gt_coords=coords_gt)
                             loss = loss + args.geom_weight * geom_losses['total']
                             loss_geom = geom_losses['total'].item()
                             loss_bond = geom_losses['bond_length'].item()

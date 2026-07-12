@@ -398,16 +398,32 @@ def sample_k_centroids(
         )
         sigmas = noiser.sigmas.to(device)
         sigma_init = sigmas[0].view(1).expand(B)
+        is_ad = getattr(model, "atom_diffusion", False)
         for i in range(K):
             seed_i = base_seed * 100003 + target_idx * 1009 + i
             gen = torch.Generator(device=device).manual_seed(seed_i)
             x = sigma_init.view(B, 1, 1) * torch.randn(
                 B, L, 3, device=device, generator=gen
             )
-            centroid_pred, atoms_pred, pred_lddt = model.forward_sigma_with_trunk(
-                x, trunk_tokens, sigma_init, mask, x0_prev=None,
-                res_idx=batch['res_idx'], chain_ids=batch['chain_ids'],
-            )
+            if is_ad:
+                # Atom-diffusion models have an untrained regression atom_head;
+                # their atoms MUST come from the iterative atom-diffusion sampler
+                # conditioned on the denoiser tokens (reuse the trunk pass).
+                centroid_pred, tokens, pred_lddt = model.centroid_tokens_with_trunk(
+                    x, trunk_tokens, sigma_init, mask, x0_prev=None,
+                    res_idx=batch['res_idx'], chain_ids=batch['chain_ids'],
+                )
+                atoms_pred = sample_atoms_diffusion(
+                    model, tokens, centroid_pred, mask,
+                    n_steps=getattr(model, "_atom_eval_steps", 8),
+                    sigma_min=model.atom_sigma_min, sigma_max=model.atom_sigma_max,
+                    generator=gen,
+                )
+            else:
+                centroid_pred, atoms_pred, pred_lddt = model.forward_sigma_with_trunk(
+                    x, trunk_tokens, sigma_init, mask, x0_prev=None,
+                    res_idx=batch['res_idx'], chain_ids=batch['chain_ids'],
+                )
             centroid_list.append(centroid_pred)
             atom_list.append(atoms_pred)
             if has_conf_head and pred_lddt is not None:
