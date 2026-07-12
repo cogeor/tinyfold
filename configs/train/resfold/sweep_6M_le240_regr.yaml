@@ -46,9 +46,9 @@ c_pair: 64
 pair_layers: 3
 pair_hidden: 64
 
-# --- Template: retrieved (realistic) ---
+# --- Template: oracle (matched upper-bound; see note) ---
 template_cond: true
-template_source: retrieved
+template_source: oracle  # DEVIATION: no le400/le600 retrieved cache; oracle is matched across arms+sizes and isolates the atom-head comparison. Retrieved-template robustness is a follow-up (le240 cache exists).
 
 T: 50
 continuous_sigma: true
