@@ -27,20 +27,20 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-import pyarrow.parquet as pq  # noqa: E402
-import torch  # noqa: E402
+import pyarrow.parquet as pq
+import torch
 
-from tinyfold.inference.build import load_onestep_run  # noqa: E402
-from tinyfold.inference.samplers import sample_k_centroids  # noqa: E402
-from tinyfold.model.diffusion import KarrasSchedule, VENoiser  # noqa: E402
-from tinyfold.model.metrics import compute_dockq  # noqa: E402
-from tinyfold.model.metrics.cluster import (  # noqa: E402
+from tinyfold.inference.build import load_onestep_run
+from tinyfold.inference.samplers import sample_k_centroids
+from tinyfold.model.diffusion import KarrasSchedule, VENoiser
+from tinyfold.model.losses import compute_rmse
+from tinyfold.model.metrics import compute_dockq
+from tinyfold.model.metrics.cluster import (
     score_geometric_energy,
     score_self_consistency,
 )
-from tinyfold.model.losses import compute_rmse  # noqa: E402
-from tinyfold.retrieval import make_template_inputs  # noqa: E402
-from tinyfold.training import load_sample_raw, collate_batch  # noqa: E402
+from tinyfold.retrieval import make_template_inputs
+from tinyfold.training import collate_batch, load_sample_raw
 
 
 def _noiser_for_T(T, cfg, device):
@@ -143,7 +143,7 @@ def main():
             rmses = [compute_rmse(sc[k], gt_c, batch["mask_res"]).item() * std for k in range(Kmax)]
             confs = [float(slddt[k]) if slddt is not None else 0.0 for k in range(Kmax)]
 
-            def dockq_of(idx, _cache={}):
+            def dockq_of(idx, _cache={}):  # noqa: B006  (intentional memoization cache)
                 if idx not in _cache:
                     _cache[idx] = compute_dockq(
                         sa[idx][0, :n_res], batch["coords_res"][0, :n_res],

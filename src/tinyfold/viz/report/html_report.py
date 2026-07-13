@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")  # Non-interactive backend
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,9 +13,13 @@ from tinyfold.viz.mapping.atom_schema import AtomSchema
 from tinyfold.viz.metrics.align import align_on_subset, kabsch_align
 from tinyfold.viz.metrics.contacts import contact_map_CA, contact_metrics, interface_residues
 from tinyfold.viz.metrics.rmsd import backbone_rmsd
-from tinyfold.viz.plots.distributions import plot_contact_precision_recall, plot_metric_distribution, plot_rmsd_comparison
+from tinyfold.viz.plots.distributions import (
+    plot_contact_precision_recall,
+    plot_metric_distribution,
+    plot_rmsd_comparison,
+)
 from tinyfold.viz.plots.matrices import plot_contact_map
-from tinyfold.viz.render.py3dmol_viewer import make_dual_viewer_html, make_viewer_html
+from tinyfold.viz.render.py3dmol_viewer import make_dual_viewer_html
 
 # Try to import jinja2, fall back to simple string formatting
 try:

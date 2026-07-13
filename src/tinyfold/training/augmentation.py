@@ -12,11 +12,11 @@ from torch import Tensor
 
 def random_rotation_matrix(batch_size: int, device: torch.device) -> Tensor:
     """Generate random rotation matrices using QR decomposition.
-    
+
     Args:
         batch_size: Number of rotation matrices to generate
         device: Target device
-        
+
     Returns:
         R: [B, 3, 3] rotation matrices
     """
@@ -34,8 +34,8 @@ def random_rotation_matrix(batch_size: int, device: torch.device) -> Tensor:
 
 
 def apply_rigid_augment(
-    coords_res: Tensor, 
-    centroids: Tensor, 
+    coords_res: Tensor,
+    centroids: Tensor,
     translation_scale: float = 2.0
 ) -> tuple[Tensor, Tensor]:
     """Apply random SE(3) transformation (rotation + translation).
@@ -58,7 +58,7 @@ def apply_rigid_augment(
     # Apply rotation to atom coordinates
     coords_flat = coords_res.view(B, -1, 3)
     coords_rot = torch.bmm(coords_flat, R.transpose(1, 2))
-    
+
     # Apply rotation to centroids
     centroids_rot = torch.bmm(centroids, R.transpose(1, 2))
 
@@ -74,7 +74,7 @@ def apply_rigid_augment(
 
 def apply_rotation_augment(coords_res: Tensor, centroids: Tensor) -> tuple[Tensor, Tensor]:
     """Apply random SO(3) rotation only (no translation).
-    
+
     Alias for apply_rigid_augment with translation_scale=0.
     """
     return apply_rigid_augment(coords_res, centroids, translation_scale=0.0)

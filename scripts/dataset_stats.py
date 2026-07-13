@@ -13,7 +13,6 @@ No GPU, no model — just a parquet scan.
 from __future__ import annotations
 
 import argparse
-from collections import Counter
 
 import numpy as np
 import pyarrow.parquet as pq

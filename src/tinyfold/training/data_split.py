@@ -30,8 +30,8 @@ Usage:
 import json
 import os
 import random
-from dataclasses import dataclass, asdict
-from typing import Optional
+from dataclasses import asdict, dataclass
+
 import pyarrow as pa
 
 
@@ -43,7 +43,7 @@ class DataSplitConfig:
     n_train: int = 100
 
     # Number of test samples (default: 20% of n_train, min 10)
-    n_test: Optional[int] = None
+    n_test: int | None = None
 
     # Atom count range for filtering (ignored if select_smallest=True)
     min_atoms: int = 200
@@ -67,7 +67,7 @@ class DataSplitConfig:
     # Specified in TOTAL residues (LA + LB). Default partitions the full DIPS
     # distribution at the small/medium/large/very-large boundaries.
     # Used only when test_strategy == "stratified".
-    test_size_bins: Optional[list[int]] = None
+    test_size_bins: list[int] | None = None
 
     def __post_init__(self):
         if self.n_test is None:
@@ -153,7 +153,7 @@ def _stratified_test_split(
         row_idx = triple[0]
         L = _residues_for_sample(table, row_idx)
         for b in range(n_bins - 1, -1, -1):
-            if L >= bins[b]:
+            if bins[b] <= L:
                 binned[b].append(triple)
                 break
 
@@ -179,7 +179,7 @@ def _stratified_test_split(
         for triple in train_pool:
             L = _residues_for_sample(table, triple[0])
             for b in range(n_bins - 1, -1, -1):
-                if L >= bins[b]:
+                if bins[b] <= L:
                     train_by_bin[b].append(triple)
                     break
         # Iterate from largest bin downward, pulling extras.
@@ -327,7 +327,7 @@ def load_split(path: str) -> tuple[list[int], list[int], dict]:
     Returns:
         (train_indices, test_indices, split_info)
     """
-    with open(path, 'r') as f:
+    with open(path) as f:
         data = json.load(f)
 
     print(f"Loaded split from {path}")

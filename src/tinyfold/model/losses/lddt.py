@@ -5,10 +5,9 @@ For each residue, it checks what fraction of distances to nearby residues
 are preserved within given thresholds.
 """
 
+
 import torch
 from torch import Tensor
-from typing import Optional, List, Dict
-
 
 DEFAULT_COORD_SCALE = 10.0  # Default normalization scale
 
@@ -16,9 +15,9 @@ DEFAULT_COORD_SCALE = 10.0  # Default normalization scale
 def compute_lddt(
     pred_ca: Tensor,
     gt_ca: Tensor,
-    mask: Optional[Tensor] = None,
+    mask: Tensor | None = None,
     inclusion_radius: float = 15.0,
-    thresholds: List[float] = [0.5, 1.0, 2.0, 4.0],
+    thresholds: tuple[float, ...] = (0.5, 1.0, 2.0, 4.0),
     coord_scale: float = DEFAULT_COORD_SCALE,
     reduction: str = "mean",
 ) -> Tensor:
@@ -160,10 +159,10 @@ def compute_ilddt(
     pred_ca: Tensor,
     gt_ca: Tensor,
     chain_ids: Tensor,
-    mask: Optional[Tensor] = None,
+    mask: Tensor | None = None,
     interface_threshold: float = 8.0,
     inclusion_radius: float = 15.0,
-    thresholds: List[float] = [0.5, 1.0, 2.0, 4.0],
+    thresholds: tuple[float, ...] = (0.5, 1.0, 2.0, 4.0),
     coord_scale: float = DEFAULT_COORD_SCALE,
 ) -> Tensor:
     """Compute ilDDT (interface lDDT) for CA atoms.
@@ -254,10 +253,10 @@ def compute_lddt_metrics(
     pred_coords: Tensor,
     gt_coords: Tensor,
     chain_ids: Tensor,
-    mask: Optional[Tensor] = None,
+    mask: Tensor | None = None,
     interface_threshold: float = 8.0,
     coord_scale: float = DEFAULT_COORD_SCALE,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """Compute both lDDT and ilDDT metrics.
 
     Convenience function that computes both metrics and returns them as a dict.

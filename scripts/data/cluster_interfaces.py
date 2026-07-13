@@ -29,9 +29,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-import pyarrow.parquet as pq  # noqa: E402
+import pyarrow.parquet as pq
 
-from tinyfold.retrieval.seq_clustering import cluster_sequences  # noqa: E402
+from tinyfold.retrieval.seq_clustering import cluster_sequences
 
 
 def extract_chain_seqs(table):

@@ -11,13 +11,11 @@ Architecture:
 - Output: atom offsets [B, L, 4, 3]
 """
 
-from typing import Optional, Literal
+from typing import Literal
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch import Tensor
-
 
 AggregationType = Literal["learned", "mean", "attention"]
 
@@ -84,7 +82,7 @@ class AtomRefinerV2MultiSample(nn.Module):
     def _aggregate_samples(
         self,
         sample_emb: Tensor,  # [B, K, L, c_token]
-        mask: Optional[Tensor] = None,  # [B, L]
+        mask: Tensor | None = None,  # [B, L]
     ) -> Tensor:
         """Aggregate K sample embeddings into single embedding per residue.
 
@@ -128,7 +126,7 @@ class AtomRefinerV2MultiSample(nn.Module):
         self,
         trunk_tokens: Tensor,       # [B, L, c_token] from Stage 1 encoder
         centroids_samples: Tensor,  # [B, K, L, 3] K centroid samples
-        mask: Optional[Tensor] = None,  # [B, L]
+        mask: Tensor | None = None,  # [B, L]
     ) -> Tensor:
         """Predict atom positions from trunk embeddings + multi-sample centroids.
 
@@ -175,7 +173,7 @@ class AtomRefinerV2MultiSample(nn.Module):
         self,
         trunk_tokens: Tensor,
         centroids_samples: Tensor,
-        mask: Optional[Tensor] = None,
+        mask: Tensor | None = None,
     ) -> Tensor:
         """Return only offsets (for debugging/analysis)."""
         B, K, L, _ = centroids_samples.shape

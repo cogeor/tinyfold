@@ -6,7 +6,7 @@ protein complex structures.
 
 import os
 import tempfile
-import torch
+
 from torch import Tensor
 
 # Amino acid 3-letter codes
@@ -127,7 +127,7 @@ def compute_dockq(
             # No interface found
             return {'dockq': 0.0, 'fnat': 0.0, 'irms': float('inf'), 'lrms': float('inf')}
 
-        except Exception as e:
+        except Exception:
             # DockQ computation failed (e.g., no interface contacts)
             return {'dockq': None, 'fnat': None, 'irms': None, 'lrms': None}
 

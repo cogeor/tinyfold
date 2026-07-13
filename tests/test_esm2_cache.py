@@ -29,7 +29,6 @@ import torch
 from tinyfold.model.resfold.denoiser import ESM_DIMS, ResidueEncoder
 from tinyfold.model.resfold.onestep import ResFoldOneStep
 
-
 CACHE_DIR = Path("data/processed/esm2_35M")
 PARQUET_PATH = Path("data/processed/samples.parquet")
 

@@ -6,21 +6,21 @@ Provides:
 """
 
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Any
+
 import numpy as np
 import torch
-from torch import Tensor
 
 
 def load_sample(
     table,
     i: int,
     normalize: bool = True,
-    esm_cache_dir: Optional[str | Path] = None,
+    esm_cache_dir: str | Path | None = None,
     per_chain_res_idx: bool = False,
-    global_scale: Optional[float] = None,
-    template_cache_dir: Optional[str | Path] = None,
-) -> Dict[str, Any]:
+    global_scale: float | None = None,
+    template_cache_dir: str | Path | None = None,
+) -> dict[str, Any]:
     """Load sample at residue level (4 atoms per residue).
 
     Args:
@@ -173,12 +173,12 @@ def load_sample(
 
 
 def collate_batch(
-    samples: List[Dict],
+    samples: list[dict],
     device: torch.device,
-    cropper: Optional[Any] = None,
-    crop_size: Optional[int] = None,
-    rng: Optional[torch.Generator] = None,
-) -> Dict[str, Any]:
+    cropper: Any | None = None,
+    crop_size: int | None = None,
+    rng: torch.Generator | None = None,
+) -> dict[str, Any]:
     """Collate residue-level samples into a padded batch.
 
     Args:

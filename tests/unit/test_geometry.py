@@ -4,11 +4,11 @@ Converted from scripts/test_dihedral.py and scripts/test_omega_random.py
 """
 
 import math
+
 import pytest
 import torch
 
-from tinyfold.model.losses.geometry import dihedral_angle, omega_loss, GeometryLoss
-
+from tinyfold.model.losses.geometry import GeometryLoss, dihedral_angle, omega_loss
 
 # ============================================================================
 # Test Dihedral Angle Computation

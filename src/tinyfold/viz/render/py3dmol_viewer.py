@@ -1,6 +1,6 @@
 """py3Dmol-based 3D viewer for protein structures."""
 
-from tinyfold.viz.render.styles import CHAIN_COLORS, get_chain_style
+from tinyfold.viz.render.styles import CHAIN_COLORS
 
 
 def make_viewer_html(

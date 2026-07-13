@@ -1,6 +1,5 @@
 """Pytest configuration and shared fixtures."""
 
-import os
 import tempfile
 from pathlib import Path
 

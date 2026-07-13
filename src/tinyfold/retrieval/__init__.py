@@ -24,11 +24,11 @@ from .template_source import (
 )
 
 __all__ = [
+    "ORACLE_SOURCES",
     "TEMPLATE_FEAT_DIM",
-    "template_feat_dim",
+    "VALID_SOURCES",
     "build_template_pair_features",
     "local_frames",
     "make_template_inputs",
-    "ORACLE_SOURCES",
-    "VALID_SOURCES",
+    "template_feat_dim",
 ]

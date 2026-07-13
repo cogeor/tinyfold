@@ -5,12 +5,10 @@ Source: https://zenodo.org/records/8140981
 """
 
 import json
-import os
-import shutil
 import tarfile
 import zipfile
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 import requests
 from tqdm import tqdm

@@ -16,19 +16,18 @@ from __future__ import annotations
 import json
 import random
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 import pyarrow as pa
 
 
-def load_clusters(path: str) -> Dict[str, int]:
+def load_clusters(path: str) -> dict[str, int]:
     """Load {sample_id: cluster_id} from a clusters.json produced by C1."""
     with open(path) as f:
         data = json.load(f)
     return data["sample_to_cluster"]
 
 
-def _eligible_rows(table: pa.Table, min_atoms: int, max_atoms: Optional[int]) -> List[Tuple[int, str]]:
+def _eligible_rows(table: pa.Table, min_atoms: int, max_atoms: int | None) -> list[tuple[int, str]]:
     """(row_idx, sample_id) for samples whose atom count is in range."""
     out = []
     atom_types = table["atom_type"]
@@ -45,14 +44,14 @@ def _eligible_rows(table: pa.Table, min_atoms: int, max_atoms: Optional[int]) ->
 
 def cluster_holdout_indices(
     table: pa.Table,
-    clusters: Dict[str, int],
+    clusters: dict[str, int],
     n_train: int,
     n_test: int,
     min_atoms: int = 0,
-    max_atoms: Optional[int] = None,
+    max_atoms: int | None = None,
     seed: int = 42,
-    forced_test_clusters: Optional[Set[int]] = None,
-) -> Tuple[List[int], List[int], dict]:
+    forced_test_clusters: set[int] | None = None,
+) -> tuple[list[int], list[int], dict]:
     """Split eligible samples into train/test with ZERO cluster overlap.
 
     Returns (train_indices, test_indices, info). Clusters are assigned wholesale
@@ -62,7 +61,7 @@ def cluster_holdout_indices(
     forced_test_clusters = set(forced_test_clusters or set())
     eligible = _eligible_rows(table, min_atoms, max_atoms)
     # Group eligible samples by cluster id (unknown samples -> own singleton).
-    by_cluster: Dict[int, List[int]] = {}
+    by_cluster: dict[int, list[int]] = {}
     next_synth = -1
     for idx, sid in eligible:
         cid = clusters.get(sid)
@@ -79,8 +78,8 @@ def cluster_holdout_indices(
     rest = [c for c in all_cids if c not in forced_test_clusters]
     ordered = forced + rest
 
-    test_idx: List[int] = []
-    test_clusters: Set[int] = set()
+    test_idx: list[int] = []
+    test_clusters: set[int] = set()
     i = 0
     while i < len(ordered) and len(test_idx) < n_test:
         c = ordered[i]
@@ -88,7 +87,7 @@ def cluster_holdout_indices(
         test_clusters.add(c)
         i += 1
     # Remaining clusters -> train pool.
-    train_idx: List[int] = []
+    train_idx: list[int] = []
     for c in ordered[i:]:
         train_idx.extend(by_cluster[c])
 
@@ -100,7 +99,7 @@ def cluster_holdout_indices(
 
     # Sanity: no cluster spans both sides (by construction whole clusters are
     # test OR train; the trim only drops samples, never moves a cluster).
-    train_clusters = {clusters.get(table["sample_id"][ix].as_py(), None) for ix in train_idx}
+    train_clusters = {clusters.get(table["sample_id"][ix].as_py()) for ix in train_idx}
     overlap = (train_clusters & test_clusters) - {None}
 
     info = {

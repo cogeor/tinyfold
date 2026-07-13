@@ -6,8 +6,8 @@ DiffusionSchedule.predict_x0 and LinearChainFlow.add_noise.
 
 import torch
 
-from tinyfold.model.diffusion.schedule import DiffusionSchedule
 from tinyfold.model.diffusion.noise import LinearChainFlow
+from tinyfold.model.diffusion.schedule import DiffusionSchedule
 
 
 def test_predict_x0_inverts_forward_noising():

@@ -8,43 +8,43 @@ Provides:
 
 from tinyfold.model.config import ModelConfig
 
-# Registry (factory functions)
-from tinyfold.model.registry import (
-    create_model,
-    create_schedule,
-    create_noiser,
-    list_models,
-    list_schedules,
-    list_noise_types,
-    get_model_class,
-    register_model,
-)
-
 # Diffusion components
 from tinyfold.model.diffusion import (
-    DiffusionSchedule,
     CosineSchedule,
-    LinearSchedule,
-    GaussianNoise,
-    LinearChainNoise,
-    LinearChainFlow,
-    DeterministicDDIMSampler,
     DDPMSampler,
+    DeterministicDDIMSampler,
+    DiffusionSchedule,
+    GaussianNoise,
+    LinearChainFlow,
+    LinearChainNoise,
+    LinearSchedule,
     TimestepCurriculum,
     generate_extended_chain,
 )
 
 # Loss functions
 from tinyfold.model.losses import (
-    kabsch_align,
+    ContactLoss,
+    GeometryLoss,
+    compute_distance_consistency_loss,
+    compute_ilddt,
+    compute_lddt,
+    compute_lddt_metrics,
     compute_mse_loss,
     compute_rmse,
-    compute_distance_consistency_loss,
-    GeometryLoss,
-    ContactLoss,
-    compute_lddt,
-    compute_ilddt,
-    compute_lddt_metrics,
+    kabsch_align,
+)
+
+# Registry (factory functions)
+from tinyfold.model.registry import (
+    create_model,
+    create_noiser,
+    create_schedule,
+    get_model_class,
+    list_models,
+    list_noise_types,
+    list_schedules,
+    register_model,
 )
 
 __all__ = [

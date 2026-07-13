@@ -5,14 +5,13 @@ edge cases gracefully. They focus on meaningful behavior verification,
 not just calling functions.
 """
 
-import torch
-import pytest
 import numpy as np
+import pytest
+import torch
 
+from tinyfold.constants import NUM_BOND_TYPES
 from tinyfold.data.collate import collate_ppi
 from tinyfold.data.processing.atomization import atomize_chains, build_bonds
-from tinyfold.constants import NUM_BOND_TYPES
-
 
 # ============================================================================
 # Fixtures

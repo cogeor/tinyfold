@@ -4,9 +4,9 @@ Provides structured tracking of loss components and evaluation metrics
 across training runs.
 """
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
 from collections import defaultdict
+from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -27,9 +27,9 @@ class LossComponents:
 
     total: float  # Used for backward()
     main: float   # Primary loss (e.g., MSE)
-    auxiliary: Dict[str, float] = field(default_factory=dict)
+    auxiliary: dict[str, float] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, float]:
+    def to_dict(self) -> dict[str, float]:
         """Convert to flat dictionary for logging."""
         return {"total": self.total, "main": self.main, **self.auxiliary}
 
@@ -55,16 +55,16 @@ class MetricTracker:
     """
 
     def __init__(self):
-        self.step_metrics: Dict[int, Dict[str, float]] = {}
-        self.eval_metrics: Dict[int, Dict[str, Any]] = {}
-        self._rolling: Dict[str, List[float]] = defaultdict(list)
+        self.step_metrics: dict[int, dict[str, float]] = {}
+        self.eval_metrics: dict[int, dict[str, Any]] = {}
+        self._rolling: dict[str, list[float]] = defaultdict(list)
 
     def update(
         self,
         step: int,
         loss: float,
-        aux: Optional[Dict[str, float]] = None,
-        lr: Optional[float] = None,
+        aux: dict[str, float] | None = None,
+        lr: float | None = None,
     ):
         """Record step metrics.
 
@@ -91,8 +91,8 @@ class MetricTracker:
     def update_eval(
         self,
         step: int,
-        train_metrics: Dict[str, float],
-        test_metrics: Dict[str, float],
+        train_metrics: dict[str, float],
+        test_metrics: dict[str, float],
     ):
         """Record evaluation metrics.
 
@@ -151,7 +151,7 @@ class MetricTracker:
             return 0
         return max(self.step_metrics.keys())
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Export all metrics as dictionary."""
         return {
             "step_metrics": self.step_metrics,

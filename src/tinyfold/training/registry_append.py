@@ -8,7 +8,6 @@ locking).
 
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
 
 
 def _escape_pipes(value: str) -> str:
@@ -19,15 +18,15 @@ def _escape_pipes(value: str) -> str:
 def append_registry_row(
     run_name: str,
     model: str,
-    config_path: Optional[str],
-    final_metric: Optional[float],
+    config_path: str | None,
+    final_metric: float | None,
     outcome: str,
-    registry_path: Optional[Path] = None,
-    output_dir: Optional[str] = None,
-    dockq_avg: Optional[float] = None,
-    dockq_success_pct: Optional[float] = None,
-    c_rmsd: Optional[float] = None,
-    extra_tokens: Optional[List[str]] = None,
+    registry_path: Path | None = None,
+    output_dir: str | None = None,
+    dockq_avg: float | None = None,
+    dockq_success_pct: float | None = None,
+    c_rmsd: float | None = None,
+    extra_tokens: list[str] | None = None,
 ) -> Path:
     """Append one row to ``experiments/REGISTRY.md`` and return the resolved path.
 

@@ -9,21 +9,18 @@ Usage:
     from script_utils import Logger, load_sample_raw, collate_batch
 """
 
-import os
 import json
+import os
 import random
 from datetime import datetime
-
-import numpy as np
-import torch
-from torch import Tensor
-from typing import Dict, List, Any, Optional
-import pyarrow.parquet as pq
+from typing import Any
 
 import matplotlib
+import numpy as np
+import torch
+
 matplotlib.use('Agg')  # Non-interactive backend
 import matplotlib.pyplot as plt
-
 
 # =============================================================================
 # Reproducibility
@@ -31,7 +28,7 @@ import matplotlib.pyplot as plt
 
 def set_seed(seed: int = 42) -> None:
     """Set random seeds for reproducibility.
-    
+
     Args:
         seed: Random seed value
     """
@@ -61,17 +58,17 @@ def get_data_path() -> str:
 
 def save_config(args, output_dir: str) -> str:
     """Save training config to JSON at startup.
-    
+
     Args:
         args: Argument namespace or dict
         output_dir: Output directory
-        
+
     Returns:
         Path to saved config file
     """
     config = vars(args) if hasattr(args, '__dict__') else dict(args)
     config['_saved_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    
+
     config_path = os.path.join(output_dir, "config.json")
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2, default=str)
@@ -84,10 +81,10 @@ def save_config(args, output_dir: str) -> str:
 
 def plot_prediction(pred, target, chain_ids, sample_id, rmse, output_path):
     """Plot prediction vs ground truth for a protein structure.
-    
+
     Args:
         pred: Predicted coordinates [N, 3]
-        target: Ground truth coordinates [N, 3]  
+        target: Ground truth coordinates [N, 3]
         chain_ids: Chain IDs [N]
         sample_id: Sample identifier string
         rmse: RMSE value to display
@@ -158,7 +155,7 @@ class Logger:
 # Data Loading - Residue Level (for ResFold)
 # =============================================================================
 
-def load_sample_residue(table, i: int, normalize: bool = True) -> Dict[str, Any]:
+def load_sample_residue(table, i: int, normalize: bool = True) -> dict[str, Any]:
     """Load sample at residue level (4 atoms per residue).
 
     This is the standard data loading for ResFold-style models that
@@ -237,7 +234,7 @@ def load_sample_residue(table, i: int, normalize: bool = True) -> Dict[str, Any]
 load_sample_raw = load_sample_residue
 
 
-def collate_batch_residue(samples: List[Dict], device: torch.device) -> Dict[str, Any]:
+def collate_batch_residue(samples: list[dict], device: torch.device) -> dict[str, Any]:
     """Collate residue-level samples into a padded batch.
 
     Args:
@@ -315,9 +312,9 @@ def save_checkpoint(
     path: str,
     model: torch.nn.Module,
     step: int,
-    train_loss: float = None,
-    test_loss: float = None,
-    args: dict = None,
+    train_loss: float | None = None,
+    test_loss: float | None = None,
+    args: dict | None = None,
     **extra_info
 ):
     """Save model checkpoint with metadata.
@@ -345,7 +342,7 @@ def save_checkpoint(
     torch.save(checkpoint, path)
 
 
-def load_checkpoint(path: str, device: torch.device = None) -> Dict[str, Any]:
+def load_checkpoint(path: str, device: torch.device = None) -> dict[str, Any]:
     """Load checkpoint from file.
 
     Args:

@@ -1,8 +1,7 @@
 """Diffusion utilities."""
 
-import torch
+
 from torch import Tensor
-from typing import Optional
 
 from tinyfold.model.geometry import kabsch_rigid
 
@@ -10,7 +9,7 @@ from tinyfold.model.geometry import kabsch_rigid
 def kabsch_align_to_target(
     pred: Tensor,
     target: Tensor,
-    mask: Optional[Tensor] = None,
+    mask: Tensor | None = None,
 ) -> Tensor:
     """Kabsch-align pred INTO target's coordinate frame.
 

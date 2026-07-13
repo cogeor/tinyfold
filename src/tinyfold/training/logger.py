@@ -6,9 +6,9 @@ dual output to console and file.
 
 import os
 import sys
-from pathlib import Path
 from datetime import datetime
-from typing import Dict, Optional, Any
+from pathlib import Path
+from typing import Any
 
 
 class TrainingLogger:
@@ -23,7 +23,7 @@ class TrainingLogger:
     def __init__(
         self,
         output_dir: str | Path,
-        run_name: Optional[str] = None,
+        run_name: str | None = None,
         log_filename: str = "train.log",
     ):
         """Initialize logger.
@@ -60,7 +60,7 @@ class TrainingLogger:
         self._file.write(msg + "\n")
         self._file.flush()
 
-    def log_header(self, title: str, script_path: Optional[str] = None):
+    def log_header(self, title: str, script_path: str | None = None):
         """Log standard header for training run.
 
         Args:
@@ -76,7 +76,7 @@ class TrainingLogger:
         self.log(f"Command: python {' '.join(sys.argv)}")
         self.log("")
 
-    def log_config(self, config: Dict[str, Any], title: str = "Configuration"):
+    def log_config(self, config: dict[str, Any], title: str = "Configuration"):
         """Log configuration in consistent format.
 
         Args:
@@ -84,7 +84,7 @@ class TrainingLogger:
             title: Section title
         """
         self.log(f"{title}:")
-        max_key_len = max(len(str(k)) for k in config.keys())
+        max_key_len = max(len(str(k)) for k in config)
         for key, value in config.items():
             self.log(f"  {key:<{max_key_len}}: {value}")
         self.log("")
@@ -93,10 +93,10 @@ class TrainingLogger:
         self,
         step: int,
         loss: float,
-        aux_losses: Optional[Dict[str, float]] = None,
-        lr: Optional[float] = None,
-        elapsed: Optional[float] = None,
-        extra: Optional[Dict[str, Any]] = None,
+        aux_losses: dict[str, float] | None = None,
+        lr: float | None = None,
+        elapsed: float | None = None,
+        extra: dict[str, Any] | None = None,
     ):
         """Log training step with consistent format.
 
@@ -131,8 +131,8 @@ class TrainingLogger:
     def log_eval(
         self,
         step: int,
-        train_metrics: Dict[str, float],
-        test_metrics: Dict[str, float],
+        train_metrics: dict[str, float],
+        test_metrics: dict[str, float],
         metric_name: str = "RMSE",
     ):
         """Log evaluation results consistently.

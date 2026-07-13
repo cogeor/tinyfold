@@ -13,7 +13,7 @@ historical Defect-1 regression where the denominator was (sigma + sigma_data)**2
 import pytest
 import torch
 
-from tinyfold.training.utils import edm_loss_weight, af3_loss_weight
+from tinyfold.training.utils import af3_loss_weight, edm_loss_weight
 
 
 def test_edm_loss_weight_sigma_data_1():

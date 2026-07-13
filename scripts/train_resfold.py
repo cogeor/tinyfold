@@ -17,84 +17,78 @@ Usage:
     python train_resfold.py --mode end_to_end --n_train 80 --n_steps 15000
 """
 
-import sys
-import math
-import random
-import numpy as np
-import torch
-import torch.nn as nn
-import pyarrow.parquet as pq
 import argparse
+import math
 import os
+import random
+import sys
 import time
 from datetime import datetime
+
+import numpy as np
+import pyarrow.parquet as pq
+import torch
 import yaml
 
 # Shared utilities
 from script_utils import (
     Logger,
-    set_seed,
-    save_config,
     get_data_path,
     plot_prediction,
+    save_config,
+    set_seed,
 )
-
-from tinyfold.training.run_naming import generate_run_name
-from tinyfold.training.registry_append import append_registry_row
-
-# Training utilities from tinyfold.training
-from tinyfold.training import (
-    load_sample_raw,
-    collate_batch,
-    random_rotation_matrix,
-    apply_rigid_augment,
-    get_or_create_split,
-    create_diffusion_components,
-    load_model_checkpoint,
-    create_train_sampler,
-)
-
-# Model imports
-from tinyfold.model.diffusion import (
-    create_schedule,
-    create_noiser,
-    kabsch_align_to_target,
-    create_sampler,
-)
-from tinyfold.model.geometry import kabsch_rigid
-from tinyfold.model.resfold import ResFoldPipeline
-from tinyfold.retrieval import make_template_inputs
-from tinyfold.model.metrics import (
-    compute_dockq,
-    cluster_poses,
-    interface_mask_from_gt,
-    score_geometric_energy,
-    score_self_consistency,
-)
-from tinyfold.training.utils import edm_loss_weight
-
-# Loss imports
-from tinyfold.model.losses import (
-    kabsch_align,
-    compute_mse_loss,
-    compute_rmse,
-    compute_c_rmsd,
-    compute_distance_consistency_loss,
-    GeometryLoss,
-    ContactLoss,
-    compute_lddt,
-    compute_lddt_metrics,
-)
-
 
 from tinyfold.inference import (
     sample_centroids,
     sample_centroids_one_shot,
     sample_centroids_ve,
-    sample_k_centroids,
     sample_centroids_with_sampler,
+    sample_k_centroids,
 )
 
+# Model imports
+from tinyfold.model.diffusion import (
+    create_noiser,
+    create_sampler,
+    create_schedule,
+)
+
+# Loss imports
+from tinyfold.model.losses import (
+    ContactLoss,
+    GeometryLoss,
+    compute_c_rmsd,
+    compute_distance_consistency_loss,
+    compute_lddt,
+    compute_lddt_metrics,
+    compute_mse_loss,
+    compute_rmse,
+    kabsch_align,
+)
+from tinyfold.model.metrics import (
+    cluster_poses,
+    compute_dockq,
+    interface_mask_from_gt,
+    score_geometric_energy,
+    score_self_consistency,
+)
+from tinyfold.model.resfold import ResFoldPipeline
+from tinyfold.retrieval import make_template_inputs
+
+# Training utilities from tinyfold.training
+from tinyfold.training import (
+    collate_batch,
+    create_diffusion_components,
+    create_train_sampler,
+    get_or_create_split,
+    load_model_checkpoint,
+    load_sample_raw,
+    random_rotation_matrix,
+)
+from tinyfold.training.registry_append import append_registry_row
+from tinyfold.training.run_naming import generate_run_name
+from tinyfold.training.utils import edm_loss_weight
 
 
 @torch.no_grad()
@@ -515,7 +509,7 @@ def parse_args():
 
     # Apply defaults from config profile, then parse final args.
     if pre_args.config:
-        with open(pre_args.config, "r", encoding="utf-8") as f:
+        with open(pre_args.config, encoding="utf-8") as f:
             config_defaults = yaml.safe_load(f) or {}
         valid_dests = {a.dest for a in parser._actions}
         filtered = {k: v for k, v in config_defaults.items() if k in valid_dests}
@@ -1078,7 +1072,7 @@ def _run_training(args, progress):
             if not os.path.exists(s1_checkpoint):
                 raise FileNotFoundError(f"Stage 1 checkpoint not found: {s1_checkpoint}")
 
-            logger.log(f"  Generating Stage 1 predictions (this may take a while)...")
+            logger.log("  Generating Stage 1 predictions (this may take a while)...")
             logger.log(f"    Loading Stage 1 checkpoint: {s1_checkpoint}")
 
             # Create temporary model for Stage 1
@@ -1123,7 +1117,7 @@ def _run_training(args, progress):
                 train_samples[idx]['centroids_pred'] = pred
             if idx in test_samples:
                 test_samples[idx]['centroids_pred'] = pred
-        logger.log(f"  Injected Stage 1 predictions into samples")
+        logger.log("  Injected Stage 1 predictions into samples")
 
     # Create sampler for efficient batching
     train_sampler = create_train_sampler(args, train_samples, logger)
@@ -1235,7 +1229,7 @@ def _run_training(args, progress):
     elif args.align_per_step or args.recenter:
         logger.log(f"  Sampling: align_per_step={args.align_per_step}, recenter={args.recenter}")
     if args.kabsch_interp:
-        logger.log(f"  kabsch_interp: True (Boltz trajectory-frame alignment)")
+        logger.log("  kabsch_interp: True (Boltz trajectory-frame alignment)")
     logger.log("")
 
     # Geometry loss (Stage 2 atoms, or onestep atom head)
@@ -1426,9 +1420,10 @@ def _run_training(args, progress):
                     mask_exp = batch['mask_res'].unsqueeze(1).expand(-1, n_copies, -1)
                     mask_exp = mask_exp.reshape(B_orig * n_copies, L)
 
-                    # Apply different augmentations to each copy
+                    # Apply a different random rotation to each expanded copy.
                     if args.augment_rotation:
-                        centroids_aug = random_rigid_augment(centroids_exp, mask_exp, rotation=True)
+                        R = random_rotation_matrix(centroids_exp.shape[0], device)
+                        centroids_aug = torch.bmm(centroids_exp, R.transpose(1, 2))
                     else:
                         centroids_aug = centroids_exp
 
@@ -2085,7 +2080,7 @@ def _run_training(args, progress):
                         'test_rmse': test_avg,
                         'args': vars(args),
                     }, os.path.join(args.output_dir, 'best_model.pt'))
-                    logger.log(f"         >>> New best test RMSE! Saved.")
+                    logger.log("         >>> New best test RMSE! Saved.")
 
                 # Always save best-on-train (useful for N=1 overfit runs where test
                 # is noise and best_model.pt freezes early).
@@ -2104,7 +2099,7 @@ def _run_training(args, progress):
     # Final summary
     total_time = time.time() - start_time
     logger.log("=" * 70)
-    logger.log(f"Training complete")
+    logger.log("Training complete")
     logger.log(f"  Total time: {total_time:.0f}s ({total_time/60:.1f} min)")
     logger.log(f"  Best test RMSE: {best_rmse:.4f} A")
     logger.log("")

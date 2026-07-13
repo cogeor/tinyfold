@@ -1,5 +1,5 @@
 """Data source modules for downloading datasets."""
 
-from .dips_plus import download_dips_plus, create_manifest
+from .dips_plus import create_manifest, download_dips_plus
 
-__all__ = ["download_dips_plus", "create_manifest"]
+__all__ = ["create_manifest", "download_dips_plus"]

@@ -6,7 +6,6 @@ the host. Callers are expected to `.cpu()` their inputs before invoking
 these functions.
 """
 
-from typing import List
 
 import torch
 from torch import Tensor
@@ -94,7 +93,7 @@ def cluster_poses(
     poses: Tensor,
     interface_mask: Tensor,
     radius: float,
-) -> List[dict]:
+) -> list[dict]:
     """Greedy nearest-neighbour clustering over interface RMSD.
 
     Algorithm (HDOCK convention):
@@ -128,7 +127,7 @@ def cluster_poses(
     rmsd = pairwise_interface_rmsd(poses, interface_mask)
     assigned = torch.zeros(K, dtype=torch.bool)
 
-    clusters: List[dict] = []
+    clusters: list[dict] = []
     for i in range(K):
         if assigned[i]:
             continue

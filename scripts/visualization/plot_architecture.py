@@ -11,11 +11,11 @@ Usage:
 """
 
 import argparse
+
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-from matplotlib.patches import FancyBboxPatch, FancyArrowPatch, Rectangle
-from matplotlib.lines import Line2D
 import numpy as np
+from matplotlib.lines import Line2D
+from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 
 # =============================================================================
 # Color Scheme

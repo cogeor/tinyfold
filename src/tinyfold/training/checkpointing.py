@@ -4,22 +4,22 @@ Provides utilities for saving, loading, and managing model checkpoints
 with consistent format across all training scripts.
 """
 
-import os
 from pathlib import Path
-from typing import Dict, Any, Optional, Union
+from typing import Any
+
 import torch
 import torch.nn as nn
 
 
 def save_checkpoint(
-    path: Union[str, Path],
+    path: str | Path,
     model: nn.Module,
-    optimizer: Optional[torch.optim.Optimizer] = None,
-    scheduler: Optional[Any] = None,
+    optimizer: torch.optim.Optimizer | None = None,
+    scheduler: Any | None = None,
     step: int = 0,
-    metrics: Optional[Dict[str, float]] = None,
-    config: Optional[Dict[str, Any]] = None,
-    extra: Optional[Dict[str, Any]] = None,
+    metrics: dict[str, float] | None = None,
+    config: dict[str, Any] | None = None,
+    extra: dict[str, Any] | None = None,
 ):
     """Save training checkpoint.
 
@@ -60,13 +60,13 @@ def save_checkpoint(
 
 
 def load_checkpoint(
-    path: Union[str, Path],
+    path: str | Path,
     model: nn.Module,
-    optimizer: Optional[torch.optim.Optimizer] = None,
-    scheduler: Optional[Any] = None,
-    device: Optional[torch.device] = None,
+    optimizer: torch.optim.Optimizer | None = None,
+    scheduler: Any | None = None,
+    device: torch.device | None = None,
     strict: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Load training checkpoint.
 
     Args:
@@ -128,7 +128,7 @@ class CheckpointManager:
 
     def __init__(
         self,
-        output_dir: Union[str, Path],
+        output_dir: str | Path,
         keep_best: int = 1,
         keep_recent: int = 2,
         metric_name: str = "test_rmse",
@@ -158,11 +158,11 @@ class CheckpointManager:
         self,
         model: nn.Module,
         step: int,
-        metrics: Dict[str, float],
-        optimizer: Optional[torch.optim.Optimizer] = None,
-        scheduler: Optional[Any] = None,
-        config: Optional[Dict[str, Any]] = None,
-    ) -> tuple[bool, Optional[Path]]:
+        metrics: dict[str, float],
+        optimizer: torch.optim.Optimizer | None = None,
+        scheduler: Any | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> tuple[bool, Path | None]:
         """Save checkpoint if it's a new best or meets recent criteria.
 
         Args:
@@ -187,7 +187,7 @@ class CheckpointManager:
 
         # Save best checkpoint
         if is_best:
-            path = self.output_dir / f"best_model.pt"
+            path = self.output_dir / "best_model.pt"
             save_checkpoint(path, model, optimizer, scheduler, step, metrics, config)
             is_new_best = True
 
@@ -213,13 +213,13 @@ class CheckpointManager:
             if old_path.exists() and old_path.name != "best_model.pt":
                 old_path.unlink()
 
-    def get_best_path(self) -> Optional[Path]:
+    def get_best_path(self) -> Path | None:
         """Get path to best checkpoint."""
         if self.best_checkpoints:
             return self.best_checkpoints[0][2]
         return None
 
-    def get_latest_path(self) -> Optional[Path]:
+    def get_latest_path(self) -> Path | None:
         """Get path to most recent checkpoint."""
         if self.recent_checkpoints:
             return self.recent_checkpoints[-1][1]

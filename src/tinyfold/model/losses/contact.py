@@ -4,11 +4,10 @@ Penalizes deviation in pairwise distances for residue pairs that are
 close in 3D space but not sequential neighbors.
 """
 
+
 import torch
 import torch.nn as nn
 from torch import Tensor
-from typing import Optional, Dict
-
 
 # Default contact parameters
 DEFAULT_CONTACT_THRESHOLD = 10.0  # Angstroms
@@ -76,9 +75,9 @@ def contact_loss_centroids(
     pred_centroids: Tensor,
     gt_centroids: Tensor,
     contact_mask: Tensor,
-    chain_ids: Optional[Tensor] = None,
+    chain_ids: Tensor | None = None,
     inter_chain_weight: float = 1.0,
-    mask: Optional[Tensor] = None,
+    mask: Tensor | None = None,
 ) -> Tensor:
     """Contact-based loss for Stage 1 (centroids).
 
@@ -124,9 +123,9 @@ def contact_loss_atoms(
     pred_atoms: Tensor,
     gt_atoms: Tensor,
     contact_mask: Tensor,
-    chain_ids: Optional[Tensor] = None,
+    chain_ids: Tensor | None = None,
     inter_chain_weight: float = 1.0,
-    mask: Optional[Tensor] = None,
+    mask: Tensor | None = None,
     distance_type: str = "min",
 ) -> Tensor:
     """Contact-based loss for Stage 2 (atoms).
@@ -259,14 +258,14 @@ class ContactLoss(nn.Module):
 
     def forward(
         self,
-        pred_centroids: Optional[Tensor] = None,
-        gt_centroids: Optional[Tensor] = None,
-        pred_atoms: Optional[Tensor] = None,
-        gt_atoms: Optional[Tensor] = None,
-        chain_ids: Optional[Tensor] = None,
-        contact_mask: Optional[Tensor] = None,
-        mask: Optional[Tensor] = None,
-    ) -> Dict[str, Tensor]:
+        pred_centroids: Tensor | None = None,
+        gt_centroids: Tensor | None = None,
+        pred_atoms: Tensor | None = None,
+        gt_atoms: Tensor | None = None,
+        chain_ids: Tensor | None = None,
+        contact_mask: Tensor | None = None,
+        mask: Tensor | None = None,
+    ) -> dict[str, Tensor]:
         """Compute contact loss.
 
         Args:

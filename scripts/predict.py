@@ -23,13 +23,13 @@ import argparse
 from pathlib import Path
 
 import numpy as np
-import torch
 import pyarrow.parquet as pq
+import torch
 
 from tinyfold.inference import load_onestep_run, sample_k_centroids
-from tinyfold.training import load_sample_raw, collate_batch
 from tinyfold.model.diffusion import KarrasSchedule, VENoiser
 from tinyfold.model.metrics import compute_dockq
+from tinyfold.training import collate_batch, load_sample_raw
 from tinyfold.viz.io.structure_writer import coords_to_pdb_string
 
 

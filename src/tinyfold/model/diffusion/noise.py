@@ -7,9 +7,9 @@ Separates the concept of "what noise looks like" from the schedule.
 """
 
 import math
+
 import torch
 from torch import Tensor
-from typing import Tuple, Optional
 
 
 def generate_extended_chain(
@@ -124,7 +124,7 @@ class GaussianNoise:
         self.schedule = self.schedule.to(device)
         return self
 
-    def add_noise(self, x0: Tensor, t: Tensor, **kwargs) -> Tuple[Tensor, Tensor]:
+    def add_noise(self, x0: Tensor, t: Tensor, **kwargs) -> tuple[Tensor, Tensor]:
         """Add Gaussian noise to x0.
 
         Args:
@@ -189,7 +189,7 @@ class LinearChainNoise:
         atom_type: Tensor,
         chain_ids: Tensor,
         **kwargs,
-    ) -> Tuple[Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor]:
         """Interpolate toward extended chain + add small Gaussian noise.
 
         Args:
@@ -314,7 +314,7 @@ class LinearChainFlow:
         atom_type: Tensor,
         chain_ids: Tensor,
         **kwargs,
-    ) -> Tuple[Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor]:
         """Create noisy input at timestep t for x0 prediction.
 
         Args:
@@ -417,7 +417,7 @@ class VENoiser:
         x0: Tensor,
         t: Tensor,
         **kwargs,
-    ) -> Tuple[Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor]:
         """Add VE noise: x_t = x0 + sigma[t] * eps
 
         Args:
@@ -438,7 +438,7 @@ class VENoiser:
         self,
         x0: Tensor,
         sigma: Tensor,
-    ) -> Tuple[Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor]:
         """Add VE noise with continuous sigma (for training).
 
         Args:

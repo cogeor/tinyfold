@@ -20,9 +20,6 @@ from __future__ import annotations
 import argparse
 import gc
 import sys
-import time
-import traceback
-from typing import List, Tuple
 
 import torch
 
@@ -39,7 +36,7 @@ def measure_peak_vram(
     use_esm: bool,
     esm_dim: int = 480,
     device: str = "cuda",
-) -> Tuple[float, float, int]:
+) -> tuple[float, float, int]:
     """Build model, run fwd+bwd at the requested shape, return peak VRAM.
 
     Returns:
@@ -133,7 +130,7 @@ def main() -> None:
 
     # Configs to sweep, ordered by increasing memory pressure.
     # Each: (label, c_token, trunk, denoiser)
-    configs: List[Tuple[str, int, int, int]] = [
+    configs: list[tuple[str, int, int, int]] = [
         ("Phase D baseline",      256, 6,  6),
         ("Deeper 8+8",            256, 8,  8),
         ("Deeper 10+10",          256, 10, 10),

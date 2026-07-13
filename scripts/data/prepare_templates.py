@@ -27,9 +27,9 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-import pyarrow.parquet as pq  # noqa: E402
+import pyarrow.parquet as pq
 
-from tinyfold.retrieval.retriever import ChainEntry, MonomerRetriever  # noqa: E402
+from tinyfold.retrieval.retriever import ChainEntry, MonomerRetriever
 
 
 def build_retriever(parquet, clusters):

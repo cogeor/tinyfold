@@ -21,7 +21,7 @@ Everything is deterministic (fixed hash seeds).
 
 from __future__ import annotations
 
-from typing import Dict, List, Sequence, Tuple
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -52,7 +52,7 @@ def kmer_set(seq: Sequence[int], k: int) -> set:
     return out
 
 
-def _hash_coeffs(num_perm: int, seed: int) -> Tuple[np.ndarray, np.ndarray]:
+def _hash_coeffs(num_perm: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
     rng = np.random.RandomState(seed)
     a = rng.randint(1, _MERSENNE, size=num_perm, dtype=np.int64)
     b = rng.randint(0, _MERSENNE, size=num_perm, dtype=np.int64)
@@ -60,7 +60,7 @@ def _hash_coeffs(num_perm: int, seed: int) -> Tuple[np.ndarray, np.ndarray]:
 
 
 def minhash_signatures(
-    kmer_sets: List[set], num_perm: int, seed: int = 1234
+    kmer_sets: list[set], num_perm: int, seed: int = 1234
 ) -> np.ndarray:
     """[N, num_perm] int64 MinHash signatures (max value for empty sets)."""
     a, b = _hash_coeffs(num_perm, seed)
@@ -82,7 +82,7 @@ def lsh_candidate_pairs(sig: np.ndarray, bands: int, rows: int) -> set:
     assert bands * rows <= num_perm, f"bands*rows={bands*rows} > num_perm={num_perm}"
     pairs = set()
     for band in range(bands):
-        buckets: Dict[bytes, List[int]] = {}
+        buckets: dict[bytes, list[int]] = {}
         chunk = sig[:, band * rows:(band + 1) * rows]
         for i in range(N):
             key = chunk[i].tobytes()
@@ -121,14 +121,14 @@ def jaccard(a: set, b: set) -> float:
 
 
 def cluster_sequences(
-    seqs: List[Sequence[int]],
+    seqs: list[Sequence[int]],
     k: int = 3,
     threshold: float = 0.3,
     num_perm: int = 128,
     bands: int = 32,
     rows: int = 4,
     seed: int = 1234,
-) -> List[int]:
+) -> list[int]:
     """Cluster integer sequences by k-mer Jaccard >= threshold.
 
     Returns a list of cluster labels (contiguous ints from 0), one per input
@@ -143,7 +143,7 @@ def cluster_sequences(
         if jaccard(kmer_sets[i], kmer_sets[j]) >= threshold:
             uf.union(i, j)
     # Relabel roots to contiguous ids (deterministic by first appearance).
-    label_of: Dict[int, int] = {}
+    label_of: dict[int, int] = {}
     labels = []
     for i in range(len(seqs)):
         r = uf.find(i)

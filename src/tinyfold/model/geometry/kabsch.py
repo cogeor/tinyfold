@@ -16,7 +16,6 @@ needs the freshly-stepped ``x`` rigid-aligned onto the previous step's ``x`` —
 returning ``(R, t, aligned)`` lets every caller pick whichever slice it wants.
 """
 
-from typing import Optional, Tuple
 
 import torch
 from torch import Tensor
@@ -25,8 +24,8 @@ from torch import Tensor
 def kabsch_rigid(
     src: Tensor,
     tgt: Tensor,
-    mask: Optional[Tensor] = None,
-) -> Tuple[Tensor, Tensor, Tensor]:
+    mask: Tensor | None = None,
+) -> tuple[Tensor, Tensor, Tensor]:
     """Find ``(R, t)`` minimising ``||R @ src + t - tgt||^2`` per batch element.
 
     Implements the standard Kabsch SVD recipe with proper-rotation enforcement

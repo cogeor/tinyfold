@@ -23,8 +23,8 @@ those sources by the cache builder (prepare_templates.py, C6).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
 
 from .seq_clustering import jaccard, kmer_set
 
@@ -33,7 +33,7 @@ from .seq_clustering import jaccard, kmer_set
 class ChainEntry:
     sample_id: str
     chain: int            # 0 (A) or 1 (B)
-    seq: Tuple[int, ...]
+    seq: tuple[int, ...]
     chain_cluster: int
     complex_cluster: int
 
@@ -47,12 +47,12 @@ class ChainTemplate:
     """
     src_sample_id: str
     src_chain: int
-    query_to_src: List[int]
+    query_to_src: list[int]
     identity: float       # k-mer Jaccard of the hit (diagnostic)
 
 
 def needleman_wunsch(a: Sequence[int], b: Sequence[int],
-                     match: int = 1, mismatch: int = -1, gap: int = -1) -> List[int]:
+                     match: int = 1, mismatch: int = -1, gap: int = -1) -> list[int]:
     """Global align b (template) onto a (query).
 
     Returns ``a_to_b`` of length len(a): for each query position, the aligned
@@ -99,10 +99,10 @@ class MonomerRetriever:
         # stricter different-complex-cluster protocol (much lower coverage).
         self.k = k
         self.exclude_same_complex = bool(exclude_same_complex)
-        self.entries: List[ChainEntry] = []
-        self.by_chain_cluster: Dict[int, List[int]] = {}   # cluster -> entry indices
-        self.by_sample: Dict[str, List[int]] = {}          # sample_id -> [entryA, entryB]
-        self._kmer_cache: Dict[int, set] = {}
+        self.entries: list[ChainEntry] = []
+        self.by_chain_cluster: dict[int, list[int]] = {}   # cluster -> entry indices
+        self.by_sample: dict[str, list[int]] = {}          # sample_id -> [entryA, entryB]
+        self._kmer_cache: dict[int, set] = {}
 
     def add_chain(self, entry: ChainEntry) -> None:
         idx = len(self.entries)
@@ -117,7 +117,7 @@ class MonomerRetriever:
             self._kmer_cache[idx] = ks
         return ks
 
-    def retrieve_chain(self, query_idx: int) -> Optional[ChainTemplate]:
+    def retrieve_chain(self, query_idx: int) -> ChainTemplate | None:
         """Best homologous monomer template for entry ``query_idx``, or None."""
         q = self.entries[query_idx]
         cands = self.by_chain_cluster.get(q.chain_cluster, [])
@@ -151,9 +151,9 @@ class MonomerRetriever:
             query_to_src=q_to_src, identity=best_sim,
         )
 
-    def retrieve_sample(self, sample_id: str) -> Dict[int, Optional[ChainTemplate]]:
+    def retrieve_sample(self, sample_id: str) -> dict[int, ChainTemplate | None]:
         """Return {query_chain: ChainTemplate or None} for a query sample."""
-        out: Dict[int, Optional[ChainTemplate]] = {}
+        out: dict[int, ChainTemplate | None] = {}
         for idx in self.by_sample.get(sample_id, []):
             chain = self.entries[idx].chain
             out[chain] = self.retrieve_chain(idx)

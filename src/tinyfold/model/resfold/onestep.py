@@ -29,7 +29,6 @@ trunk early.
 """
 
 import math
-from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -81,7 +80,7 @@ class AtomHead(nn.Module):
         nn.init.normal_(self.proj.weight, std=0.02)
         nn.init.zeros_(self.proj.bias)
 
-    def forward(self, tokens: Tensor, mask: Optional[Tensor] = None) -> Tensor:
+    def forward(self, tokens: Tensor, mask: Tensor | None = None) -> Tensor:
         """Predict 4 backbone-atom offsets per residue.
 
         Args:
@@ -158,7 +157,7 @@ class FrameAtomHead(nn.Module):
         self.proj.bias.data.copy_(bias)
         self.template = nn.Parameter(_IDEAL_BACKBONE_A / float(template_scale))
 
-    def forward(self, tokens: Tensor, mask: Optional[Tensor] = None) -> Tensor:
+    def forward(self, tokens: Tensor, mask: Tensor | None = None) -> Tensor:
         B, L, _ = tokens.shape
         attn_mask = ~mask if mask is not None else None
         x = self.norm(self.transformer(tokens, src_key_padding_mask=attn_mask))
@@ -201,7 +200,7 @@ class ResFoldOneStep(BaseDecoder):
         n_chains: int = 2,
         dropout: float = 0.0,
         aa_embed: str = "learned",
-        esm_dim: Optional[int] = None,
+        esm_dim: int | None = None,
         confidence_head: bool = False,
         sigma_data: float = 1.0,
         relpos_bias: bool = False,
@@ -357,10 +356,10 @@ class ResFoldOneStep(BaseDecoder):
         x_t: Tensor,
         trunk_tokens: Tensor,
         cond: Tensor,
-        mask: Optional[Tensor] = None,
-        x0_prev: Optional[Tensor] = None,
-        res_idx: Optional[Tensor] = None,
-        chain_ids: Optional[Tensor] = None,
+        mask: Tensor | None = None,
+        x0_prev: Tensor | None = None,
+        res_idx: Tensor | None = None,
+        chain_ids: Tensor | None = None,
     ) -> Tensor:
         """Run the diffusion transformer and return final tokens [B, L, c_token].
 
@@ -384,8 +383,8 @@ class ResFoldOneStep(BaseDecoder):
         x_t: Tensor,
         c_skip: Tensor,
         c_out: Tensor,
-        mask: Optional[Tensor],
-    ) -> Tuple[Tensor, Tensor]:
+        mask: Tensor | None,
+    ) -> tuple[Tensor, Tensor]:
         """EDM-blended centroid + atom predictions from shared denoiser tokens.
 
         F_centroid is the raw projection; the EDM blend gives the final centroid.
@@ -401,8 +400,8 @@ class ResFoldOneStep(BaseDecoder):
     def _predict_confidence(
         self,
         denoiser_tokens: Tensor,
-        mask: Optional[Tensor],
-    ) -> Optional[Tensor]:
+        mask: Tensor | None,
+    ) -> Tensor | None:
         """Run the optional confidence head; return ``None`` when disabled.
 
         Returned tensor (when present) has shape ``[B]`` and lives in ``[0, 1]``
@@ -419,13 +418,13 @@ class ResFoldOneStep(BaseDecoder):
         chain_ids: Tensor,
         res_idx: Tensor,
         sigma: Tensor,
-        mask: Optional[Tensor] = None,
-        x0_prev: Optional[Tensor] = None,
-        esm_embed: Optional[Tensor] = None,
-        template_coords_res: Optional[Tensor] = None,
-        template_mask: Optional[Tensor] = None,
-        template_frame_id: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tensor, Optional[Tensor]]:
+        mask: Tensor | None = None,
+        x0_prev: Tensor | None = None,
+        esm_embed: Tensor | None = None,
+        template_coords_res: Tensor | None = None,
+        template_mask: Tensor | None = None,
+        template_frame_id: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor, Tensor | None]:
         """Continuous-sigma forward (EDM-preconditioned).
 
         Returns ``(centroid_pred, atoms_pred, pred_lddt_or_None)``. The third
@@ -464,13 +463,13 @@ class ResFoldOneStep(BaseDecoder):
         chain_ids: Tensor,
         res_idx: Tensor,
         sigma: Tensor,
-        mask: Optional[Tensor] = None,
-        x0_prev: Optional[Tensor] = None,
-        esm_embed: Optional[Tensor] = None,
-        template_coords_res: Optional[Tensor] = None,
-        template_mask: Optional[Tensor] = None,
-        template_frame_id: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tensor, Optional[Tensor]]:
+        mask: Tensor | None = None,
+        x0_prev: Tensor | None = None,
+        esm_embed: Tensor | None = None,
+        template_coords_res: Tensor | None = None,
+        template_mask: Tensor | None = None,
+        template_frame_id: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor, Tensor | None]:
         """Centroid forward that also returns the denoiser tokens.
 
         For the atom-diffusion stage: returns ``(centroid_pred, denoiser_tokens,
@@ -502,7 +501,7 @@ class ResFoldOneStep(BaseDecoder):
         delta_t: Tensor,
         denoiser_tokens: Tensor,
         sigma_a: Tensor,
-        mask: Optional[Tensor] = None,
+        mask: Tensor | None = None,
     ) -> Tensor:
         """One atom-diffusion denoise step: noised offsets -> denoised offsets.
 
@@ -517,11 +516,11 @@ class ResFoldOneStep(BaseDecoder):
         x_t: Tensor,
         trunk_tokens: Tensor,
         sigma: Tensor,
-        mask: Optional[Tensor] = None,
-        x0_prev: Optional[Tensor] = None,
-        res_idx: Optional[Tensor] = None,
-        chain_ids: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tensor, Optional[Tensor]]:
+        mask: Tensor | None = None,
+        x0_prev: Tensor | None = None,
+        res_idx: Tensor | None = None,
+        chain_ids: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor, Tensor | None]:
         """Like :meth:`centroid_tokens` but with precomputed trunk tokens.
 
         Lets the atom-diffusion sampler reuse a single trunk pass across K
@@ -548,11 +547,11 @@ class ResFoldOneStep(BaseDecoder):
         x_t: Tensor,
         trunk_tokens: Tensor,
         sigma: Tensor,
-        mask: Optional[Tensor] = None,
-        x0_prev: Optional[Tensor] = None,
-        res_idx: Optional[Tensor] = None,
-        chain_ids: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tensor, Optional[Tensor]]:
+        mask: Tensor | None = None,
+        x0_prev: Tensor | None = None,
+        res_idx: Tensor | None = None,
+        chain_ids: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor, Tensor | None]:
         """Continuous-sigma forward with precomputed trunk tokens (EDM-preconditioned).
 
         Returns ``(centroid_pred, atoms_pred, pred_lddt_or_None)`` — same
@@ -591,12 +590,12 @@ class ResFoldOneStep(BaseDecoder):
         chain_ids: Tensor,
         res_idx: Tensor,
         t: Tensor,
-        mask: Optional[Tensor] = None,
-        esm_embed: Optional[Tensor] = None,
-        template_coords_res: Optional[Tensor] = None,
-        template_mask: Optional[Tensor] = None,
-        template_frame_id: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tensor]:
+        mask: Tensor | None = None,
+        esm_embed: Tensor | None = None,
+        template_coords_res: Tensor | None = None,
+        template_mask: Tensor | None = None,
+        template_frame_id: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
         """Discrete-timestep forward (legacy path).
 
         No EDM here — the discrete timestep -> sigma mapping is not defined in this
@@ -627,11 +626,11 @@ class ResFoldOneStep(BaseDecoder):
         aa_seq: Tensor,
         chain_ids: Tensor,
         res_idx: Tensor,
-        mask: Optional[Tensor] = None,
-        esm_embed: Optional[Tensor] = None,
-        template_coords_res: Optional[Tensor] = None,
-        template_mask: Optional[Tensor] = None,
-        template_frame_id: Optional[Tensor] = None,
+        mask: Tensor | None = None,
+        esm_embed: Tensor | None = None,
+        template_coords_res: Tensor | None = None,
+        template_mask: Tensor | None = None,
+        template_frame_id: Tensor | None = None,
     ) -> Tensor:
         return self.trunk(
             aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed,

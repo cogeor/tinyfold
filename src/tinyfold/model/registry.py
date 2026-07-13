@@ -12,12 +12,11 @@ Usage:
     noiser = create_noiser("gaussian", schedule)
 """
 
-from typing import Dict, Any, Type, List, Optional
 import importlib
-
+from typing import Any
 
 # Lazy imports to avoid circular dependencies
-_MODEL_CLASSES: Dict[str, str] = {
+_MODEL_CLASSES: dict[str, str] = {
     # resfold line; resfold_onestep is the supported headline model.
     "resfold_stage1": "tinyfold.model.resfold.denoiser.ResidueDenoiser",
     "resfold_stage2": "tinyfold.model.resfold.refiner.AtomRefinerV2",
@@ -28,22 +27,22 @@ _MODEL_CLASSES: Dict[str, str] = {
     "resfold_onestep": "tinyfold.model.resfold.onestep.ResFoldOneStep",
 }
 
-_SCHEDULE_CLASSES: Dict[str, str] = {
+_SCHEDULE_CLASSES: dict[str, str] = {
     "cosine": "tinyfold.model.diffusion.CosineSchedule",
     "linear": "tinyfold.model.diffusion.LinearSchedule",
 }
 
-_NOISER_CLASSES: Dict[str, str] = {
+_NOISER_CLASSES: dict[str, str] = {
     "gaussian": "tinyfold.model.diffusion.GaussianNoise",
     "linear_chain": "tinyfold.model.diffusion.LinearChainNoise",
     "linear_flow": "tinyfold.model.diffusion.LinearChainFlow",
 }
 
 # Cache for loaded classes
-_loaded_classes: Dict[str, Type] = {}
+_loaded_classes: dict[str, type] = {}
 
 
-def _load_class(full_path: str) -> Type:
+def _load_class(full_path: str) -> type:
     """Dynamically load a class from module path."""
     if full_path in _loaded_classes:
         return _loaded_classes[full_path]
@@ -55,17 +54,17 @@ def _load_class(full_path: str) -> Type:
     return cls
 
 
-def list_models() -> List[str]:
+def list_models() -> list[str]:
     """Return list of available model names."""
     return list(_MODEL_CLASSES.keys())
 
 
-def list_schedules() -> List[str]:
+def list_schedules() -> list[str]:
     """Return list of available schedule names."""
     return list(_SCHEDULE_CLASSES.keys())
 
 
-def list_noise_types() -> List[str]:
+def list_noise_types() -> list[str]:
     """Return list of available noise type names."""
     return list(_NOISER_CLASSES.keys())
 
@@ -128,7 +127,7 @@ def create_noiser(noise_type: str, schedule: Any, **kwargs) -> Any:
     return cls(schedule, **kwargs)
 
 
-def get_model_class(name: str) -> Type:
+def get_model_class(name: str) -> type:
     """Get model class by name (for inspection without instantiation)."""
     if name not in _MODEL_CLASSES:
         available = ", ".join(_MODEL_CLASSES.keys())

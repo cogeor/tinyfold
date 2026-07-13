@@ -10,7 +10,6 @@ Architecture:
 - Output: relative atom offsets [B, L, 4, 3]
 """
 
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -67,7 +66,7 @@ class AtomRefinerV2(nn.Module):
         self,
         trunk_tokens: Tensor,  # [B, L, c_token] from Stage 1 encoder
         centroids: Tensor,     # [B, L, 3] centroid positions
-        mask: Optional[Tensor] = None,  # [B, L]
+        mask: Tensor | None = None,  # [B, L]
     ) -> Tensor:
         """Predict relative atom positions from trunk embeddings + centroids.
 
@@ -106,7 +105,7 @@ class AtomRefinerV2(nn.Module):
         self,
         trunk_tokens: Tensor,  # [B, L, c_token] from Stage 1 encoder
         centroids: Tensor,     # [B, L, 3] centroid positions
-        mask: Optional[Tensor] = None,  # [B, L]
+        mask: Tensor | None = None,  # [B, L]
     ) -> Tensor:
         """Predict absolute atom positions (centroid + offset).
 

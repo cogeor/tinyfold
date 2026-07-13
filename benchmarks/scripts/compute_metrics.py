@@ -25,8 +25,7 @@ import torch
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from tinyfold.model.metrics.dockq import compute_dockq  # noqa: E402
-
+from tinyfold.model.metrics.dockq import compute_dockq
 
 SPLITS = [
     "le200", "200_400", "400_600", "600_1000", "ge1000",
@@ -224,7 +223,7 @@ def main() -> None:
                 "model": args.model,
                 "bin": split,
                 "sample_id": sample_id,
-                "n_res": int(len(gt["aa"])),
+                "n_res": len(gt["aa"]),
                 **scores,
             }
             if K > 1:

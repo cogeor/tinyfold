@@ -26,7 +26,7 @@ Four strategies, increasing PPI-awareness:
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Protocol
+from typing import Any, Protocol
 
 import torch
 from torch import Tensor
@@ -46,10 +46,10 @@ class Cropper(Protocol):
 
     def __call__(
         self,
-        sample: Dict[str, Any],
+        sample: dict[str, Any],
         crop_size: int,
         rng: torch.Generator,
-    ) -> Dict[str, Any]: ...
+    ) -> dict[str, Any]: ...
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +57,7 @@ class Cropper(Protocol):
 # ---------------------------------------------------------------------------
 
 
-def _apply_residue_indices(sample: Dict[str, Any], idx: Tensor) -> Dict[str, Any]:
+def _apply_residue_indices(sample: dict[str, Any], idx: Tensor) -> dict[str, Any]:
     """Slice the per-residue tensors in ``sample`` by ``idx``.
 
     ``idx`` is a LongTensor of selected residue positions in [0, L). Order is
@@ -108,12 +108,12 @@ def _apply_residue_indices(sample: Dict[str, Any], idx: Tensor) -> Dict[str, Any
     return out
 
 
-def _is_two_chain(sample: Dict[str, Any]) -> bool:
+def _is_two_chain(sample: dict[str, Any]) -> bool:
     chain_ids = sample['chain_ids']
     return bool((chain_ids == 0).any().item() and (chain_ids == 1).any().item())
 
 
-def _interface_residue_indices(sample: Dict[str, Any], cutoff: float = 8.0) -> Tensor:
+def _interface_residue_indices(sample: dict[str, Any], cutoff: float = 8.0) -> Tensor:
     """Residues whose CA is within ``cutoff`` Å of any CA on the other chain.
 
     Returns indices into the residue axis. Empty tensor if no contacts (degenerate
@@ -152,7 +152,7 @@ class NoCrop:
 
     def __call__(self, sample, crop_size, rng):
         L = int(sample['n_res'])
-        if L > crop_size:
+        if crop_size < L:
             raise ValueError(
                 f"NoCrop: sample has L={L} > crop_size={crop_size}. "
                 f"Use a real cropper or raise crop_size."
@@ -175,7 +175,7 @@ class ContiguousCrop:
 
     def __call__(self, sample, crop_size, rng):
         L = int(sample['n_res'])
-        if L <= crop_size:
+        if crop_size >= L:
             return NoCrop()(sample, crop_size, rng)
         start = int(torch.randint(0, L - crop_size + 1, (1,), generator=rng).item())
         idx = torch.arange(start, start + crop_size, device=sample['centroids'].device)
@@ -193,7 +193,7 @@ class SpatialCrop:
 
     def __call__(self, sample, crop_size, rng):
         L = int(sample['n_res'])
-        if L <= crop_size:
+        if crop_size >= L:
             return NoCrop()(sample, crop_size, rng)
         ca = sample['coords_res'][:, 1, :]  # [L, 3]
         center = int(torch.randint(0, L, (1,), generator=rng).item())
@@ -233,7 +233,7 @@ class InterfaceCrop:
 
     def __call__(self, sample, crop_size, rng):
         L = int(sample['n_res'])
-        if L <= crop_size:
+        if crop_size >= L:
             return NoCrop()(sample, crop_size, rng)
         if not _is_two_chain(sample):
             return self._spatial(sample, crop_size, rng)

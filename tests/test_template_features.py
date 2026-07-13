@@ -4,7 +4,6 @@ Verifies the done-when criteria from the SPEC: correct shapes, coverage mask,
 and rotation/translation invariance (the whole point of RELATIVE features).
 """
 
-import numpy as np
 import torch
 
 from tinyfold.retrieval import (

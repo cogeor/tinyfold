@@ -12,7 +12,6 @@ Architecture:
 """
 
 import math
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -20,9 +19,8 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from .base import BaseDecoder, sinusoidal_pos_enc
-from .relpos import RelposBias
 from .pair_track import PairTrack
-
+from .relpos import RelposBias
 
 # =============================================================================
 # Building Blocks (copied from af3_style.py for independence)
@@ -112,8 +110,8 @@ class TrunkEncoderLayer(nn.Module):
     def forward(
         self,
         x: Tensor,
-        src_key_padding_mask: Optional[Tensor] = None,  # [B, L] bool, True = pad
-        attn_bias: Optional[Tensor] = None,             # [B, n_heads, L, L]
+        src_key_padding_mask: Tensor | None = None,  # [B, L] bool, True = pad
+        attn_bias: Tensor | None = None,             # [B, n_heads, L, L]
     ) -> Tensor:
         B, L, _ = x.shape
 
@@ -207,7 +205,7 @@ class ResidueEncoder(nn.Module):
         n_chains: int = 2,
         dropout: float = 0.0,
         aa_embed: str = "learned",
-        esm_dim: Optional[int] = None,
+        esm_dim: int | None = None,
         relpos_bias: bool = False,
         relpos_clip: int = 32,
         pair_repr: bool = False,
@@ -318,11 +316,11 @@ class ResidueEncoder(nn.Module):
         aa_seq: Tensor,          # [B, L]
         chain_ids: Tensor,       # [B, L]
         res_idx: Tensor,         # [B, L]
-        mask: Optional[Tensor] = None,  # [B, L]
-        esm_embed: Optional[Tensor] = None,  # [B, L, esm_dim], required in ESM mode
-        template_coords_res: Optional[Tensor] = None,  # [B, L, 4, 3]
-        template_mask: Optional[Tensor] = None,        # [B, L]
-        template_frame_id: Optional[Tensor] = None,    # [B, L]
+        mask: Tensor | None = None,  # [B, L]
+        esm_embed: Tensor | None = None,  # [B, L, esm_dim], required in ESM mode
+        template_coords_res: Tensor | None = None,  # [B, L, 4, 3]
+        template_mask: Tensor | None = None,        # [B, L]
+        template_frame_id: Tensor | None = None,    # [B, L]
     ) -> Tensor:
         """Encode residue-level sequence features (NO coordinates).
 
@@ -426,8 +424,8 @@ class DiffusionTransformerBlock(nn.Module):
         self,
         x: Tensor,           # [B, L, c_token]
         cond: Tensor,        # [B, L, c_token] timestep conditioning
-        mask: Optional[Tensor] = None,  # [B, L] valid token mask
-        attn_bias: Optional[Tensor] = None,  # [B, n_heads, L, L] additive bias
+        mask: Tensor | None = None,  # [B, L] valid token mask
+        attn_bias: Tensor | None = None,  # [B, n_heads, L, L] additive bias
     ) -> Tensor:
         B, L, _ = x.shape
 
@@ -502,9 +500,9 @@ class DiffusionTransformer(nn.Module):
         self,
         tokens: Tensor,
         time_cond: Tensor,
-        mask: Optional[Tensor] = None,
-        res_idx: Optional[Tensor] = None,    # [B, L] long, required when relpos is enabled
-        chain_ids: Optional[Tensor] = None,  # [B, L] long, required when relpos is enabled
+        mask: Tensor | None = None,
+        res_idx: Tensor | None = None,    # [B, L] long, required when relpos is enabled
+        chain_ids: Tensor | None = None,  # [B, L] long, required when relpos is enabled
     ) -> Tensor:
         if self.relpos is not None:
             assert res_idx is not None and chain_ids is not None, (
@@ -547,7 +545,7 @@ class ResidueDenoiser(BaseDecoder):
         n_chains: int = 2,
         dropout: float = 0.0,
         aa_embed: str = "learned",
-        esm_dim: Optional[int] = None,
+        esm_dim: int | None = None,
     ):
         super().__init__()
         self.c_token = c_token
@@ -605,8 +603,8 @@ class ResidueDenoiser(BaseDecoder):
         chain_ids: Tensor,   # [B, L]
         res_idx: Tensor,     # [B, L]
         t: Tensor,           # [B] timestep
-        mask: Optional[Tensor] = None,  # [B, L]
-        esm_embed: Optional[Tensor] = None,  # [B, L, esm_dim], required in ESM mode
+        mask: Tensor | None = None,  # [B, L]
+        esm_embed: Tensor | None = None,  # [B, L, esm_dim], required in ESM mode
     ) -> Tensor:
         """Predict clean centroids x0 from noisy input (x0 prediction).
 
@@ -672,9 +670,9 @@ class ResidueDenoiser(BaseDecoder):
         chain_ids: Tensor,   # [B, L]
         res_idx: Tensor,     # [B, L]
         sigma: Tensor,       # [B] continuous noise level
-        mask: Optional[Tensor] = None,  # [B, L]
-        x0_prev: Optional[Tensor] = None,  # [B, L, 3] previous x0 prediction (self-conditioning)
-        esm_embed: Optional[Tensor] = None,  # [B, L, esm_dim], required in ESM mode
+        mask: Tensor | None = None,  # [B, L]
+        x0_prev: Tensor | None = None,  # [B, L, 3] previous x0 prediction (self-conditioning)
+        esm_embed: Tensor | None = None,  # [B, L, esm_dim], required in ESM mode
     ) -> Tensor:
         """Predict clean centroids x0 from noisy input using continuous sigma.
 
@@ -731,8 +729,8 @@ class ResidueDenoiser(BaseDecoder):
         x_t: Tensor,         # [B, L, 3] noisy residue centroids
         trunk_tokens: Tensor,  # [B, L, c_token] pre-computed trunk embeddings
         sigma: Tensor,       # [B] continuous noise level
-        mask: Optional[Tensor] = None,  # [B, L]
-        x0_prev: Optional[Tensor] = None,  # [B, L, 3] previous x0 prediction (self-conditioning)
+        mask: Tensor | None = None,  # [B, L]
+        x0_prev: Tensor | None = None,  # [B, L, 3] previous x0 prediction (self-conditioning)
     ) -> Tensor:
         """Predict x0 using pre-computed trunk and continuous sigma.
 
@@ -782,8 +780,8 @@ class ResidueDenoiser(BaseDecoder):
         aa_seq: Tensor,      # [B, L]
         chain_ids: Tensor,   # [B, L]
         res_idx: Tensor,     # [B, L]
-        mask: Optional[Tensor] = None,
-        esm_embed: Optional[Tensor] = None,
+        mask: Tensor | None = None,
+        esm_embed: Tensor | None = None,
     ) -> Tensor:
         """Compute trunk embeddings from sequence features (for Stage 2 or multi-copy).
 
@@ -799,7 +797,7 @@ class ResidueDenoiser(BaseDecoder):
         x_t: Tensor,         # [B, L, 3] noisy residue centroids
         trunk_tokens: Tensor,  # [B, L, c_token] pre-computed trunk embeddings
         t: Tensor,           # [B] timestep
-        mask: Optional[Tensor] = None,  # [B, L]
+        mask: Tensor | None = None,  # [B, L]
     ) -> Tensor:
         """Predict x0 using pre-computed trunk tokens (for efficient multi-copy training).
 

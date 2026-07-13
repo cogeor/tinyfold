@@ -1,5 +1,5 @@
 """Structure parsing modules."""
 
-from .structure_io import load_structure, extract_chain, get_backbone_atoms
+from .structure_io import extract_chain, get_backbone_atoms, load_structure
 
-__all__ = ["load_structure", "extract_chain", "get_backbone_atoms"]
+__all__ = ["extract_chain", "get_backbone_atoms", "load_structure"]

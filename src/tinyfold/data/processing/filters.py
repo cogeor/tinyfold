@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
 import numpy as np
 
@@ -17,7 +16,6 @@ from tinyfold.constants import (
     MAX_INTER_CHAIN_DISTANCE,
     MIN_BACKBONE_COMPLETENESS,
     MIN_CHAIN_LENGTH,
-    NUM_ATOM_TYPES,
 )
 from tinyfold.data.processing.atomization import compute_bond_lengths
 from tinyfold.data.processing.interface import compute_min_interface_distance
@@ -72,7 +70,7 @@ def validate_chain_length(
     LA: int,
     LB: int,
     min_len: int = MIN_CHAIN_LENGTH,
-    max_len: Optional[int] = MAX_CHAIN_LENGTH,
+    max_len: int | None = MAX_CHAIN_LENGTH,
 ) -> FilterResult:
     """
     Check chain lengths are within bounds.
@@ -92,14 +90,14 @@ def validate_chain_length(
         return FilterResult.fail(FilterReason.CHAIN_A_EMPTY)
     if LB == 0:
         return FilterResult.fail(FilterReason.CHAIN_B_EMPTY)
-    if LA < min_len:
+    if min_len > LA:
         return FilterResult.fail(FilterReason.CHAIN_A_TOO_SHORT, f"LA={LA} < {min_len}")
-    if LB < min_len:
+    if min_len > LB:
         return FilterResult.fail(FilterReason.CHAIN_B_TOO_SHORT, f"LB={LB} < {min_len}")
     if max_len is not None:
-        if LA > max_len:
+        if max_len < LA:
             return FilterResult.fail(FilterReason.CHAIN_A_TOO_LONG, f"LA={LA} > {max_len}")
-        if LB > max_len:
+        if max_len < LB:
             return FilterResult.fail(FilterReason.CHAIN_B_TOO_LONG, f"LB={LB} > {max_len}")
 
     return FilterResult.ok()
@@ -256,7 +254,7 @@ def validate_sample(
     bonds_dst: np.ndarray,
     bond_type: np.ndarray,
     min_chain_length: int = MIN_CHAIN_LENGTH,
-    max_chain_length: Optional[int] = MAX_CHAIN_LENGTH,
+    max_chain_length: int | None = MAX_CHAIN_LENGTH,
 ) -> FilterResult:
     """
     Run all validation checks on a sample.

@@ -4,12 +4,11 @@ import pytest
 import torch
 
 from tinyfold.model.losses.contact import (
-    compute_contact_mask,
-    contact_loss_centroids,
-    contact_loss_atoms,
     ContactLoss,
+    compute_contact_mask,
+    contact_loss_atoms,
+    contact_loss_centroids,
 )
-
 
 # =============================================================================
 # Fixtures
@@ -437,8 +436,9 @@ class TestContactLossRealData:
 
     def test_on_real_protein(self):
         """Test contact loss on a real protein from dataset."""
-        import pyarrow.parquet as pq
         from pathlib import Path
+
+        import pyarrow.parquet as pq
 
         data_path = Path(__file__).parent.parent / "data" / "processed" / "samples.parquet"
         if not data_path.exists():

@@ -8,8 +8,8 @@ model path rather than mocked internals.
 
 import torch
 
-from tinyfold.model.resfold.pair_track import PairTrack
 from tinyfold.model.resfold.onestep import ResFoldOneStep
+from tinyfold.model.resfold.pair_track import PairTrack
 
 
 def _toy_inputs(B=2, L=7, device="cpu"):

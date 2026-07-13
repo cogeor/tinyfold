@@ -9,7 +9,6 @@ Covers the regression contract pinned in
 - partial mask aligns only the unmasked subset.
 """
 
-import pytest
 import torch
 
 from tinyfold.model.geometry import kabsch_rigid

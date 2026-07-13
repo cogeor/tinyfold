@@ -26,10 +26,7 @@ Keep it 0 for the pure oracle upper-bound probe.
 
 from __future__ import annotations
 
-from typing import Optional
-
 import torch
-
 
 ORACLE_SOURCES = {"oracle", "oracle_monomer"}
 VALID_SOURCES = {"none", "retrieved"} | ORACLE_SOURCES
@@ -39,7 +36,7 @@ def make_template_inputs(
     batch: dict,
     source: str = "none",
     dropout: float = 0.0,
-    generator: Optional[torch.Generator] = None,
+    generator: torch.Generator | None = None,
 ):
     """Return (template_coords_res, template_mask, template_frame_id) or Nones.
 

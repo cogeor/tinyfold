@@ -13,7 +13,6 @@ Shape contract (forward):
     return: [B] predicted lDDT, each in ``[0, 1]``.
 """
 
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -35,7 +34,7 @@ class ConfidenceHead(nn.Module):
     def __init__(
         self,
         c_token: int = 128,
-        hidden: Optional[int] = None,
+        hidden: int | None = None,
         dropout: float = 0.0,
     ):
         super().__init__()
@@ -50,7 +49,7 @@ class ConfidenceHead(nn.Module):
         # Predict 0.5 (midpoint of lDDT range) at init: bias = inverse_sigmoid(0.5) = 0.
         nn.init.zeros_(self.fc2.bias)
 
-    def forward(self, tokens: Tensor, mask: Optional[Tensor] = None) -> Tensor:
+    def forward(self, tokens: Tensor, mask: Tensor | None = None) -> Tensor:
         """Predict per-target lDDT in ``[0, 1]``.
 
         Args:

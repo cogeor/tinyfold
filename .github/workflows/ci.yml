@@ -24,6 +24,9 @@ jobs:
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -e ".[dev]"
 
+      - name: Lint (ruff)
+        run: ruff check .
+
       - name: Run tests (skip data/GPU integration tests)
         # The slow/integration tests need the DIPS-Plus parquet, cached ESM
         # embeddings, and trained checkpoints, none of which exist on a fresh CI

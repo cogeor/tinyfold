@@ -32,7 +32,6 @@ import argparse
 import sys
 import time
 from pathlib import Path
-from typing import Tuple
 
 import numpy as np
 import pyarrow.parquet as pq
@@ -44,8 +43,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT / "src"))
 
-from tinyfold.constants import IDX_TO_AA  # noqa: E402
-
+from tinyfold.constants import IDX_TO_AA
 
 ESM_VARIANTS = {
     "35M":  ("facebook/esm2_t12_35M_UR50D",  480),
@@ -84,7 +82,7 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _parse_filter_range(spec: str | None) -> Tuple[int, int] | None:
+def _parse_filter_range(spec: str | None) -> tuple[int, int] | None:
     if not spec:
         return None
     lo, hi = spec.split("-", 1)
@@ -134,7 +132,7 @@ def main() -> int:
         print("Install with: uv pip install 'transformers>=4.40'", file=sys.stderr)
         return 2
 
-    print(f"Loading tokenizer + model... (first run downloads ~150-600 MB)", flush=True)
+    print("Loading tokenizer + model... (first run downloads ~150-600 MB)", flush=True)
     t0 = time.time()
     tokenizer = EsmTokenizer.from_pretrained(model_id)
     model_kwargs = {}
@@ -240,7 +238,7 @@ def main() -> int:
             )
             tmp_file.replace(cache_path)
             n_processed += 1
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             n_failed += 1
             failures.append((sample_id, repr(exc)))
             # Best-effort cleanup of any partial tmp file.

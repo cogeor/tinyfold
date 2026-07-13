@@ -13,16 +13,14 @@ Key design:
 - Iterative inference: predict atoms incrementally, starting from most central residues
 """
 
-from typing import Optional, List
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
 from .clustering import (
-    select_next_residues_to_place,
-    get_residue_placement_order,
     select_next_atoms_to_place,
+    select_next_residues_to_place,
 )
 
 
@@ -110,8 +108,8 @@ class ResFoldAssembler(nn.Module):
         self,
         trunk_tokens: Tensor,       # [B, L, c_token] from Stage 1 trunk
         centroid_samples: Tensor,   # [B, K, L, 3] K centroid samples per residue
-        mask: Optional[Tensor] = None,  # [B, L] residue mask
-        atom_mask: Optional[Tensor] = None,  # [B, L*4] atom mask for training
+        mask: Tensor | None = None,  # [B, L] residue mask
+        atom_mask: Tensor | None = None,  # [B, L*4] atom mask for training
     ) -> Tensor:
         """Predict atom positions.
 
@@ -196,7 +194,7 @@ class ResFoldAssembler(nn.Module):
         centroid_samples: Tensor,   # [B, K, L, 3]
         known_atoms: Tensor,        # [B, L, 4, 3] known atom positions (use GT for known)
         known_mask: Tensor,         # [B, L, 4] bool, True = atom is known
-        mask: Optional[Tensor] = None,
+        mask: Tensor | None = None,
     ) -> Tensor:
         """Predict atoms with some already known (for iterative training).
 
@@ -283,9 +281,9 @@ class ResFoldAssembler(nn.Module):
         self,
         trunk_tokens: Tensor,       # [B, L, c_token]
         centroid_samples: Tensor,   # [B, K, L, 3]
-        mask: Optional[Tensor] = None,
+        mask: Tensor | None = None,
         k_per_step: int = 4,        # Atoms to fix per iteration
-        n_iterations: Optional[int] = None,  # If None, auto-compute
+        n_iterations: int | None = None,  # If None, auto-compute
         update_centroids: bool = True,  # Update centroids when residue fully fixed
     ) -> Tensor:
         """Iterative inference with centroid updates at atom level.
@@ -390,7 +388,7 @@ class ResFoldAssembler(nn.Module):
         self,
         trunk_tokens: Tensor,       # [B, L, c_token]
         centroid_samples: Tensor,   # [B, K, L, 3]
-        mask: Optional[Tensor] = None,
+        mask: Tensor | None = None,
         k_residues_per_step: int = 1,  # Residues to fix per iteration
         update_centroids: bool = True,  # Update centroids from predicted atoms
         centroid_blend: float = 1.0,    # How much to blend (1.0 = full replacement)

@@ -12,12 +12,11 @@ All losses can be disabled by setting their weight to 0.
 """
 
 import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from typing import Optional, Dict
-
 
 # Expected bond lengths in Angstroms
 BOND_LENGTHS_ANGSTROM = {
@@ -111,8 +110,8 @@ def dihedral_angle(p0: Tensor, p1: Tensor, p2: Tensor, p3: Tensor) -> Tensor:
 
 def bond_length_loss(
     coords: Tensor,
-    mask: Optional[Tensor] = None,
-    valid_peptide: Optional[Tensor] = None,
+    mask: Tensor | None = None,
+    valid_peptide: Tensor | None = None,
     coord_std: float = 1.0,
 ) -> Tensor:
     """Compute bond length loss.
@@ -172,8 +171,8 @@ def bond_length_loss(
 
 def bond_angle_loss(
     coords: Tensor,
-    mask: Optional[Tensor] = None,
-    valid_peptide: Optional[Tensor] = None,
+    mask: Tensor | None = None,
+    valid_peptide: Tensor | None = None,
 ) -> Tensor:
     """Compute bond angle loss using cosine-based comparison (gradient-safe).
 
@@ -241,8 +240,8 @@ def bond_angle_loss(
 
 def omega_loss(
     coords: Tensor,
-    mask: Optional[Tensor] = None,
-    valid_peptide: Optional[Tensor] = None,
+    mask: Tensor | None = None,
+    valid_peptide: Tensor | None = None,
 ) -> Tensor:
     """Compute omega dihedral loss (peptide planarity).
 
@@ -290,8 +289,8 @@ def omega_loss(
 
 def o_chirality_loss(
     coords: Tensor,
-    mask: Optional[Tensor] = None,
-    valid_peptide: Optional[Tensor] = None,
+    mask: Tensor | None = None,
+    valid_peptide: Tensor | None = None,
 ) -> Tensor:
     """Compute O chirality loss (carbonyl on correct side of peptide plane).
 
@@ -348,8 +347,8 @@ def o_chirality_loss(
 
 def virtual_cb_loss(
     coords: Tensor,
-    mask: Optional[Tensor] = None,
-    glycine_mask: Optional[Tensor] = None,
+    mask: Tensor | None = None,
+    glycine_mask: Tensor | None = None,
 ) -> Tensor:
     """Compute virtual CB chirality loss (L-amino acid handedness).
 
@@ -410,7 +409,7 @@ def virtual_cb_loss(
 def pairwise_distance_loss(
     pred_coords: Tensor,
     gt_coords: Tensor,
-    mask: Optional[Tensor] = None,
+    mask: Tensor | None = None,
     n_sample: int = 64,
 ) -> Tensor:
     """Compute pairwise distance loss to enforce global structure.
@@ -539,12 +538,12 @@ class GeometryLoss(nn.Module):
     def forward(
         self,
         coords: Tensor,
-        mask: Optional[Tensor] = None,
-        glycine_mask: Optional[Tensor] = None,
-        gt_coords: Optional[Tensor] = None,
+        mask: Tensor | None = None,
+        glycine_mask: Tensor | None = None,
+        gt_coords: Tensor | None = None,
         peptide_threshold: float = 0.2,
         coord_std: float = 1.0,
-    ) -> Dict[str, Tensor]:
+    ) -> dict[str, Tensor]:
         """Compute geometry losses.
 
         Args:

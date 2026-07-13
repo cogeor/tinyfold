@@ -19,10 +19,12 @@ Available samplers:
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
+from typing import Any
+
 import torch
-from torch import Tensor
 import torch.nn as nn
-from typing import Dict, Any, Optional, Callable
+from torch import Tensor
 
 from .utils import kabsch_align_to_target
 
@@ -51,10 +53,10 @@ class BaseSampler(ABC):
         self,
         model: nn.Module,
         shape: tuple,
-        model_kwargs: Dict[str, Any],
+        model_kwargs: dict[str, Any],
         noiser,
         device: torch.device,
-        forward_fn: Optional[Callable] = None,
+        forward_fn: Callable | None = None,
     ) -> Tensor:
         """Run reverse diffusion sampling.
 
@@ -72,13 +74,13 @@ class BaseSampler(ABC):
         """
         pass
 
-    def _apply_alignment(self, x0_pred: Tensor, x: Tensor, mask: Optional[Tensor]) -> Tensor:
+    def _apply_alignment(self, x0_pred: Tensor, x: Tensor, mask: Tensor | None) -> Tensor:
         """Apply Kabsch alignment if enabled."""
         if self.align_per_step:
             return kabsch_align_to_target(x0_pred, x, mask)
         return x0_pred
 
-    def _apply_recenter(self, x: Tensor, mask: Optional[Tensor]) -> Tensor:
+    def _apply_recenter(self, x: Tensor, mask: Tensor | None) -> Tensor:
         """Apply recentering if enabled."""
         if not self.recenter:
             return x
@@ -104,10 +106,10 @@ class DDPMSampler(BaseSampler):
         self,
         model: nn.Module,
         shape: tuple,
-        model_kwargs: Dict[str, Any],
+        model_kwargs: dict[str, Any],
         noiser,
         device: torch.device,
-        forward_fn: Optional[Callable] = None,
+        forward_fn: Callable | None = None,
     ) -> Tensor:
         B, N, _ = shape
         mask = model_kwargs.get('mask')
@@ -171,10 +173,10 @@ class HeunSampler(BaseSampler):
         self,
         model: nn.Module,
         shape: tuple,
-        model_kwargs: Dict[str, Any],
+        model_kwargs: dict[str, Any],
         noiser,
         device: torch.device,
-        forward_fn: Optional[Callable] = None,
+        forward_fn: Callable | None = None,
     ) -> Tensor:
         B, N, _ = shape
         mask = model_kwargs.get('mask')
@@ -256,10 +258,10 @@ class DeterministicDDIMSampler(BaseSampler):
         self,
         model: nn.Module,
         shape: tuple,
-        model_kwargs: Dict[str, Any],
+        model_kwargs: dict[str, Any],
         noiser,
         device: torch.device,
-        forward_fn: Optional[Callable] = None,
+        forward_fn: Callable | None = None,
     ) -> Tensor:
         B, N, _ = shape
         mask = model_kwargs.get('mask')
@@ -349,10 +351,10 @@ class EDMSampler(BaseSampler):
         self,
         model: nn.Module,
         shape: tuple,
-        model_kwargs: Dict[str, Any],
+        model_kwargs: dict[str, Any],
         noiser,
         device: torch.device,
-        forward_fn: Optional[Callable] = None,
+        forward_fn: Callable | None = None,
     ) -> Tensor:
         """EDM sampling with optional Heun's method.
 

@@ -1,9 +1,9 @@
 """ResFold Pipeline: Two-Stage PPI Structure Prediction."""
 
-from typing import Optional, Literal
+from typing import Literal
+
 import torch
 import torch.nn as nn
-from torch import Tensor
 
 from .denoiser import ResidueDenoiser
 
@@ -26,7 +26,7 @@ class ResFoldPipeline(nn.Module):
         dropout: float = 0.0,
         stage1_only: bool = False,  # Lightweight mode: skip Stage 2
         aa_embed: str = "learned",
-        esm_dim: Optional[int] = None,
+        esm_dim: int | None = None,
     ):
         super().__init__()
         self.n_timesteps = n_timesteps

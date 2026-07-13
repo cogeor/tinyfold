@@ -21,7 +21,6 @@ Design (see notes/2026-07-11-crop-diffusion-2stage-SPEC.md):
 from __future__ import annotations
 
 import math
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -81,7 +80,7 @@ class AtomDiffusionHead(nn.Module):
         return self.sigma_mlp(emb)  # [B, c_token]
 
     def forward(self, delta_t: Tensor, tokens: Tensor, sigma: Tensor,
-                mask: Optional[Tensor] = None) -> Tensor:
+                mask: Tensor | None = None) -> Tensor:
         """delta_t [B,L,4,3], tokens [B,L,c], sigma [B] -> denoised delta_0 [B,L,4,3]."""
         B, L, _, _ = delta_t.shape
         c_skip, c_out, c_in, c_noise = self.edm_coefficients(sigma)

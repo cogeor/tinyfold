@@ -19,12 +19,15 @@ Usage:
 """
 
 import argparse
-import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pyarrow.parquet as pq
+
+if TYPE_CHECKING:
+    import matplotlib.pyplot as plt
 
 # Add project root to path
 script_dir = Path(__file__).parent.absolute()
@@ -32,9 +35,8 @@ project_root = script_dir.parent
 sys.path.insert(0, str(project_root / "src"))
 
 from tinyfold.data.cache import dict_to_sample
-from tinyfold.viz.io.structure_writer import coords_to_pdb_string, write_pdb
+from tinyfold.viz.io.structure_writer import coords_to_pdb_string
 from tinyfold.viz.render.styles import CHAIN_COLORS
-
 
 # ============================================================================
 # Data Loading
@@ -452,7 +454,6 @@ def plot_backbone_structure(
         axis object
     """
     import matplotlib.pyplot as plt
-    from mpl_toolkits.mplot3d import Axes3D
 
     if ax is None:
         fig = plt.figure(figsize=(8, 8))

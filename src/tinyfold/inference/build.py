@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Tuple
 
 import torch
 
@@ -50,7 +49,7 @@ def build_onestep_from_config(cfg: dict) -> ResFoldOneStep:
     )
 
 
-def load_onestep_run(checkpoint_path, device) -> Tuple[ResFoldOneStep, dict]:
+def load_onestep_run(checkpoint_path, device) -> tuple[ResFoldOneStep, dict]:
     """Load a trained ResFoldOneStep from a checkpoint + its sibling config.json.
 
     Returns ``(model_in_eval_mode, config_dict)``. Raises if the config.json is

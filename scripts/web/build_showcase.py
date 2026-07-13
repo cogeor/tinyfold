@@ -26,16 +26,16 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-import torch
 import pyarrow.parquet as pq
+import torch
 
-from tinyfold.inference import sample_k_centroids, load_onestep_run
-from tinyfold.training import load_sample_raw, collate_batch
+from tinyfold.inference import load_onestep_run, sample_k_centroids
 from tinyfold.model.diffusion import KarrasSchedule, VENoiser
 from tinyfold.model.geometry import kabsch_rigid
-from tinyfold.model.metrics import compute_dockq  # noqa: E402
-from tinyfold.model.losses import compute_c_rmsd, compute_rmse  # noqa: E402
-from tinyfold.viz.io.structure_writer import coords_to_pdb_string  # noqa: E402
+from tinyfold.model.losses import compute_c_rmsd, compute_rmse
+from tinyfold.model.metrics import compute_dockq
+from tinyfold.training import collate_batch, load_sample_raw
+from tinyfold.viz.io.structure_writer import coords_to_pdb_string
 
 
 def capri_band(dq: float) -> str:

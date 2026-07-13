@@ -30,10 +30,9 @@ import torch
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from tinyfold.model.diffusion import KarrasSchedule, VENoiser  # noqa: E402
-from tinyfold.model.resfold.onestep import ResFoldOneStep  # noqa: E402
-from tinyfold.training.data import load_sample  # noqa: E402
-
+from tinyfold.model.diffusion import KarrasSchedule, VENoiser
+from tinyfold.model.resfold.onestep import ResFoldOneStep
+from tinyfold.training.data import load_sample
 
 SPLITS = [
     "le200", "200_400", "400_600", "600_1000", "ge1000",

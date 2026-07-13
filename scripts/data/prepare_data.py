@@ -32,7 +32,6 @@ from tqdm import tqdm
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-from tinyfold.constants import NUM_ATOM_TYPES
 from tinyfold.data.cache import (
     generate_splits,
     sample_to_dict,
@@ -52,7 +51,7 @@ from tinyfold.data.parsing.structure_io import (
 )
 from tinyfold.data.processing.atomization import atomize_chains, build_bonds
 from tinyfold.data.processing.cleaning import clean_chain
-from tinyfold.data.processing.filters import FilterReason, validate_sample
+from tinyfold.data.processing.filters import validate_sample
 from tinyfold.data.processing.interface import compute_interface_mask
 from tinyfold.data.sources.dips_plus import (
     create_manifest,

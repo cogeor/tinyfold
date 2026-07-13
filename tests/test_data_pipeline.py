@@ -11,13 +11,10 @@ Test philosophy (from CLAUDE.md):
 - Verify round-trip through Parquet preserves data
 """
 
-import json
 import sys
-import tempfile
 from pathlib import Path
 
 import numpy as np
-import pytest
 import torch
 
 # Add src to path
@@ -25,13 +22,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from tinyfold.constants import (
     AA_TO_IDX,
-    BACKBONE_ATOMS,
-    BOND_LENGTH_TOLERANCE,
     BOND_LENGTHS,
     NUM_ATOM_TYPES,
 )
 from tinyfold.data.cache import (
-    dict_to_sample,
     read_parquet,
     sample_to_dict,
     write_parquet,
@@ -49,7 +43,6 @@ from tinyfold.data.processing.atomization import (
     compute_bond_lengths,
 )
 from tinyfold.data.processing.cleaning import clean_chain
-from tinyfold.data.processing.filters import validate_sample
 from tinyfold.data.processing.interface import (
     compute_interface_mask,
     compute_min_interface_distance,
@@ -339,8 +332,8 @@ class TestValidation:
         # Validate with relaxed length requirements for test data
         from tinyfold.data.processing.filters import (
             validate_backbone_completeness,
-            validate_coordinates,
             validate_bond_lengths,
+            validate_coordinates,
         )
 
         # These should pass

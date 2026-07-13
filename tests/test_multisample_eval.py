@@ -19,11 +19,10 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from tinyfold.model.diffusion import KarrasSchedule, VENoiser
-from tinyfold.model.resfold.onestep import ResFoldOneStep
-
 import train_resfold
 
+from tinyfold.model.diffusion import KarrasSchedule, VENoiser
+from tinyfold.model.resfold.onestep import ResFoldOneStep
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PHASE_C_CKPT = (

@@ -4,9 +4,9 @@ Defines interfaces for model components to enable type checking and
 ensure consistent APIs across different model implementations.
 """
 
-from typing import Protocol, Optional, Dict, Any, Tuple
+from typing import Any, Protocol
+
 from torch import Tensor
-import torch.nn as nn
 
 
 class DiffusionDecoder(Protocol):
@@ -19,8 +19,8 @@ class DiffusionDecoder(Protocol):
         self,
         x_t: Tensor,                    # Noisy input [B, N, 3]
         t: Tensor,                      # Timesteps [B]
-        conditioning: Dict[str, Tensor], # Model-specific conditioning
-        mask: Optional[Tensor] = None,  # Valid positions [B, N]
+        conditioning: dict[str, Tensor], # Model-specific conditioning
+        mask: Tensor | None = None,  # Valid positions [B, N]
     ) -> Tensor:
         """Predict clean x0 from noisy x_t at timestep t.
 
@@ -47,7 +47,7 @@ class ResidueEncoder(Protocol):
         aa_seq: Tensor,                 # [B, L]
         chain_ids: Tensor,              # [B, L]
         positions: Tensor,              # [B, L, 3]
-        mask: Optional[Tensor] = None,  # [B, L]
+        mask: Tensor | None = None,  # [B, L]
     ) -> Tensor:
         """Encode residue features to token embeddings.
 
@@ -71,7 +71,7 @@ class AtomDecoder(Protocol):
         centroids: Tensor,              # [B, L, 3]
         residue_tokens: Tensor,         # [B, L, C]
         aa_seq: Tensor,                 # [B, L]
-        mask: Optional[Tensor] = None,  # [B, L]
+        mask: Tensor | None = None,  # [B, L]
     ) -> Tensor:
         """Predict atom positions from residue centroids and features.
 
@@ -96,10 +96,10 @@ class StructurePredictor(Protocol):
 
     def predict(
         self,
-        batch: Dict[str, Tensor],
+        batch: dict[str, Tensor],
         noiser: Any,
         n_steps: int = 50,
-    ) -> Dict[str, Tensor]:
+    ) -> dict[str, Tensor]:
         """Run full inference to predict structure.
 
         Args:
@@ -125,7 +125,7 @@ class Noiser(Protocol):
         x0: Tensor,
         t: Tensor,
         **kwargs,
-    ) -> Tuple[Tensor, Tensor]:
+    ) -> tuple[Tensor, Tensor]:
         """Add noise to clean coordinates.
 
         Args:

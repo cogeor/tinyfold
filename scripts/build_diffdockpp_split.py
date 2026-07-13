@@ -38,12 +38,10 @@ from __future__ import annotations
 import argparse
 import json
 import random
-import sys
 import urllib.request
 from pathlib import Path
 
 import pyarrow.parquet as pq
-
 
 DIFFDOCK_PP_FULL_URL = (
     "https://raw.githubusercontent.com/ketatam/DiffDock-PP/main/"

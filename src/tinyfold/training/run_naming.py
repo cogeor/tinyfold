@@ -12,7 +12,7 @@ Examples:
 """
 
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Any
 
 
 def _format_count(n: int) -> str:
@@ -29,7 +29,7 @@ def _format_count(n: int) -> str:
     return str(n)
 
 
-def _extract_key_params(model_name: str, config: Dict[str, Any]) -> str:
+def _extract_key_params(model_name: str, config: dict[str, Any]) -> str:
     """Extract key parameters from config for run name.
 
     Args:
@@ -70,9 +70,9 @@ def _extract_key_params(model_name: str, config: Dict[str, Any]) -> str:
 
 def generate_run_name(
     model_name: str,
-    config: Dict[str, Any],
+    config: dict[str, Any],
     timestamp: bool = True,
-    custom_suffix: Optional[str] = None,
+    custom_suffix: str | None = None,
 ) -> str:
     """Generate deterministic, descriptive run name.
 

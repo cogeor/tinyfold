@@ -4,13 +4,11 @@ Determines the order in which to place atoms during iterative construction.
 Uses a combination of spatial proximity, chain connectivity, and covalent bonds.
 """
 
-from typing import List, Optional
-import torch
-from torch import Tensor
-from scipy.cluster.hierarchy import linkage, fcluster
-from scipy.spatial.distance import pdist, squareform
-import numpy as np
 
+import torch
+from scipy.cluster.hierarchy import fcluster, linkage
+from scipy.spatial.distance import pdist, squareform
+from torch import Tensor
 
 # Backbone atom types: N=0, CA=1, C=2, O=3
 BACKBONE_BONDS = {
@@ -123,7 +121,7 @@ def select_next_atoms_to_place(
     coords_gt: Tensor,     # [N, 3] ground truth (for cluster selection)
     known_mask: Tensor,    # [N] bool, True = already placed
     k: int,                # number of atoms to select
-    cluster_ids: Optional[Tensor] = None,   # [N] pre-computed cluster assignments
+    cluster_ids: Tensor | None = None,   # [N] pre-computed cluster assignments
 ) -> Tensor:
     """Select K atoms to place next based on proximity to known atoms.
 
@@ -175,7 +173,7 @@ def get_placement_order(
     coords_gt: Tensor,     # [N, 3]
     chain_ids: Tensor,     # [L]
     k_per_step: int = 4,
-) -> List[Tensor]:
+) -> list[Tensor]:
     """Pre-compute the full placement order for a structure.
 
     Returns a list of index tensors, each of length k, representing
@@ -275,7 +273,7 @@ def select_next_residues_to_place(
 def get_residue_placement_order(
     centroids: Tensor,     # [L, 3] residue centroids
     k_per_step: int = 1,
-) -> List[Tensor]:
+) -> list[Tensor]:
     """Pre-compute the full residue placement order starting from most central.
 
     Args:

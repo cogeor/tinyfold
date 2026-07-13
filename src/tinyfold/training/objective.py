@@ -6,11 +6,10 @@ without editing core training loops.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Dict
 
 import torch
-
 
 LossFn = Callable[..., torch.Tensor]
 
@@ -29,7 +28,7 @@ class LossRegistry:
     """Registry for named loss functions."""
 
     def __init__(self):
-        self._terms: Dict[str, LossFn] = {}
+        self._terms: dict[str, LossFn] = {}
 
     def register(self, name: str, fn: LossFn) -> None:
         if not name:

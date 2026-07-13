@@ -21,6 +21,8 @@ import torch.nn as nn
 from tinyfold.inference import sample_centroids_ve
 from tinyfold.model.diffusion import VENoiser, create_schedule
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SCRIPTS_DIR = REPO_ROOT / "scripts"
 
 # ---------------------------------------------------------------------------
 # Test fixtures

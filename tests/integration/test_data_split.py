@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 
-
 # Skip these tests if data file doesn't exist
 DATA_PATH = Path(__file__).parent.parent.parent / "data" / "processed" / "samples.parquet"
 HAS_DATA = DATA_PATH.exists()
@@ -138,7 +137,7 @@ class TestSplitInfo:
 
     def test_split_info_matches_actual_split(self, parquet_table, split_config):
         """Split info should match actual split indices."""
-        from tinyfold.data import get_train_test_indices, get_split_info
+        from tinyfold.data import get_split_info, get_train_test_indices
 
         train_indices, test_indices = get_train_test_indices(parquet_table, split_config)
         info = get_split_info(parquet_table, split_config)
@@ -159,7 +158,7 @@ class TestSplitPersistence:
 
     def test_save_and_load_split(self, parquet_table, split_config):
         """Saved split should be loadable and match original."""
-        from tinyfold.data import get_split_info, save_split, load_split
+        from tinyfold.data import get_split_info, load_split, save_split
 
         info = get_split_info(parquet_table, split_config)
 
@@ -177,7 +176,7 @@ class TestSplitPersistence:
 
     def test_loaded_split_is_identical(self, parquet_table, split_config):
         """Loaded split should be byte-for-byte identical."""
-        from tinyfold.data import get_split_info, save_split, load_split
+        from tinyfold.data import get_split_info, load_split, save_split
 
         info = get_split_info(parquet_table, split_config)
 
@@ -251,7 +250,7 @@ class TestLengthBucketing:
 
     def test_bucket_sampler_returns_similar_lengths(self, parquet_table, split_config):
         """Samples from one bucket should have similar lengths."""
-        from tinyfold.data import get_train_test_indices, LengthBucketSampler
+        from tinyfold.data import LengthBucketSampler, get_train_test_indices
 
         train_indices, _ = get_train_test_indices(parquet_table, split_config)
 
@@ -277,7 +276,7 @@ class TestLengthBucketing:
 
     def test_dynamic_batch_sampler_returns_variable_sizes(self, parquet_table, split_config):
         """Dynamic batch sampler should return different sizes for different buckets."""
-        from tinyfold.data import get_train_test_indices, DynamicBatchSampler
+        from tinyfold.data import DynamicBatchSampler, get_train_test_indices
 
         train_indices, _ = get_train_test_indices(parquet_table, split_config)
 

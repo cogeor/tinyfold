@@ -13,15 +13,14 @@ Training phases:
 - Phase 2: Train both stages E2E with multi-sample conditioning
 """
 
-from typing import Optional, Literal, Dict, Any
+from typing import Any, Literal
 
 import torch
 import torch.nn as nn
 from torch import Tensor
 
-from .denoiser import ResidueDenoiser
 from .atomrefine_multi_sample import AtomRefinerV2MultiSample
-
+from .denoiser import ResidueDenoiser
 
 TrainingMode = Literal["stage1_only", "stage2_e2e", "end_to_end"]
 
@@ -87,7 +86,7 @@ class ResFoldE2E(nn.Module):
         aa_seq: Tensor,
         chain_ids: Tensor,
         res_idx: Tensor,
-        mask: Optional[Tensor] = None,
+        mask: Tensor | None = None,
     ) -> Tensor:
         """Get trunk tokens from sequence features (no coordinates)."""
         return self.stage1.get_trunk_tokens(aa_seq, chain_ids, res_idx, mask)
@@ -99,7 +98,7 @@ class ResFoldE2E(nn.Module):
         chain_ids: Tensor,
         res_idx: Tensor,
         t: Tensor,
-        mask: Optional[Tensor] = None,
+        mask: Tensor | None = None,
     ) -> Tensor:
         """Stage 1 forward with discrete timestep."""
         return self.stage1(x_t, aa_seq, chain_ids, res_idx, t, mask)
@@ -111,8 +110,8 @@ class ResFoldE2E(nn.Module):
         chain_ids: Tensor,
         res_idx: Tensor,
         sigma: Tensor,
-        mask: Optional[Tensor] = None,
-        x0_prev: Optional[Tensor] = None,
+        mask: Tensor | None = None,
+        x0_prev: Tensor | None = None,
     ) -> Tensor:
         """Stage 1 forward with continuous sigma."""
         return self.stage1.forward_sigma(
@@ -129,7 +128,7 @@ class ResFoldE2E(nn.Module):
         noiser,                 # VENoiser with sample_sigma method
         self_cond_prob: float = 0.0,
         stratified_sigma: bool = True,
-    ) -> Dict[str, Tensor]:
+    ) -> dict[str, Tensor]:
         """End-to-end forward pass generating K diffusion samples.
 
         For each of K samples:
@@ -294,7 +293,7 @@ class ResFoldE2E(nn.Module):
             'unexpected_keys': len(unexpected),
         }
 
-    def count_parameters(self) -> Dict[str, Any]:
+    def count_parameters(self) -> dict[str, Any]:
         """Count parameters in each stage."""
         s1_params = sum(p.numel() for p in self.stage1.parameters())
         s2_params = sum(p.numel() for p in self.stage2.parameters())
@@ -322,13 +321,13 @@ def sample_e2e(
     chain_ids: Tensor,
     res_idx: Tensor,
     noiser,
-    mask: Optional[Tensor] = None,
+    mask: Tensor | None = None,
     n_samples: int = 5,
     clamp_val: float = 3.0,
     self_cond: bool = True,
     align_per_step: bool = True,
     recenter: bool = True,
-) -> Dict[str, Tensor]:
+) -> dict[str, Tensor]:
     """Full E2E sampling: diffusion -> multi-sample -> atoms.
 
     Runs K independent diffusion trajectories from noise, then passes

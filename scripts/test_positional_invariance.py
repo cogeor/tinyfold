@@ -41,7 +41,6 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from tinyfold.model.resfold.denoiser import ESM_DIMS  # type: ignore  # noqa: E402
 from tinyfold.model.resfold.onestep import ResFoldOneStep
 from tinyfold.training.data import load_sample
 
@@ -134,7 +133,7 @@ def main() -> None:
               f"last 5 = {base_res_idx_cpu[-5:].tolist()}")
     else:
         base_res_idx_cpu = torch.arange(L)
-        print(f"\nBASE res_idx = arange(L_total) (legacy absolute encoding)")
+        print("\nBASE res_idx = arange(L_total) (legacy absolute encoding)")
     base_res_idx = base_res_idx_cpu.to(device)
     print(f"Running forward_sigma at sigma={args.sigma} with res_idx shifts: {shifts}")
     preds_centroid = {}
@@ -180,17 +179,17 @@ def main() -> None:
     base_displacement = float(np.linalg.norm(preds_centroid[shifts[-1]] - base, axis=-1).mean()) * std
     if base_displacement < 0.1:
         print(f"  shift={big_shift} mean displacement {base_displacement:.3f} A < 0.1 A.")
-        print(f"  -> Model is essentially invariant to res_idx shifts. Positional")
-        print(f"     encoding is NOT the OOD-failure culprit.")
+        print("  -> Model is essentially invariant to res_idx shifts. Positional")
+        print("     encoding is NOT the OOD-failure culprit.")
     elif base_displacement < 1.0:
         print(f"  shift={big_shift} mean displacement {base_displacement:.3f} A in [0.1, 1.0).")
-        print(f"  -> Mild sensitivity. Probably not the dominant bug, but worth fixing.")
+        print("  -> Mild sensitivity. Probably not the dominant bug, but worth fixing.")
     else:
         print(f"  shift={big_shift} mean displacement {base_displacement:.3f} A >= 1.0 A.")
-        print(f"  -> STRONG sensitivity. The model's prediction changes meaningfully")
-        print(f"     when the SAME residues get different absolute positions. This is")
-        print(f"     a load-bearing bug; v2 should use AF-Multimer relative encoding")
-        print(f"     clipped to +/-32 + same-chain bit.")
+        print("  -> STRONG sensitivity. The model's prediction changes meaningfully")
+        print("     when the SAME residues get different absolute positions. This is")
+        print("     a load-bearing bug; v2 should use AF-Multimer relative encoding")
+        print("     clipped to +/-32 + same-chain bit.")
 
 
 if __name__ == "__main__":

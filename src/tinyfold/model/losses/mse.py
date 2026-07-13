@@ -4,9 +4,9 @@ Provides rotation-invariant loss functions for comparing predicted
 and ground truth protein structures.
 """
 
+
 import torch
 from torch import Tensor
-from typing import Optional, Tuple
 
 from tinyfold.model.geometry import kabsch_rigid
 
@@ -14,8 +14,8 @@ from tinyfold.model.geometry import kabsch_rigid
 def kabsch_align(
     pred: Tensor,
     target: Tensor,
-    mask: Optional[Tensor] = None,
-) -> Tuple[Tensor, Tensor]:
+    mask: Tensor | None = None,
+) -> tuple[Tensor, Tensor]:
     """Kabsch alignment for rotation-invariant comparison.
 
     Computes optimal rotation to align pred to target using SVD.
@@ -58,7 +58,7 @@ def kabsch_align(
 def compute_mse_loss(
     pred: Tensor,
     target: Tensor,
-    mask: Optional[Tensor] = None,
+    mask: Tensor | None = None,
     use_kabsch: bool = True,
     reduction: str = 'mean',
 ) -> Tensor:
@@ -127,7 +127,7 @@ def compute_mse_loss(
 def compute_rmse(
     pred: Tensor,
     target: Tensor,
-    mask: Optional[Tensor] = None,
+    mask: Tensor | None = None,
 ) -> Tensor:
     """RMSE after Kabsch alignment.
 
@@ -158,7 +158,7 @@ def compute_c_rmsd(
     pred_ca: Tensor,        # [B, L, 3] predicted CA (or centroid) coords
     gt_ca: Tensor,          # [B, L, 3] ground-truth CA coords
     chain_ids: Tensor,      # [B, L] long, values in {0, 1}; 0 == chain A
-    mask: Optional[Tensor] = None,  # [B, L] bool, valid residues
+    mask: Tensor | None = None,  # [B, L] bool, valid residues
 ) -> Tensor:
     """Complex-RMSD: Kabsch-align pred chain A onto GT chain A, apply that
     SINGLE rigid transform to the full prediction (both chains), then return
@@ -231,7 +231,7 @@ def compute_relative_distance_loss(
     pred_coords: Tensor,       # [B, K, 3] predicted coordinates
     gt_coords: Tensor,         # [B, K, 3] ground truth for target atoms
     known_coords: Tensor,      # [B, M, 3] coordinates of known atoms
-    known_mask: Optional[Tensor] = None,  # [B, M] mask for valid known atoms
+    known_mask: Tensor | None = None,  # [B, M] mask for valid known atoms
     align_first: bool = True,
 ) -> Tensor:
     """Compute loss on distances from predicted atoms to known atoms.
@@ -289,7 +289,7 @@ def compute_relative_distance_loss(
 def compute_distance_consistency_loss(
     pred: Tensor,
     target: Tensor,
-    mask: Optional[Tensor] = None,
+    mask: Tensor | None = None,
 ) -> Tensor:
     """Loss for preserving pairwise distances.
 

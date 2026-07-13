@@ -12,7 +12,6 @@ import pytest
 
 from tinyfold.training.registry_append import append_registry_row
 
-
 REGISTRY_HEADER = (
     "# Experiment Registry\n"
     "\n"

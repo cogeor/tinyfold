@@ -6,7 +6,6 @@ Covers the three behavioural claims of Loop 02 Task 1:
   - Cluster ranking puts the larger / more compact cluster first.
 """
 
-from typing import List
 
 import pytest
 import torch

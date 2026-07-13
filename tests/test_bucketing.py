@@ -1,9 +1,10 @@
 """Tests for length bucketing and dynamic batch sampling."""
 
-import pytest
 import random
-from tinyfold.training.data_split import LengthBucketSampler, DynamicBatchSampler
 
+import pytest
+
+from tinyfold.training.data_split import DynamicBatchSampler, LengthBucketSampler
 
 # =============================================================================
 # Fixtures

@@ -8,31 +8,30 @@ Provides:
 - Factory functions: create_schedule, create_noiser
 """
 
+from tinyfold.model.diffusion.curriculum import TimestepCurriculum
+from tinyfold.model.diffusion.noise import (
+    GaussianNoise,
+    LinearChainFlow,
+    LinearChainNoise,
+    VENoiser,
+    generate_extended_chain,
+)
 from tinyfold.model.diffusion.sampler import (
     BaseSampler,
-    DeterministicDDIMSampler,
     DDPMSampler,
-    HeunSampler,
+    DeterministicDDIMSampler,
     EDMSampler,
+    HeunSampler,
     create_sampler,
     list_samplers,
 )
 from tinyfold.model.diffusion.schedule import (
-    DiffusionSchedule,
     CosineSchedule,
-    LinearSchedule,
+    DiffusionSchedule,
     KarrasSchedule,
+    LinearSchedule,
 )
-from tinyfold.model.diffusion.noise import (
-    GaussianNoise,
-    LinearChainNoise,
-    LinearChainFlow,
-    VENoiser,
-    generate_extended_chain,
-)
-from tinyfold.model.diffusion.curriculum import TimestepCurriculum
 from tinyfold.model.diffusion.utils import kabsch_align_to_target
-
 
 # Registry for factory functions
 _SCHEDULES = {

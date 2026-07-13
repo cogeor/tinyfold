@@ -5,12 +5,15 @@ atom3.pair.Pair objects with two DataFrames (df0, df1) for each chain.
 """
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from tinyfold.constants import AA3_TO_AA1, AA_TO_IDX, BACKBONE_ATOMS, MODIFIED_AA_MAP
 from tinyfold.data.parsing.structure_io import ChainData
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 def load_dips_pair(path: str | Path) -> Any:
@@ -58,7 +61,6 @@ def extract_backbone_from_dataframe(df: "pd.DataFrame") -> ChainData:
     Returns:
         ChainData with backbone atoms extracted
     """
-    import pandas as pd
 
     # Get unique residues in order
     residue_groups = df.groupby("residue", sort=True)

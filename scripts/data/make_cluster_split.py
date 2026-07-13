@@ -17,9 +17,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
-import pyarrow.parquet as pq  # noqa: E402
+import pyarrow.parquet as pq
 
-from tinyfold.training.cluster_split import (  # noqa: E402
+from tinyfold.training.cluster_split import (
     cluster_holdout_indices,
     load_clusters,
     save_split,
