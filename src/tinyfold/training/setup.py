@@ -150,7 +150,9 @@ def load_model_checkpoint(
         Checkpoint dict
     """
     logger.log(f"Loading checkpoint: {checkpoint_path}")
-    ckpt = torch.load(checkpoint_path, map_location=device)
+    # weights_only=True: checkpoints hold only tensors + plain dicts/numbers,
+    # so this is safe and blocks code execution from an untrusted .pt.
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=True)
     state_dict = ckpt['model_state_dict']
 
     # Filter Stage 2 keys if architecture changed

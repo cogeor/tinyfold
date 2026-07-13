@@ -45,7 +45,9 @@ def load_onestep_run(checkpoint_path, device) -> tuple[ResFoldOneStep, dict]:
             f"load_onestep_run expects model_kind=onestep, got {cfg.get('model_kind')!r}"
         )
     model = build_onestep_from_config(cfg).to(device)
-    ckpt = torch.load(ckpt_path, map_location=device)
+    # weights_only=True: our checkpoints hold only tensors + plain dicts/numbers,
+    # so this is safe and blocks arbitrary code execution from an untrusted .pt.
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
     missing, unexpected = model.load_state_dict(ckpt["model_state_dict"], strict=False)
     if missing or unexpected:
         raise RuntimeError(

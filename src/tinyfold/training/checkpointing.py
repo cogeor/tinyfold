@@ -86,7 +86,10 @@ def load_checkpoint(
     if device is None:
         device = next(model.parameters()).device
 
-    checkpoint = torch.load(path, map_location=device)
+    # weights_only=True: checkpoints hold only tensors + plain dicts/numbers
+    # (state dicts, metrics, config), so this is safe and blocks code execution
+    # from an untrusted .pt.
+    checkpoint = torch.load(path, map_location=device, weights_only=True)
 
     # Load model weights
     missing, unexpected = model.load_state_dict(

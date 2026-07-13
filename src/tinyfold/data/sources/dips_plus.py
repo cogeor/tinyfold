@@ -6,6 +6,7 @@ Source: https://zenodo.org/records/8140981
 
 import json
 import logging
+import sys
 import tarfile
 import zipfile
 from collections.abc import Iterator
@@ -42,14 +43,43 @@ def download_file(url: str, dest_path: Path, chunk_size: int = 8192) -> None:
                 pbar.update(len(chunk))
 
 
+# On 3.12+ ask tarfile to apply the 'data' safety filter (rejects absolute
+# paths, parent traversal, and unsafe symlinks) AND to silence the extractall
+# DeprecationWarning. The filter arg exists on older patch releases too, but a
+# conservative version gate avoids a TypeError on early 3.10.x.
+_TAR_EXTRACT_KWARGS = {"filter": "data"} if sys.version_info >= (3, 12) else {}
+
+
+def _is_within_directory(base: Path, target: Path) -> bool:
+    """True iff ``target`` resolves to a path inside ``base``."""
+    base = base.resolve()
+    try:
+        target.resolve().relative_to(base)
+        return True
+    except ValueError:
+        return False
+
+
+def _reject_traversal(names: Iterator[str], dest: Path, kind: str) -> None:
+    """Raise if any member name would extract outside ``dest`` (path traversal)."""
+    for name in names:
+        if not _is_within_directory(dest, dest / name):
+            raise ValueError(
+                f"Unsafe path in {kind} archive (path traversal blocked): {name!r}"
+            )
+
+
 def extract_archive(archive_path: Path, dest_dir: Path) -> None:
-    """Extract tar.gz or zip archive."""
+    """Extract tar.gz or zip archive, rejecting path-traversal members."""
+    dest = Path(dest_dir)
     if archive_path.suffix == ".gz" or archive_path.name.endswith(".tar.gz"):
         with tarfile.open(archive_path, "r:gz") as tar:
-            tar.extractall(dest_dir)
+            _reject_traversal((m.name for m in tar.getmembers()), dest, "tar")
+            tar.extractall(dest, **_TAR_EXTRACT_KWARGS)
     elif archive_path.suffix == ".zip":
         with zipfile.ZipFile(archive_path, "r") as z:
-            z.extractall(dest_dir)
+            _reject_traversal(iter(z.namelist()), dest, "zip")
+            z.extractall(dest)
     else:
         raise ValueError(f"Unknown archive format: {archive_path}")
 
