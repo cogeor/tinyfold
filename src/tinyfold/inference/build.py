@@ -13,40 +13,17 @@ from pathlib import Path
 
 import torch
 
+from tinyfold.model.resfold.config import ResFoldConfig
 from tinyfold.model.resfold.onestep import ResFoldOneStep
 
 
 def build_onestep_from_config(cfg: dict) -> ResFoldOneStep:
-    """Instantiate ResFoldOneStep with the architecture recorded in ``cfg``."""
-    return ResFoldOneStep(
-        c_token=cfg["c_token_s1"],
-        trunk_layers=cfg["trunk_layers"],
-        denoiser_blocks=cfg["denoiser_blocks"],
-        relpos_bias=cfg.get("relpos_bias", False),
-        relpos_clip=cfg.get("relpos_clip", 32),
-        pair_repr=cfg.get("pair_repr", False),
-        c_pair=cfg.get("c_pair", 64),
-        pair_layers=cfg.get("pair_layers", 3),
-        pair_hidden=cfg.get("pair_hidden", 64),
-        template_cond=cfg.get("template_cond", False),
-        template_rbf=cfg.get("template_rbf", 32),
-        template_d_max=cfg.get("template_d_max", 4.0),
-        pair_to_single=cfg.get("pair_to_single", False),
-        frame_atom_head=cfg.get("frame_atom_head", False),
-        global_scale=(cfg.get("global_scale") or 11.0),
-        atom_diffusion=cfg.get("atom_diffusion", False),
-        atom_sigma_data=cfg.get("atom_sigma_data", 0.15),
-        atom_sigma_min=cfg.get("atom_sigma_min", 0.002),
-        atom_sigma_max=cfg.get("atom_sigma_max", 1.0),
-        atom_head_layers=cfg["atom_head_layers"],
-        atom_head_heads=cfg["atom_head_heads"],
-        n_timesteps=cfg.get("T", 50),
-        dropout=0.0,
-        aa_embed=cfg.get("aa_embed", "learned"),
-        esm_dim=cfg.get("_esm_dim", cfg.get("esm_dim", 480)),
-        confidence_head=cfg.get("confidence_head", False),
-        sigma_data=cfg.get("sigma_data", 1.0),
-    )
+    """Instantiate ResFoldOneStep with the architecture recorded in ``cfg``.
+
+    The run-config -> constructor key translation lives in
+    :meth:`ResFoldConfig.from_config`.
+    """
+    return ResFoldOneStep(**ResFoldConfig.from_config(cfg).to_kwargs())
 
 
 def load_onestep_run(checkpoint_path, device) -> tuple[ResFoldOneStep, dict]:
