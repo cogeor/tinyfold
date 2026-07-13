@@ -23,7 +23,6 @@ import pyarrow.parquet as pq
 import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from tinyfold.model.metrics.dockq import compute_dockq
 

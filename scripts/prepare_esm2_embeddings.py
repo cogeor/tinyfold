@@ -38,11 +38,6 @@ import pyarrow.parquet as pq
 import torch
 from tqdm import tqdm
 
-# Make `tinyfold` importable when running this script directly.
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(_PROJECT_ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(_PROJECT_ROOT / "src"))
-
 from tinyfold.constants import IDX_TO_AA
 
 ESM_VARIANTS = {

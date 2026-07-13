@@ -19,7 +19,6 @@ Usage:
 
 import argparse
 import json
-import sys
 import time
 from collections import defaultdict
 from multiprocessing import Pool, cpu_count
@@ -28,9 +27,6 @@ from typing import Any
 
 import numpy as np
 from tqdm import tqdm
-
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 from tinyfold.data.cache import (
     generate_splits,

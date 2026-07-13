@@ -32,14 +32,11 @@ each pair of runs, averaged over the L residues.
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 import numpy as np
 import pyarrow.parquet as pq
 import torch
-
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from tinyfold.model.resfold.onestep import ResFoldOneStep
 from tinyfold.training.data import load_sample

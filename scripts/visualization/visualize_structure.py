@@ -32,7 +32,6 @@ if TYPE_CHECKING:
 # Add project root to path
 script_dir = Path(__file__).parent.absolute()
 project_root = script_dir.parent
-sys.path.insert(0, str(project_root / "src"))
 
 from tinyfold.data.cache import dict_to_sample
 from tinyfold.viz.io.structure_writer import coords_to_pdb_string
