@@ -60,6 +60,10 @@ class PPIDataset(Dataset):
         else:
             self.sample_ids = list(self.id_to_idx.keys())
 
+        # sample_id -> position in self.sample_ids, so get_sample_by_id is O(1)
+        # instead of an O(n) list .index() scan (matters at 42k-sample scale).
+        self.id_to_pos = {sid: pos for pos, sid in enumerate(self.sample_ids)}
+
     def __len__(self) -> int:
         return len(self.sample_ids)
 
@@ -116,12 +120,9 @@ class PPIDataset(Dataset):
 
         Returns None if sample_id is not in the current split.
         """
-        if sample_id not in self.id_to_idx:
+        # id_to_pos only contains ids in the current split, so a single lookup
+        # covers both "exists in parquet" and "is in this split".
+        pos = self.id_to_pos.get(sample_id)
+        if pos is None:
             return None
-        # Check if sample is in current split (sample_ids is filtered list)
-        try:
-            idx = self.sample_ids.index(sample_id)
-        except ValueError:
-            # sample_id exists in parquet but not in current split
-            return None
-        return self[idx]
+        return self[pos]

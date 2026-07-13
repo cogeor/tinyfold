@@ -545,6 +545,56 @@ class TestDataset:
         assert batch["edge_index"].shape[0] == 2  # [src, dst]
         assert batch["atom_batch"].max() == 1  # Two samples (0 and 1)
 
+    def test_get_sample_by_id_resolves_and_respects_split(
+        self, sample_pdb_file, tmp_path
+    ):
+        """get_sample_by_id must map ids to the right rows and honor the split."""
+        structure = load_structure(sample_pdb_file)
+        data_a = get_backbone_atoms(extract_chain(structure, "A"))
+        data_b = get_backbone_atoms(extract_chain(structure, "B"))
+        atom_coords, atom_mask, atom_to_res, atom_type, _ = atomize_chains(
+            data_a.coords, data_a.mask, data_b.coords, data_b.mask
+        )
+        LA, LB = len(data_a.sequence), len(data_b.sequence)
+        bonds_src, bonds_dst, bond_type = build_bonds(LA, LB, atom_mask)
+        iface_a, iface_b = compute_interface_mask(
+            data_a.coords, data_a.mask, data_b.coords, data_b.mask
+        )
+        seq = np.concatenate([data_a.seq_indices, data_b.seq_indices])
+        chain_id_res = np.concatenate(
+            [np.zeros(LA, dtype=np.int64), np.ones(LB, dtype=np.int64)]
+        )
+        res_idx = np.concatenate(
+            [np.arange(LA, dtype=np.int64), np.arange(LB, dtype=np.int64)]
+        )
+        iface_mask = np.concatenate([iface_a, iface_b])
+
+        def make(sid):
+            return sample_to_dict(
+                sample_id=sid, pdb_id=sid,
+                seq=seq, chain_id_res=chain_id_res, res_idx=res_idx,
+                atom_coords=atom_coords, atom_mask=atom_mask,
+                atom_to_res=atom_to_res, atom_type=atom_type,
+                bonds_src=bonds_src, bonds_dst=bonds_dst, bond_type=bond_type,
+                iface_mask=iface_mask, LA=LA, LB=LB,
+            )
+
+        parquet_path = tmp_path / "multi.parquet"
+        write_parquet([make("alpha"), make("beta"), make("gamma")], parquet_path)
+
+        # No split: every id resolves, unknown id -> None.
+        ds = PPIDataset(parquet_path)
+        assert ds.get_sample_by_id("beta")["sample_id"] == "beta"
+        assert ds.get_sample_by_id("gamma")["sample_id"] == "gamma"
+        assert ds.get_sample_by_id("missing") is None
+
+        # With a split: only split ids resolve; parquet-but-not-split -> None.
+        split_path = tmp_path / "split.txt"
+        split_path.write_text("gamma\nalpha\n")
+        ds_split = PPIDataset(parquet_path, split_file=split_path)
+        assert ds_split.get_sample_by_id("alpha")["sample_id"] == "alpha"
+        assert ds_split.get_sample_by_id("beta") is None  # in parquet, not split
+
 
 class TestCoordinateIntegrity:
     """Test that coordinates are physically reasonable."""
