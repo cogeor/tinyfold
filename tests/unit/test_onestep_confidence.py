@@ -122,6 +122,26 @@ class TestOneStepConfidence:
             "gradient did not flow back through the pool into the denoiser"
         )
 
+    def test_forward_sigma_matches_with_trunk_path(self):
+        """forward_sigma must equal (compute trunk) + forward_sigma_with_trunk.
+
+        Guards the consolidation where forward_sigma delegates to the
+        _with_trunk core after computing the trunk itself.
+        """
+        torch.manual_seed(0)
+        model = _tiny_model(confidence_head=True).eval()
+        b = _toy_batch()
+        full = model.forward_sigma(
+            b["x_t"], b["aa_seq"], b["chain_ids"], b["res_idx"], b["sigma"], b["mask"],
+        )
+        trunk = model.get_trunk_tokens(b["aa_seq"], b["chain_ids"], b["res_idx"], b["mask"])
+        split = model.forward_sigma_with_trunk(
+            b["x_t"], trunk, b["sigma"], b["mask"],
+            res_idx=b["res_idx"], chain_ids=b["chain_ids"],
+        )
+        for a, c in zip(full, split):
+            assert torch.allclose(a, c, atol=1e-6)
+
     def test_count_parameters_includes_confidence(self):
         """count_parameters must report the confidence head bucket."""
         # With head

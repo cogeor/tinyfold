@@ -438,23 +438,18 @@ class ResFoldOneStep(BaseDecoder):
         B, L, _ = x_t.shape
         if mask is None:
             mask = torch.ones(B, L, dtype=torch.bool, device=x_t.device)
-        c_skip, c_out, c_in, c_noise = self._edm_coefficients(sigma)
         trunk_tokens = self.trunk(
             aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed,
             template_coords_res=template_coords_res,
             template_mask=template_mask,
             template_frame_id=template_frame_id,
         )
-        cond = self._embed_c_noise(c_noise)
-        denoiser_tokens = self._denoiser_tokens(
-            c_in * x_t, trunk_tokens, cond, mask, x0_prev,
+        # The trunk is sequence/template-only; the noised-coord denoise + heads
+        # live in the shared _with_trunk core.
+        return self.forward_sigma_with_trunk(
+            x_t, trunk_tokens, sigma, mask, x0_prev,
             res_idx=res_idx, chain_ids=chain_ids,
         )
-        centroid_pred, atoms_pred = self._heads_edm(
-            denoiser_tokens, x_t, c_skip, c_out, mask
-        )
-        pred_lddt = self._predict_confidence(denoiser_tokens, mask)
-        return centroid_pred, atoms_pred, pred_lddt
 
     def centroid_tokens(
         self,
@@ -479,22 +474,16 @@ class ResFoldOneStep(BaseDecoder):
         B, L, _ = x_t.shape
         if mask is None:
             mask = torch.ones(B, L, dtype=torch.bool, device=x_t.device)
-        c_skip, c_out, c_in, c_noise = self._edm_coefficients(sigma)
         trunk_tokens = self.trunk(
             aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed,
             template_coords_res=template_coords_res,
             template_mask=template_mask,
             template_frame_id=template_frame_id,
         )
-        cond = self._embed_c_noise(c_noise)
-        denoiser_tokens = self._denoiser_tokens(
-            c_in * x_t, trunk_tokens, cond, mask, x0_prev,
+        return self.centroid_tokens_with_trunk(
+            x_t, trunk_tokens, sigma, mask, x0_prev,
             res_idx=res_idx, chain_ids=chain_ids,
         )
-        F_centroid = self.centroid_proj(denoiser_tokens)
-        centroid_pred = c_skip * x_t + c_out * F_centroid
-        pred_lddt = self._predict_confidence(denoiser_tokens, mask)
-        return centroid_pred, denoiser_tokens, pred_lddt
 
     def denoise_atoms(
         self,
