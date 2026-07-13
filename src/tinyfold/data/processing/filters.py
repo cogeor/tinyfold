@@ -9,6 +9,10 @@ import numpy as np
 from tinyfold.constants import (
     BOND_LENGTH_TOLERANCE,
     BOND_LENGTHS,
+    BOND_TYPE_C_O,
+    BOND_TYPE_CA_C,
+    BOND_TYPE_N_CA,
+    BOND_TYPE_PEPTIDE,
     MAX_CHAIN_LENGTH,
     MAX_INTER_CHAIN_DISTANCE,
     MIN_BACKBONE_COMPLETENESS,
@@ -17,6 +21,18 @@ from tinyfold.constants import (
 )
 from tinyfold.data.processing.atomization import compute_bond_lengths
 from tinyfold.data.processing.interface import compute_min_interface_distance
+
+# Expected length (Angstroms) for each bond type. Keyed by the 4-type encoding
+# so validation checks every bond against its own reference, not a shared one.
+EXPECTED_BOND_LENGTH = {
+    BOND_TYPE_N_CA: BOND_LENGTHS["N-CA"],
+    BOND_TYPE_CA_C: BOND_LENGTHS["CA-C"],
+    BOND_TYPE_C_O: BOND_LENGTHS["C-O"],
+    BOND_TYPE_PEPTIDE: BOND_LENGTHS["C-N"],
+}
+# Extra slack on top of the tolerance: validation is lenient and only catches
+# gross errors (badly-placed atoms), not fine geometry.
+BOND_LENGTH_SLACK = 0.3
 
 
 class FilterReason(Enum):
@@ -202,48 +218,26 @@ def validate_bond_lengths(
 
     lengths = compute_bond_lengths(atom_coords, bonds_src, bonds_dst, atom_mask)
 
-    # Check backbone bonds (type 0)
-    backbone_mask = bond_type == 0
-    backbone_lengths = lengths[backbone_mask]
-
-    # Expected backbone bond lengths: ~1.2-1.6 Angstroms
-    # We check they're in a reasonable range
-    min_expected = min(BOND_LENGTHS.values()) - tolerance
-    max_expected = max(BOND_LENGTHS.values()) + tolerance
-
-    if len(backbone_lengths) > 0:
-        if np.any(backbone_lengths < min_expected - 0.5):
-            bad_idx = np.where(backbone_lengths < min_expected - 0.5)[0][0]
+    # Validate every bond type against its own expected length. The 4-type
+    # encoding (N-CA, CA-C, C-O, peptide C-N) means a single shared reference
+    # would mis-check most bonds; a per-type band keeps each honest while
+    # staying lenient (tolerance + slack) so only gross errors are rejected.
+    band = tolerance + BOND_LENGTH_SLACK
+    for btype, expected in EXPECTED_BOND_LENGTH.items():
+        type_lengths = lengths[bond_type == btype]
+        if len(type_lengths) == 0:
+            continue
+        if np.any(type_lengths < expected - band):
+            bad = type_lengths[type_lengths < expected - band][0]
             return FilterResult.fail(
                 FilterReason.INVALID_BOND_LENGTHS,
-                f"backbone bond too short: {backbone_lengths[bad_idx]:.3f}",
+                f"bond type {btype} too short: {bad:.3f} (expected ~{expected:.3f})",
             )
-        if np.any(backbone_lengths > max_expected + 0.5):
-            bad_idx = np.where(backbone_lengths > max_expected + 0.5)[0][0]
+        if np.any(type_lengths > expected + band):
+            bad = type_lengths[type_lengths > expected + band][0]
             return FilterResult.fail(
                 FilterReason.INVALID_BOND_LENGTHS,
-                f"backbone bond too long: {backbone_lengths[bad_idx]:.3f}",
-            )
-
-    # Check peptide bonds (type 1)
-    peptide_mask = bond_type == 1
-    peptide_lengths = lengths[peptide_mask]
-
-    # Peptide C-N bond: ~1.33 Angstroms
-    expected_peptide = BOND_LENGTHS["C-N"]
-
-    if len(peptide_lengths) > 0:
-        if np.any(peptide_lengths < expected_peptide - tolerance - 0.3):
-            bad_idx = np.where(peptide_lengths < expected_peptide - tolerance - 0.3)[0][0]
-            return FilterResult.fail(
-                FilterReason.INVALID_BOND_LENGTHS,
-                f"peptide bond too short: {peptide_lengths[bad_idx]:.3f}",
-            )
-        if np.any(peptide_lengths > expected_peptide + tolerance + 0.3):
-            bad_idx = np.where(peptide_lengths > expected_peptide + tolerance + 0.3)[0][0]
-            return FilterResult.fail(
-                FilterReason.INVALID_BOND_LENGTHS,
-                f"peptide bond too long: {peptide_lengths[bad_idx]:.3f}",
+                f"bond type {btype} too long: {bad:.3f} (expected ~{expected:.3f})",
             )
 
     return FilterResult.ok()

@@ -110,7 +110,9 @@ class DDPMSampler(BaseSampler):
         forward_fn: Optional[Callable] = None,
     ) -> Tensor:
         B, N, _ = shape
-        mask = model_kwargs.get('mask') or model_kwargs.get('mask_res')
+        mask = model_kwargs.get('mask')
+        if mask is None:
+            mask = model_kwargs.get('mask_res')
 
         # Default forward function
         if forward_fn is None:
@@ -175,7 +177,9 @@ class HeunSampler(BaseSampler):
         forward_fn: Optional[Callable] = None,
     ) -> Tensor:
         B, N, _ = shape
-        mask = model_kwargs.get('mask') or model_kwargs.get('mask_res')
+        mask = model_kwargs.get('mask')
+        if mask is None:
+            mask = model_kwargs.get('mask_res')
 
         if forward_fn is None:
             def forward_fn(model, x, t, **kwargs):
@@ -258,7 +262,9 @@ class DeterministicDDIMSampler(BaseSampler):
         forward_fn: Optional[Callable] = None,
     ) -> Tensor:
         B, N, _ = shape
-        mask = model_kwargs.get('mask') or model_kwargs.get('mask_res')
+        mask = model_kwargs.get('mask')
+        if mask is None:
+            mask = model_kwargs.get('mask_res')
 
         if forward_fn is None:
             def forward_fn(model, x, t, **kwargs):
@@ -354,7 +360,9 @@ class EDMSampler(BaseSampler):
             noiser: Should be VENoiser with KarrasSchedule (has .sigmas attribute)
         """
         B, N, _ = shape
-        mask = model_kwargs.get('mask') or model_kwargs.get('mask_res')
+        mask = model_kwargs.get('mask')
+        if mask is None:
+            mask = model_kwargs.get('mask_res')
 
         # Get sigma schedule (requires VENoiser/KarrasSchedule)
         if hasattr(noiser, 'sigmas'):
