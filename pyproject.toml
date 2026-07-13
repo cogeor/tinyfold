@@ -26,6 +26,11 @@ dependencies = [
     "transformers>=4.40",
 ]
 
+[project.scripts]
+tinyfold-predict = "tinyfold.cli.predict:main"
+tinyfold-embed-esm = "tinyfold.cli.prepare_esm2:main"
+tinyfold-prepare-data = "tinyfold.cli.prepare_data:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",

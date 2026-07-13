@@ -178,10 +178,14 @@ The Small-Specialist Confirmation (SSC) run is one config plus two eval scripts.
 All commands run from the repo root; substitute your venv's Python for
 `.venv/Scripts/python.exe`.
 
+After `uv sync` (or `pip install -e .`) the packaged CLIs are also on `PATH`:
+`tinyfold-prepare-data`, `tinyfold-embed-esm`, `tinyfold-predict`. The
+`python scripts/...` forms below remain valid thin shims for the same commands.
+
 ```bash
 # 0. One-time: prepare data + cache ESM-2-35M embeddings
-python scripts/data/prepare_data.py --output-dir data/processed
-python scripts/prepare_esm2_embeddings.py            # writes data/processed/esm2_35M/
+python scripts/data/prepare_data.py --output-dir data/processed   # or: tinyfold-prepare-data
+python scripts/prepare_esm2_embeddings.py            # or: tinyfold-embed-esm  (-> data/processed/esm2_35M/)
 
 # 1. Train the small-specialist (~80 min on one RTX 4070 Ti SUPER)
 python scripts/train_resfold.py --config configs/train/resfold/small_specialist_le200.yaml
