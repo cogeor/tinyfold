@@ -80,6 +80,10 @@ outputs/
 .claude/
 CLAUDE.md
 
+# Scratch docs/specs/plans (already-tracked docs/images stay tracked).
+doc/
+docs/
+
 # Delegate runtime files
 .delegate/
 notes/
