@@ -1,8 +1,5 @@
 """Tests for length bucketing and dynamic batch sampling."""
 
-import sys
-sys.path.insert(0, 'C:/Users/costa/src/tinyfold/scripts')
-
 import pytest
 import random
 from tinyfold.training.data_split import LengthBucketSampler, DynamicBatchSampler

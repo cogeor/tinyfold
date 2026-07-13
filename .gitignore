@@ -73,17 +73,13 @@ checkpoints/
 *.pth
 *.ckpt
 
-# uv
-uv.lock
+# uv lockfile is committed for reproducible installs (do NOT ignore).
 
 .arch/
 outputs/
 
 .claude/
 CLAUDE.md
-
-doc/
-docs/
 
 # Delegate runtime files
 .delegate/

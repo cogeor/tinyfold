@@ -1,8 +1,5 @@
 """Tests for contact-based loss functions."""
 
-import sys
-sys.path.insert(0, 'C:/Users/costa/src/tinyfold/scripts')
-
 import pytest
 import torch
 
