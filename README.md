@@ -236,18 +236,6 @@ It overlays ground truth (blue/green) vs prediction (red/orange) in 3Dmol.js and
 shows DockQ + CAPRI band per complex. Regenerate from a checkpoint with
 `scripts/web/build_showcase.py` (see the reproduce section).
 
-**Interactive eval UI (`web/`)** — FastAPI app to browse dataset samples and run
-live inference. Note: its default `web/config.yaml` still points at a legacy
-`af3_style` checkpoint; point it at an `onestep` checkpoint before use.
-
-```bash
-cd web && ../.venv/Scripts/python.exe server.py   # http://127.0.0.1:5001
-```
-
-See [doc/frontend.md](doc/frontend.md) for detailed documentation including:
-- Generating cached predictions
-- Regenerating `web-light` showcase data from `assets/`
-
 ## Dataset
 
 I currently only use the **DIPS-Plus** dataset:
@@ -264,7 +252,7 @@ python scripts/data/prepare_data.py --output-dir data/processed
 
 - [x] Boltz-2 style per-step Kabsch alignment (available in all samplers)
 - [x] Proper benchmarking (DockQ, lDDT, interface metrics)
-- [x] Web frontend for visualization (`web/` and `web-light/`)
+- [x] Web frontend for visualization (static `web-light/` viewer)
 - [x] Confirm the pipeline generalizes on small complexes (SSC experiment)
 - [ ] Move the size cliff: interface cropping + relpos at scale, or the pair track (Phase H)
 - [x] Single-sample predict/export CLI (`scripts/predict.py`, dataset samples)
