@@ -4,8 +4,6 @@ Provides:
 - Model registry for creating models by name
 - Diffusion components (schedules, noise types, samplers)
 - Loss functions (MSE, geometry, contact, lDDT)
-- Pairformer trunk
-- EGNN denoiser
 """
 
 from tinyfold.model.config import ModelConfig

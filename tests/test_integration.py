@@ -9,9 +9,6 @@ import torch
 import pytest
 import numpy as np
 
-from tinyfold.model.config import ModelConfig
-from tinyfold.model.denoiser.edges import build_knn_edges, merge_edges, build_edge_attr
-from tinyfold.model.pairformer.attn_pair_bias import AttentionPairBias
 from tinyfold.data.collate import collate_ppi
 from tinyfold.data.processing.atomization import atomize_chains, build_bonds
 from tinyfold.constants import NUM_BOND_TYPES
@@ -20,26 +17,6 @@ from tinyfold.constants import NUM_BOND_TYPES
 # ============================================================================
 # Fixtures
 # ============================================================================
-
-
-@pytest.fixture
-def small_config():
-    """Small model config for fast testing."""
-    return ModelConfig(
-        c_s=64,
-        c_z=32,
-        c_a=32,
-        n_blocks=2,
-        n_egnn_layers=2,
-        k_neighbors=4,
-        diffusion_steps=4,  # Very few diffusion steps
-    )
-
-
-@pytest.fixture
-def device():
-    """Get available device."""
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 @pytest.fixture
@@ -225,60 +202,6 @@ class TestCollateFunction:
 
 class TestEdgeCases:
     """Tests for edge cases and boundary conditions."""
-
-    def test_knn_with_few_nodes(self):
-        """KNN should handle cases where k > number of nodes."""
-        x = torch.randn(3, 3)  # Only 3 nodes
-        edge_index = build_knn_edges(x, k=10)  # Request 10 neighbors
-
-        # Should get at most 2 neighbors per node (3-1=2, excluding self)
-        assert edge_index.shape[1] <= 3 * 2
-
-        # No self-loops
-        src, dst = edge_index
-        assert (src != dst).all()
-
-    def test_knn_single_node(self):
-        """KNN with single node should return empty edges."""
-        x = torch.randn(1, 3)
-        edge_index = build_knn_edges(x, k=4)
-
-        assert edge_index.shape == (2, 0), "Single node should have no edges"
-
-    def test_attention_with_partial_mask(self):
-        """Attention should handle partially masked sequences."""
-        L, c_s, c_z = 10, 64, 32
-        attn = AttentionPairBias(c_s=c_s, c_z=c_z, n_heads=4)
-
-        s = torch.randn(L, c_s)
-        z = torch.randn(L, L, c_z)
-
-        # Mask out last 3 positions
-        mask = torch.ones(L, dtype=torch.bool)
-        mask[-3:] = False
-
-        output = attn(s, z, mask)
-
-        # Output should not have NaN
-        assert not torch.isnan(output).any(), "Attention output should not contain NaN"
-
-        # Masked positions should have zero output
-        assert (output[-3:] == 0).all(), "Masked positions should be zeroed"
-
-    def test_attention_fully_masked(self):
-        """Attention with all positions masked should not crash or produce NaN."""
-        L, c_s, c_z = 5, 64, 32
-        attn = AttentionPairBias(c_s=c_s, c_z=c_z, n_heads=4)
-
-        s = torch.randn(L, c_s)
-        z = torch.randn(L, L, c_z)
-        mask = torch.zeros(L, dtype=torch.bool)  # All masked
-
-        output = attn(s, z, mask)
-
-        # Should not crash or have NaN (due to our fix)
-        assert not torch.isnan(output).any(), \
-            "Fully masked attention should not produce NaN"
 
     def test_bond_types_all_present(self, synthetic_sample):
         """All 4 bond types should be generated for a complete structure."""
