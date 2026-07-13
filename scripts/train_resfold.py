@@ -41,8 +41,6 @@ from script_utils import (
 
 from tinyfold.inference import (
     sample_centroids,
-    sample_centroids_one_shot,
-    sample_centroids_ve,
     sample_centroids_with_sampler,
     sample_k_centroids,
 )
@@ -86,6 +84,7 @@ from tinyfold.training import (
     load_sample_raw,
     random_rotation_matrix,
 )
+from tinyfold.training.eval import sample_centroids_continuous
 from tinyfold.training.registry_append import append_registry_row
 from tinyfold.training.run_naming import generate_run_name
 from tinyfold.training.utils import edm_loss_weight
@@ -715,18 +714,14 @@ def _run_test_eval(
                         atoms_pred_onestep = samples_a[pick]
                     rmse = per_sample_rmses[pick]
                 elif args.continuous_sigma:
-                    if args.one_shot_sample:
-                        sample_out = sample_centroids_one_shot(
-                            model, batch, noiser, device, is_onestep=is_onestep,
-                        )
-                    else:
-                        sample_out = sample_centroids_ve(
-                            model, batch, noiser, device,
-                            align_per_step=args.align_per_step,
-                            recenter=args.recenter,
-                            kabsch_interp=args.kabsch_interp,
-                            is_onestep=is_onestep,
-                        )
+                    sample_out = sample_centroids_continuous(
+                        model, batch, noiser, device,
+                        one_shot=args.one_shot_sample,
+                        align_per_step=args.align_per_step,
+                        recenter=args.recenter,
+                        kabsch_interp=args.kabsch_interp,
+                        is_onestep=is_onestep,
+                    )
                     if is_onestep:
                         centroids_pred, atoms_pred_onestep = sample_out
                     else:
@@ -1906,18 +1901,14 @@ def _run_training(args, progress):
                     if args.mode == "stage1_only":
                         # For Stage 1: evaluate centroid RMSE via diffusion sampling
                         if args.continuous_sigma:
-                            if args.one_shot_sample:
-                                sample_out = sample_centroids_one_shot(
-                                    model, batch, noiser, device, is_onestep=is_onestep,
-                                )
-                            else:
-                                sample_out = sample_centroids_ve(
-                                    model, batch, noiser, device,
-                                    align_per_step=args.align_per_step,
-                                    recenter=args.recenter,
-                                    kabsch_interp=args.kabsch_interp,
-                                    is_onestep=is_onestep,
-                                )
+                            sample_out = sample_centroids_continuous(
+                                model, batch, noiser, device,
+                                one_shot=args.one_shot_sample,
+                                align_per_step=args.align_per_step,
+                                recenter=args.recenter,
+                                kabsch_interp=args.kabsch_interp,
+                                is_onestep=is_onestep,
+                            )
                             centroids_pred = sample_out[0] if is_onestep else sample_out
                         elif eval_sampler is not None:
                             centroids_pred = sample_centroids_with_sampler(model, batch, noiser, device, eval_sampler)
@@ -1993,18 +1984,14 @@ def _run_training(args, progress):
                 if args.mode == "stage1_only":
                     # Plot centroids for Stage 1
                     if args.continuous_sigma:
-                        if args.one_shot_sample:
-                            sample_out = sample_centroids_one_shot(
-                                model, batch, noiser, device, is_onestep=is_onestep,
-                            )
-                        else:
-                            sample_out = sample_centroids_ve(
-                                model, batch, noiser, device,
-                                align_per_step=args.align_per_step,
-                                recenter=args.recenter,
-                                kabsch_interp=args.kabsch_interp,
-                                is_onestep=is_onestep,
-                            )
+                        sample_out = sample_centroids_continuous(
+                            model, batch, noiser, device,
+                            one_shot=args.one_shot_sample,
+                            align_per_step=args.align_per_step,
+                            recenter=args.recenter,
+                            kabsch_interp=args.kabsch_interp,
+                            is_onestep=is_onestep,
+                        )
                         centroids_pred = sample_out[0] if is_onestep else sample_out
                     elif eval_sampler is not None:
                         centroids_pred = sample_centroids_with_sampler(model, batch, noiser, device, eval_sampler)
