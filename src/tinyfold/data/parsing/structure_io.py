@@ -8,10 +8,10 @@ import gemmi
 import numpy as np
 
 from tinyfold.constants import (
-    AA3_TO_AA1,
     AA_TO_IDX,
     BACKBONE_ATOMS,
     MODIFIED_AA_MAP,
+    map_residue_to_aa,
 )
 
 
@@ -97,26 +97,6 @@ def resolve_altloc(residue: gemmi.Residue, atom_name: str) -> gemmi.Atom | None:
     # Sort by occupancy (descending), then altloc (ascending)
     candidates.sort(key=lambda a: (-a.occ, a.altloc))
     return candidates[0]
-
-
-def map_residue_to_aa(residue_name: str) -> str:
-    """
-    Map residue name to 1-letter AA code.
-
-    Handles standard residues, modified residues, and unknowns.
-    """
-    residue_name = residue_name.upper()
-
-    # Standard amino acid
-    if residue_name in AA3_TO_AA1:
-        return AA3_TO_AA1[residue_name]
-
-    # Modified residue
-    if residue_name in MODIFIED_AA_MAP:
-        return MODIFIED_AA_MAP[residue_name]
-
-    # Unknown
-    return "X"
 
 
 def get_backbone_atoms(chain: gemmi.Chain) -> ChainData:

@@ -28,6 +28,21 @@ MODIFIED_AA_MAP = {
     "PCA": "E",  # Pyroglutamic acid
 }
 
+
+def map_residue_to_aa(residue_name: str) -> str:
+    """Map a 3-letter residue name to a 1-letter AA code.
+
+    Handles standard residues (AA3_TO_AA1), known modified residues
+    (MODIFIED_AA_MAP), and unknowns (returns "X").
+    """
+    residue_name = residue_name.upper()
+    if residue_name in AA3_TO_AA1:
+        return AA3_TO_AA1[residue_name]
+    if residue_name in MODIFIED_AA_MAP:
+        return MODIFIED_AA_MAP[residue_name]
+    return "X"
+
+
 # Backbone atoms (in fixed order)
 BACKBONE_ATOMS = ["N", "CA", "C", "O"]
 ATOM_TO_IDX = {atom: i for i, atom in enumerate(BACKBONE_ATOMS)}

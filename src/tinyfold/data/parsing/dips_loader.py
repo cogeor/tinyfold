@@ -9,7 +9,13 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from tinyfold.constants import AA3_TO_AA1, AA_TO_IDX, BACKBONE_ATOMS, MODIFIED_AA_MAP
+from tinyfold.constants import (
+    AA3_TO_AA1,
+    AA_TO_IDX,
+    BACKBONE_ATOMS,
+    MODIFIED_AA_MAP,
+    map_residue_to_aa,
+)
 from tinyfold.data.parsing.structure_io import ChainData
 
 if TYPE_CHECKING:
@@ -30,19 +36,6 @@ def load_dips_pair(path: str | Path) -> Any:
 
     with open(path, "rb") as f:
         return dill.load(f)
-
-
-def map_residue_to_aa(residue_name: str) -> str:
-    """Map 3-letter residue name to 1-letter AA code."""
-    residue_name = residue_name.upper()
-
-    if residue_name in AA3_TO_AA1:
-        return AA3_TO_AA1[residue_name]
-
-    if residue_name in MODIFIED_AA_MAP:
-        return MODIFIED_AA_MAP[residue_name]
-
-    return "X"
 
 
 def extract_backbone_from_dataframe(df: "pd.DataFrame") -> ChainData:
@@ -136,29 +129,3 @@ def get_chains_from_dips_pair(pair: Any) -> tuple[ChainData, ChainData]:
     return chain_a, chain_b
 
 
-def parse_dips_dill_filename(filepath: Path) -> dict | None:
-    """
-    Parse DIPS dill filename to extract metadata.
-
-    Filenames are like: 10gs.pdb1_0.dill
-    - 10gs: PDB ID
-    - pdb1: model number
-    - 0: pair index
-
-    Returns:
-        dict with pdb_id, or None if can't parse
-    """
-    stem = filepath.stem  # e.g., "10gs.pdb1_0"
-
-    # Split on dots and underscores
-    parts = stem.replace(".", "_").split("_")
-
-    if len(parts) >= 1:
-        pdb_id = parts[0].lower()
-        if len(pdb_id) == 4:
-            return {
-                "pdb_id": pdb_id,
-                "filename": stem,
-            }
-
-    return None

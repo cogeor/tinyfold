@@ -5,31 +5,10 @@ Handles alternate locations, modified residues, and other structure quirks.
 
 import numpy as np
 
-from tinyfold.constants import AA3_TO_AA1, AA_TO_IDX, MODIFIED_AA_MAP
+from tinyfold.constants import AA_TO_IDX, map_residue_to_aa
 
-
-def map_modified_residue(residue_name: str) -> str:
-    """
-    Map modified residue to standard amino acid.
-
-    Args:
-        residue_name: 3-letter residue code
-
-    Returns:
-        1-letter standard AA code or 'X' for unknown
-    """
-    residue_name = residue_name.upper()
-
-    # Standard AA
-    if residue_name in AA3_TO_AA1:
-        return AA3_TO_AA1[residue_name]
-
-    # Known modified residue
-    if residue_name in MODIFIED_AA_MAP:
-        return MODIFIED_AA_MAP[residue_name]
-
-    # Unknown
-    return "X"
+# Public alias kept for the processing package's API (see __init__ exports).
+map_modified_residue = map_residue_to_aa
 
 
 def clean_chain(
