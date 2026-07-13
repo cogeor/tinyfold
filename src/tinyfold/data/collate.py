@@ -8,7 +8,15 @@ from torch.nn.utils.rnn import pad_sequence
 
 def collate_ppi(batch: list[dict[str, Any]]) -> dict[str, Any]:
     """
-    Collate variable-length PPI samples into a batch.
+    Collate variable-length PPI samples into an ATOM-GRAPH batch.
+
+    This produces the atom-graph representation (flattened atoms + merged bond
+    ``edge_index``/``edge_type`` + ``atom_batch``). It is NOT interchangeable
+    with ``tinyfold.training.data.collate_batch``, which produces the
+    residue/centroid representation the live ResFold model consumes. Both exist
+    on purpose — different model families, different tensors — so they are kept
+    separate rather than merged. This path currently backs the data-pipeline
+    integration tests.
 
     Handles:
     - Padding residue-level tensors to max length

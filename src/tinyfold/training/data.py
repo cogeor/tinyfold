@@ -179,7 +179,12 @@ def collate_batch(
     crop_size: int | None = None,
     rng: torch.Generator | None = None,
 ) -> dict[str, Any]:
-    """Collate residue-level samples into a padded batch.
+    """Collate residue-level samples into a padded RESIDUE/CENTROID batch.
+
+    This is the live-model loader (centroids, coords_res, aa_seq, mask_res, ...).
+    It is intentionally distinct from ``tinyfold.data.collate.collate_ppi``,
+    which builds the atom-graph representation for the (retired) EGNN path — see
+    that function's docstring. Do not merge them; they feed different models.
 
     Args:
         samples: List of sample dicts from load_sample
