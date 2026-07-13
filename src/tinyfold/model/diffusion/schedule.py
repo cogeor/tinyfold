@@ -160,6 +160,9 @@ class DiffusionSchedule(nn.Module):
             sqrt_1_ab = self.sqrt_one_minus_alpha_bar[t].view(-1, 1)
 
         # Add epsilon for numerical stability when sqrt_ab is very small (near t=0)
+        sqrt_ab = sqrt_ab.clamp(min=1e-8)
+        return (x_t - sqrt_1_ab * eps_hat) / sqrt_ab
+
 
 # =============================================================================
 # Karras Schedule (EDM-style continuous sigma)

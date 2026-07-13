@@ -356,6 +356,9 @@ class LinearChainFlow:
         if self.noise_scale > 0:
             x_t = x_t + torch.randn_like(x_t) * self.noise_scale
 
+        # For x0-prediction the target is the clean structure itself.
+        return x_t, x0
+
 
 # =============================================================================
 # VE Noiser (Variance-Exploding, AF3-style)
