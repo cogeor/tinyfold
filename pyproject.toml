@@ -54,7 +54,14 @@ torch = [
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-v --tb=short"
+timeout = 120
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests that load real data",
+    "network: marks tests that make real network requests (deselect with '-m \"not network\"')",
+]
+filterwarnings = [
+    "error",
+    # DockQ's backend leaves its temporary PDB files unclosed during scoring.
+    "ignore::ResourceWarning",
 ]
