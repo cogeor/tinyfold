@@ -28,11 +28,14 @@ Usage:
 """
 
 import json
+import logging
 import os
 import random
 from dataclasses import asdict, dataclass
 
 import pyarrow as pa
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -315,7 +318,7 @@ def save_split(info: dict, path: str):
     with open(path, 'w') as f:
         json.dump(save_data, f, indent=2)
 
-    print(f"Saved split to {path}")
+    logger.info("Saved split to %s", path)
 
 
 def load_split(path: str) -> tuple[list[int], list[int], dict]:
@@ -330,9 +333,15 @@ def load_split(path: str) -> tuple[list[int], list[int], dict]:
     with open(path) as f:
         data = json.load(f)
 
-    print(f"Loaded split from {path}")
-    print(f"  Train: {data['n_train']} samples, atoms {data['train_atom_range'][0]}-{data['train_atom_range'][1]}")
-    print(f"  Test: {data['n_test']} samples, atoms {data['test_atom_range'][0]}-{data['test_atom_range'][1]}")
+    logger.info("Loaded split from %s", path)
+    logger.info(
+        "  Train: %d samples, atoms %s-%s",
+        data['n_train'], data['train_atom_range'][0], data['train_atom_range'][1],
+    )
+    logger.info(
+        "  Test: %d samples, atoms %s-%s",
+        data['n_test'], data['test_atom_range'][0], data['test_atom_range'][1],
+    )
 
     return data['train_indices'], data['test_indices'], data
 

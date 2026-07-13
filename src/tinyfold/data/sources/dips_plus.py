@@ -5,6 +5,7 @@ Source: https://zenodo.org/records/8140981
 """
 
 import json
+import logging
 import tarfile
 import zipfile
 from collections.abc import Iterator
@@ -12,6 +13,8 @@ from pathlib import Path
 
 import requests
 from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
 
 # Zenodo record for DIPS-Plus
 ZENODO_RECORD_ID = "8140981"
@@ -69,7 +72,7 @@ def download_dips_plus(output_dir: str | Path, skip_existing: bool = True) -> Pa
     raw_dir.mkdir(exist_ok=True)
 
     # Get file list from Zenodo
-    print("Fetching DIPS-Plus file list from Zenodo...")
+    logger.info("Fetching DIPS-Plus file list from Zenodo...")
     files = get_zenodo_files()
 
     # Download each file
@@ -81,20 +84,20 @@ def download_dips_plus(output_dir: str | Path, skip_existing: bool = True) -> Pa
         dest_path = raw_dir / filename
 
         if skip_existing and dest_path.exists():
-            print(f"Skipping {filename} (already exists)")
+            logger.info(f"Skipping {filename} (already exists)")
             continue
 
-        print(f"Downloading {filename} ({file_size / 1e9:.2f} GB)...")
+        logger.info(f"Downloading {filename} ({file_size / 1e9:.2f} GB)...")
         download_file(download_url, dest_path)
 
     # Extract archives
     extracted_dir = raw_dir / "dips_plus"
     if not extracted_dir.exists():
         for archive in raw_dir.glob("*.tar.gz"):
-            print(f"Extracting {archive.name}...")
+            logger.info(f"Extracting {archive.name}...")
             extract_archive(archive, raw_dir)
         for archive in raw_dir.glob("*.zip"):
-            print(f"Extracting {archive.name}...")
+            logger.info(f"Extracting {archive.name}...")
             extract_archive(archive, raw_dir)
 
     return raw_dir
@@ -202,9 +205,9 @@ def create_manifest_from_dill(
     manifest_entries = []
     skipped = 0
 
-    print("Scanning for DIPS dill files...")
+    logger.info("Scanning for DIPS dill files...")
     dill_files = list(find_dips_dill_files(data_dir))
-    print(f"Found {len(dill_files)} dill files")
+    logger.info(f"Found {len(dill_files)} dill files")
 
     for filepath in tqdm(dill_files, desc="Building manifest"):
         parsed = parse_dips_dill_filename(filepath)
@@ -231,7 +234,7 @@ def create_manifest_from_dill(
         for entry in manifest_entries:
             f.write(json.dumps(entry) + "\n")
 
-    print(f"Created manifest with {len(manifest_entries)} samples ({skipped} skipped)")
+    logger.info(f"Created manifest with {len(manifest_entries)} samples ({skipped} skipped)")
     return len(manifest_entries)
 
 
@@ -255,9 +258,9 @@ def create_manifest(
     manifest_entries = []
     skipped = 0
 
-    print("Scanning for structure files...")
+    logger.info("Scanning for structure files...")
     structure_files = list(find_structure_files(data_dir))
-    print(f"Found {len(structure_files)} structure files")
+    logger.info(f"Found {len(structure_files)} structure files")
 
     for filepath in tqdm(structure_files, desc="Building manifest"):
         parsed = parse_dips_filename(filepath)
@@ -287,7 +290,7 @@ def create_manifest(
         for entry in manifest_entries:
             f.write(json.dumps(entry) + "\n")
 
-    print(f"Created manifest with {len(manifest_entries)} samples ({skipped} skipped)")
+    logger.info(f"Created manifest with {len(manifest_entries)} samples ({skipped} skipped)")
     return len(manifest_entries)
 
 

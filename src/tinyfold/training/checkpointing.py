@@ -4,11 +4,14 @@ Provides utilities for saving, loading, and managing model checkpoints
 with consistent format across all training scripts.
 """
 
+import logging
 from pathlib import Path
 from typing import Any
 
 import torch
 import torch.nn as nn
+
+logger = logging.getLogger(__name__)
 
 
 def save_checkpoint(
@@ -92,9 +95,9 @@ def load_checkpoint(
     )
 
     if missing:
-        print(f"  Missing keys: {len(missing)}")
+        logger.warning("Missing keys when loading checkpoint: %d", len(missing))
     if unexpected:
-        print(f"  Unexpected keys: {len(unexpected)}")
+        logger.warning("Unexpected keys when loading checkpoint: %d", len(unexpected))
 
     # Restore optimizer
     if optimizer is not None and "optimizer_state_dict" in checkpoint:
