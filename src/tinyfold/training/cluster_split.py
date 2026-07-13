@@ -117,11 +117,13 @@ def cluster_holdout_indices(
     return train_idx, test_idx, info
 
 
-def save_split(table, train_idx, test_idx, info, path: str) -> None:
-    """Write a split JSON compatible with train_resfold --load_split.
+def save_cluster_split(table, train_idx, test_idx, info, path: str) -> None:
+    """Write a cluster-holdout split JSON in the canonical data_split format.
 
-    Includes the ``*_atom_range`` fields that ``data_split.load_split`` prints,
-    so the file drops into the existing loader unchanged.
+    Includes the ``*_atom_range`` fields that ``data_split.load_split`` reads,
+    so the file drops into the existing loader unchanged. Named distinctly from
+    ``data_split.save_split`` (which has a different signature) to avoid the
+    historical name collision.
     """
     def atom_range(idxs):
         counts = [len(table["atom_type"][i].as_py()) for i in idxs]

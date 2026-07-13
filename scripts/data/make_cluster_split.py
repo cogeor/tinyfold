@@ -18,7 +18,7 @@ import pyarrow.parquet as pq
 from tinyfold.training.cluster_split import (
     cluster_holdout_indices,
     load_clusters,
-    save_split,
+    save_cluster_split,
 )
 
 
@@ -58,7 +58,7 @@ def main():
     for k, v in info.items():
         print(f"  {k}: {v}")
     assert not info["cluster_overlap"], f"LEAKAGE: clusters in both sides: {info['cluster_overlap']}"
-    save_split(table, train_idx, test_idx, info, args.out)
+    save_cluster_split(table, train_idx, test_idx, info, args.out)
     print(f"Wrote {args.out}")
 
 

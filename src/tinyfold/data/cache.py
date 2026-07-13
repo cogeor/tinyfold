@@ -222,12 +222,6 @@ def write_split_files(
                 f.write(sample_id + "\n")
 
 
-def load_split(split_path: str | Path) -> list[str]:
-    """Load sample IDs from a split file."""
-    with open(split_path) as f:
-        return [line.strip() for line in f if line.strip()]
-
-
 def write_stats(
     output_path: str | Path,
     stats: dict[str, Any],
