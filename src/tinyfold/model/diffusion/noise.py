@@ -94,14 +94,15 @@ def _random_rotation_matrix(device: torch.device) -> Tensor:
     return R
 
 
-class GaussianNoise:
-    """Standard Gaussian noise diffusion."""
+class BaseNoiser:
+    """Shared schedule-delegating boilerplate for all noisers.
+
+    Every noiser wraps a schedule and exposes the same ``T``/``alpha_bar``/
+    ``alphas``/``betas``/``to`` surface. Subclasses add their own ``__init__``
+    extras (noise_scale, sigma_data, ...) and implement ``add_noise``.
+    """
 
     def __init__(self, schedule):
-        """
-        Args:
-            schedule: Schedule object with alpha_bar, sqrt_alpha_bar, etc.
-        """
         self.schedule = schedule
 
     @property
@@ -123,6 +124,10 @@ class GaussianNoise:
     def to(self, device):
         self.schedule = self.schedule.to(device)
         return self
+
+
+class GaussianNoise(BaseNoiser):
+    """Standard Gaussian noise diffusion."""
 
     def add_noise(self, x0: Tensor, t: Tensor, **kwargs) -> tuple[Tensor, Tensor]:
         """Add Gaussian noise to x0.
@@ -143,7 +148,7 @@ class GaussianNoise:
         return x_t, noise
 
 
-class LinearChainNoise:
+class LinearChainNoise(BaseNoiser):
     """Diffusion toward extended chain structure.
 
     Instead of pure Gaussian noise, the "fully noised" state is an extended
@@ -157,29 +162,9 @@ class LinearChainNoise:
             noise_scale: Scale of additional Gaussian noise (0 = pure interpolation)
             rotation: If True, apply random rotation to extended chain
         """
-        self.schedule = schedule
+        super().__init__(schedule)
         self.noise_scale = noise_scale
         self.rotation = rotation
-
-    @property
-    def T(self):
-        return self.schedule.T
-
-    @property
-    def alpha_bar(self):
-        return self.schedule.alpha_bar
-
-    @property
-    def alphas(self):
-        return self.schedule.alphas
-
-    @property
-    def betas(self):
-        return self.schedule.betas
-
-    def to(self, device):
-        self.schedule = self.schedule.to(device)
-        return self
 
     def add_noise(
         self,
@@ -266,7 +251,7 @@ class LinearChainNoise:
         return x_prev
 
 
-class LinearChainFlow:
+class LinearChainFlow(BaseNoiser):
     """Iterative refinement flow from extended chain to folded structure.
 
     Simple approach:
@@ -282,29 +267,9 @@ class LinearChainFlow:
             noise_scale: Small noise added to input during training
             rotation: If True, apply random rotation to extended chain
         """
-        self.schedule = schedule
+        super().__init__(schedule)
         self.noise_scale = noise_scale
         self.rotation = rotation
-
-    @property
-    def T(self):
-        return self.schedule.T
-
-    @property
-    def alpha_bar(self):
-        return self.schedule.alpha_bar
-
-    @property
-    def alphas(self):
-        return self.schedule.alphas
-
-    @property
-    def betas(self):
-        return self.schedule.betas
-
-    def to(self, device):
-        self.schedule = self.schedule.to(device)
-        return self
 
     def add_noise(
         self,
@@ -364,7 +329,7 @@ class LinearChainFlow:
 # VE Noiser (Variance-Exploding, AF3-style)
 # =============================================================================
 
-class VENoiser:
+class VENoiser(BaseNoiser):
     """Variance-Exploding noise process (AF3/EDM style).
 
     VE diffusion: x_t = x0 + sigma * eps (additive noise)
@@ -385,32 +350,12 @@ class VENoiser:
             schedule: KarrasSchedule with sigma values
             sigma_data: Standard deviation of data (1.0 for normalized coords)
         """
-        self.schedule = schedule
+        super().__init__(schedule)
         self.sigma_data = sigma_data
-
-    @property
-    def T(self):
-        return self.schedule.T
 
     @property
     def sigmas(self):
         return self.schedule.sigmas
-
-    @property
-    def alpha_bar(self):
-        return self.schedule.alpha_bar
-
-    @property
-    def betas(self):
-        return self.schedule.betas
-
-    @property
-    def alphas(self):
-        return self.schedule.alphas
-
-    def to(self, device):
-        self.schedule = self.schedule.to(device)
-        return self
 
     def add_noise(
         self,
