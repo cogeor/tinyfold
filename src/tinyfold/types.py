@@ -4,9 +4,38 @@ Defines interfaces for model components to enable type checking and
 ensure consistent APIs across different model implementations.
 """
 
-from typing import Any, Protocol
+from typing import Any, Protocol, TypedDict
 
 from torch import Tensor
+
+
+class Batch(TypedDict, total=False):
+    """The residue/centroid training batch.
+
+    Produced by ``tinyfold.training.data.collate_batch`` and consumed by the live
+    model and samplers. This documents the shape that is otherwise threaded around
+    as ``dict[str, Any]``. ``total=False`` because the template/ESM keys are present
+    only when those features are enabled.
+    """
+
+    centroids: Tensor           # [B, L, 3] residue centroids
+    coords_res: Tensor          # [B, L, 4, 3] backbone atoms per residue
+    aa_seq: Tensor              # [B, L] amino-acid indices
+    chain_ids: Tensor           # [B, L] chain id (0/1)
+    res_idx: Tensor             # [B, L] residue index within chain
+    mask_res: Tensor            # [B, L] bool, True for real residues
+    coords: Tensor              # [B, N, 3] flattened atoms
+    atom_types: Tensor          # [B, N]
+    atom_to_res: Tensor         # [B, N]
+    mask_atom: Tensor           # [B, N] bool
+    esm_embed: Tensor           # [B, L, esm_dim] (ESM mode only)
+    template_coords_res: Tensor  # [B, L, 4, 3] (template conditioning only)
+    template_mask: Tensor
+    template_frame_id: Tensor
+    stds: list[float]           # per-sample coordinate std used for de-normalisation
+    n_res: list[int]
+    n_atoms: list[int]
+    sample_ids: list[str]
 
 
 class DiffusionDecoder(Protocol):

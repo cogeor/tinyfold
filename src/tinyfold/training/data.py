@@ -11,6 +11,8 @@ from typing import Any
 import numpy as np
 import torch
 
+from tinyfold.types import Batch
+
 
 def load_sample(
     table,
@@ -178,7 +180,7 @@ def collate_batch(
     cropper: Any | None = None,
     crop_size: int | None = None,
     rng: torch.Generator | None = None,
-) -> dict[str, Any]:
+) -> Batch:
     """Collate residue-level samples into a padded RESIDUE/CENTROID batch.
 
     This is the live-model loader (centroids, coords_res, aa_seq, mask_res, ...).
