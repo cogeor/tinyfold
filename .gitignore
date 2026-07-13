@@ -56,7 +56,6 @@ data/processed/
 
 # Logs
 *.log
-!experiments/_archive/**/*.log
 logs/
 
 # OS
