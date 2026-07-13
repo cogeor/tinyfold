@@ -9,7 +9,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from tinyfold.model.resfold.onestep import ResFoldOneStep
+from tinyfold.model.resfold.onestep import ModelOutput, ResFoldOneStep
 
 
 def _tiny_model(confidence_head: bool, c_token: int = 32) -> ResFoldOneStep:
@@ -141,6 +141,31 @@ class TestOneStepConfidence:
         )
         for a, c in zip(full, split):
             assert torch.allclose(a, c, atol=1e-6)
+
+    def test_forward_sigma_returns_named_modeloutput(self):
+        """forward_sigma returns a ModelOutput NamedTuple: unpacks AND names.
+
+        Back-compat: it is still a 3-tuple (unpacking + indexing keep working);
+        forward-compat: it exposes .centroid_pred / .atoms_pred / .pred_lddt.
+        """
+        torch.manual_seed(0)
+        model = _tiny_model(confidence_head=True)
+        b = _toy_batch(B=2, L=8)
+        out = model.forward_sigma(
+            b["x_t"], b["aa_seq"], b["chain_ids"], b["res_idx"],
+            b["sigma"], b["mask"],
+        )
+        assert isinstance(out, ModelOutput)
+        assert isinstance(out, tuple) and len(out) == 3
+        # Named accessors alias the positional slots.
+        assert out.centroid_pred is out[0]
+        assert out.atoms_pred is out[1]
+        assert out.pred_lddt is out[2]
+        # Still unpacks positionally like the old plain tuple.
+        centroid, atoms, pred_lddt = out
+        assert centroid is out.centroid_pred
+        assert atoms is out.atoms_pred
+        assert pred_lddt is out.pred_lddt
 
     def test_count_parameters_includes_confidence(self):
         """count_parameters must report the confidence head bucket."""

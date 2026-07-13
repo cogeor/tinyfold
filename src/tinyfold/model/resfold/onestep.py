@@ -29,6 +29,7 @@ trunk early.
 """
 
 import math
+from typing import NamedTuple
 
 import torch
 import torch.nn as nn
@@ -36,6 +37,20 @@ from torch import Tensor
 
 from .base import BaseDecoder
 from .denoiser import DiffusionTransformer, ResidueEncoder
+
+
+class ModelOutput(NamedTuple):
+    """Return type of ``forward_sigma`` / ``forward_sigma_with_trunk``.
+
+    A 3-tuple, so every existing ``centroid, atoms, pred_lddt = model.forward_sigma(...)``
+    caller keeps working unchanged, but it also exposes named accessors
+    (``out.centroid_pred`` etc.). ``pred_lddt`` is ``None`` unless the model was
+    built with ``confidence_head=True``.
+    """
+
+    centroid_pred: Tensor
+    atoms_pred: Tensor
+    pred_lddt: Tensor | None
 
 
 class AtomHead(nn.Module):
@@ -424,7 +439,7 @@ class ResFoldOneStep(BaseDecoder):
         template_coords_res: Tensor | None = None,
         template_mask: Tensor | None = None,
         template_frame_id: Tensor | None = None,
-    ) -> tuple[Tensor, Tensor, Tensor | None]:
+    ) -> ModelOutput:
         """Continuous-sigma forward (EDM-preconditioned).
 
         Returns ``(centroid_pred, atoms_pred, pred_lddt_or_None)``. The third
@@ -540,7 +555,7 @@ class ResFoldOneStep(BaseDecoder):
         x0_prev: Tensor | None = None,
         res_idx: Tensor | None = None,
         chain_ids: Tensor | None = None,
-    ) -> tuple[Tensor, Tensor, Tensor | None]:
+    ) -> ModelOutput:
         """Continuous-sigma forward with precomputed trunk tokens (EDM-preconditioned).
 
         Returns ``(centroid_pred, atoms_pred, pred_lddt_or_None)`` — same
@@ -570,7 +585,7 @@ class ResFoldOneStep(BaseDecoder):
             denoiser_tokens, x_t, c_skip, c_out, mask
         )
         pred_lddt = self._predict_confidence(denoiser_tokens, mask)
-        return centroid_pred, atoms_pred, pred_lddt
+        return ModelOutput(centroid_pred, atoms_pred, pred_lddt)
 
     def forward(
         self,
