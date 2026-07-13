@@ -13,7 +13,7 @@ import pytest
 import torch
 
 from tinyfold.model.geometry import kabsch_rigid
-from tinyfold.training.utils import random_rotation_matrix
+from tinyfold.training.augmentation import random_rotation_matrix
 
 
 def _random_se3(B: int, device, t_scale: float = 5.0, seed: int = 0):

@@ -71,11 +71,7 @@ from tinyfold.model.metrics import (
     score_geometric_energy,
     score_self_consistency,
 )
-from tinyfold.training.utils import (
-    MultiCopyTrainer,
-    VectorizedMultiCopyTrainer,
-    edm_loss_weight,
-)
+from tinyfold.training.utils import edm_loss_weight
 
 # Loss imports
 from tinyfold.model.losses import (

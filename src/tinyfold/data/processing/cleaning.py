@@ -8,24 +8,6 @@ import numpy as np
 from tinyfold.constants import AA3_TO_AA1, AA_TO_IDX, MODIFIED_AA_MAP
 
 
-def resolve_altlocs(coords: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Resolve alternate location issues in coordinates.
-
-    This is a placeholder - actual altloc resolution happens in structure_io.py
-    during parsing. This function can be used for post-processing if needed.
-
-    Args:
-        coords: [L, 4, 3] backbone coordinates
-        mask: [L, 4] atom mask
-
-    Returns:
-        Cleaned coords and mask
-    """
-    # Currently a no-op since altlocs are resolved during parsing
-    return coords, mask
-
-
 def map_modified_residue(residue_name: str) -> str:
     """
     Map modified residue to standard amino acid.
@@ -92,56 +74,4 @@ def clean_chain(
         np.array(cleaned_indices, dtype=np.int64),
         coords,
         mask,
-    )
-
-
-def remove_terminal_missing(
-    sequence: list[str],
-    seq_indices: np.ndarray,
-    coords: np.ndarray,
-    mask: np.ndarray,
-) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Remove terminal residues with missing backbone atoms.
-
-    Useful for cleaning up chains with disordered termini.
-
-    Args:
-        sequence: 1-letter AA codes
-        seq_indices: [L] AA indices
-        coords: [L, 4, 3] backbone coords
-        mask: [L, 4] atom mask
-
-    Returns:
-        Trimmed (sequence, seq_indices, coords, mask)
-    """
-    L = len(sequence)
-    if L == 0:
-        return sequence, seq_indices, coords, mask
-
-    # Find first residue with complete backbone (at least N, CA, C)
-    start = 0
-    for i in range(L):
-        if mask[i, :3].all():  # N, CA, C present
-            start = i
-            break
-    else:
-        # No complete residue found
-        return [], np.array([], dtype=np.int64), np.zeros((0, 4, 3)), np.zeros((0, 4), dtype=bool)
-
-    # Find last residue with complete backbone
-    end = L
-    for i in range(L - 1, -1, -1):
-        if mask[i, :3].all():
-            end = i + 1
-            break
-
-    if start >= end:
-        return [], np.array([], dtype=np.int64), np.zeros((0, 4, 3)), np.zeros((0, 4), dtype=bool)
-
-    return (
-        sequence[start:end],
-        seq_indices[start:end],
-        coords[start:end],
-        mask[start:end],
     )

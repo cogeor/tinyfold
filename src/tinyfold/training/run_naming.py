@@ -104,30 +104,3 @@ def generate_run_name(
         parts.append(ts)
 
     return "_".join(parts)
-
-
-def parse_run_name(run_name: str) -> Dict[str, str]:
-    """Parse run name to extract components.
-
-    Args:
-        run_name: Run name string
-
-    Returns:
-        Dict with parsed components
-    """
-    parts = run_name.split("_")
-
-    result = {"model": parts[0] if parts else "unknown"}
-
-    # Try to find timestamp (format: YYYYMMDD_HHMMSS)
-    for i, part in enumerate(parts):
-        if len(part) == 8 and part.isdigit():
-            # Found date part, next should be time
-            if i + 1 < len(parts) and len(parts[i + 1]) == 6 and parts[i + 1].isdigit():
-                result["timestamp"] = f"{part}_{parts[i + 1]}"
-                result["params"] = "_".join(parts[1:i])
-                break
-    else:
-        result["params"] = "_".join(parts[1:])
-
-    return result

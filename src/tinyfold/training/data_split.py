@@ -530,37 +530,3 @@ class DynamicBatchSampler:
         ]
 
 
-if __name__ == "__main__":
-    # Demo: verify determinism
-    import pyarrow.parquet as pq
-    import os
-
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    data_path = os.path.join(script_dir, "..", "data/processed/samples.parquet")
-    table = pq.read_table(data_path)
-
-    # Use 80 train, 14 test to fit in 94 available medium samples
-    print("Testing determinism with n_train=80, n_test=14...")
-    print()
-
-    config = DataSplitConfig(n_train=80, n_test=14)
-
-    # Run twice to verify same results
-    train1, test1 = get_train_test_indices(table, config)
-    train2, test2 = get_train_test_indices(table, config)
-
-    assert train1 == train2, "Train indices not deterministic!"
-    assert test1 == test2, "Test indices not deterministic!"
-    print("[OK] Determinism verified: same indices on repeated calls")
-    print()
-
-    # Print summary
-    info = get_split_info(table, config)
-    print_split_summary(info)
-
-    # Verify no overlap
-    train_set = set(train1)
-    test_set = set(test1)
-    overlap = train_set & test_set
-    assert len(overlap) == 0, f"Train/test overlap: {overlap}"
-    print("[OK] No overlap between train and test sets")

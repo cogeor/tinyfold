@@ -63,48 +63,6 @@ def compute_interface_mask(
     return iface_a, iface_b
 
 
-def compute_interface_contacts(
-    coords_a: np.ndarray,
-    mask_a: np.ndarray,
-    coords_b: np.ndarray,
-    mask_b: np.ndarray,
-    threshold: float = INTERFACE_DISTANCE_THRESHOLD,
-) -> list[tuple[int, int]]:
-    """
-    Compute list of interface contact pairs.
-
-    Args:
-        coords_a: [LA, 4, 3] chain A backbone coordinates
-        mask_a: [LA, 4] chain A atom mask
-        coords_b: [LB, 4, 3] chain B backbone coordinates
-        mask_b: [LB, 4] chain B atom mask
-        threshold: Distance threshold in Angstroms
-
-    Returns:
-        List of (res_idx_a, res_idx_b) contact pairs
-    """
-    LA = coords_a.shape[0]
-    LB = coords_b.shape[0]
-
-    if LA == 0 or LB == 0:
-        return []
-
-    ca_a = coords_a[:, 1, :]
-    ca_b = coords_b[:, 1, :]
-    ca_mask_a = mask_a[:, 1]
-    ca_mask_b = mask_b[:, 1]
-
-    diff = ca_a[:, None, :] - ca_b[None, :, :]
-    dist = np.linalg.norm(diff, axis=2)
-
-    valid_mask = ca_mask_a[:, None] & ca_mask_b[None, :]
-    contacts = (dist < threshold) & valid_mask
-
-    # Get indices of contacts
-    contact_pairs = list(zip(*np.where(contacts)))
-    return contact_pairs
-
-
 def compute_min_interface_distance(
     coords_a: np.ndarray,
     mask_a: np.ndarray,
