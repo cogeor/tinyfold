@@ -1175,6 +1175,11 @@ def _run_training(args, progress):
         logger.log(f"  Trunk params:     {pc['trunk']:,} ({pc['trunk_pct']:.1f}%)")
         logger.log(f"  Denoiser params:  {pc['denoiser']:,} ({pc['denoiser_pct']:.1f}%)")
         logger.log(f"  Atom-head params: {pc['atom_head']:,} ({pc['atom_head_pct']:.1f}%)")
+        if pc.get('atom_diff', 0) > 0:
+            logger.log(
+                f"  Atom-diff params: {pc['atom_diff']:,} "
+                f"({pc['atom_diff_pct']:.1f}%)"
+            )
         if pc.get('confidence_head', 0) > 0:
             logger.log(
                 f"  Confidence-head params: {pc['confidence_head']:,} "

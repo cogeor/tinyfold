@@ -158,6 +158,32 @@ class TestOneStepConfidence:
         assert pc0["confidence_head"] == 0
         assert pc0["total"] == pc0["trunk"] + pc0["denoiser"] + pc0["atom_head"]
 
+    def test_count_parameters_includes_atom_diff(self):
+        """With atom_diffusion=True the atom-diffusion head must be counted."""
+        m = ResFoldOneStep(
+            c_token=32,
+            trunk_layers=1,
+            trunk_heads=2,
+            denoiser_blocks=1,
+            denoiser_heads=2,
+            atom_head_layers=1,
+            atom_head_heads=2,
+            n_timesteps=10,
+            atom_diffusion=True,
+        )
+        pc = m.count_parameters()
+        assert "atom_diff" in pc
+        assert pc["atom_diff"] > 0
+        # Total must include every bucket, atom_diff included.
+        assert pc["total"] == (
+            pc["trunk"] + pc["denoiser"] + pc["atom_head"]
+            + pc["atom_diff"] + pc["confidence_head"]
+        )
+        # Disabled -> bucket present but zero, and total unchanged by it.
+        m0 = _tiny_model(confidence_head=False)
+        pc0 = m0.count_parameters()
+        assert pc0["atom_diff"] == 0
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

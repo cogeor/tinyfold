@@ -639,20 +639,27 @@ class ResFoldOneStep(BaseDecoder):
             + sum(p.numel() for p in self.centroid_proj.parameters())
         )
         atom_head = sum(p.numel() for p in self.atom_head.parameters())
+        atom_diff = (
+            sum(p.numel() for p in self.atom_diff_head.parameters())
+            if self.atom_diff_head is not None
+            else 0
+        )
         confidence_head = (
             sum(p.numel() for p in self.confidence_head.parameters())
             if self.confidence_head is not None
             else 0
         )
-        total = trunk + denoiser + atom_head + confidence_head
+        total = trunk + denoiser + atom_head + atom_diff + confidence_head
         return {
             "trunk": trunk,
             "denoiser": denoiser,
             "atom_head": atom_head,
+            "atom_diff": atom_diff,
             "confidence_head": confidence_head,
             "total": total,
             "trunk_pct": 100 * trunk / total,
             "denoiser_pct": 100 * denoiser / total,
             "atom_head_pct": 100 * atom_head / total,
+            "atom_diff_pct": 100 * atom_diff / total,
             "confidence_head_pct": 100 * confidence_head / total,
         }
