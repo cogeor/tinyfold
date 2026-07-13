@@ -140,7 +140,12 @@ def main():
             rmses = [compute_rmse(sc[k], gt_c, batch["mask_res"]).item() * std for k in range(Kmax)]
             confs = [float(slddt[k]) if slddt is not None else 0.0 for k in range(Kmax)]
 
-            def dockq_of(idx, _cache={}):  # noqa: B006  (intentional memoization cache)
+            # Bind the per-iteration values as defaults: dockq_of is only ever
+            # called within this same loop iteration, but binding makes that
+            # explicit and correct (silences B023 without an ignore). _cache is
+            # an intentional per-iteration memoization cache (B006).
+            def dockq_of(idx, _cache={}, sa=sa, n_res=n_res, batch=batch,  # noqa: B006
+                         chain=chain, std=std):
                 if idx not in _cache:
                     _cache[idx] = compute_dockq(
                         sa[idx][0, :n_res], batch["coords_res"][0, :n_res],
