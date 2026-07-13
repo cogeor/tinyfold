@@ -3,6 +3,11 @@
 from tinyfold.viz.render.styles import CHAIN_COLORS
 
 
+def _escape_pdb_js(pdb: str) -> str:
+    """Escape a PDB string for embedding in a JS template literal."""
+    return pdb.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$")
+
+
 def make_viewer_html(
     pred_pdb: str,
     ref_pdb: str | None = None,
@@ -27,8 +32,8 @@ def make_viewer_html(
         HTML string with embedded viewer
     """
     # Escape PDB strings for JavaScript
-    pred_pdb_escaped = pred_pdb.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$")
-    ref_pdb_escaped = ref_pdb.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$") if ref_pdb else ""
+    pred_pdb_escaped = _escape_pdb_js(pred_pdb)
+    ref_pdb_escaped = _escape_pdb_js(ref_pdb) if ref_pdb else ""
 
     # Build highlight JavaScript
     highlight_js = ""
@@ -255,9 +260,9 @@ def make_dual_viewer_html(
     Returns:
         HTML string with dual viewers
     """
-    pred_complex_escaped = pred_pdb_complex_aligned.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$")
-    pred_receptor_escaped = pred_pdb_receptor_aligned.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$")
-    ref_escaped = ref_pdb.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$")
+    pred_complex_escaped = _escape_pdb_js(pred_pdb_complex_aligned)
+    pred_receptor_escaped = _escape_pdb_js(pred_pdb_receptor_aligned)
+    ref_escaped = _escape_pdb_js(ref_pdb)
 
     html = f"""
 <!DOCTYPE html>

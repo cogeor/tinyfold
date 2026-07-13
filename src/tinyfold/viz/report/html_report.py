@@ -7,6 +7,7 @@ import matplotlib
 matplotlib.use("Agg")  # Non-interactive backend
 import matplotlib.pyplot as plt
 import numpy as np
+from jinja2 import Template
 
 from tinyfold.viz.io.structure_writer import coords_to_pdb_string, write_pdb
 from tinyfold.viz.mapping.atom_schema import AtomSchema
@@ -20,14 +21,6 @@ from tinyfold.viz.plots.distributions import (
 )
 from tinyfold.viz.plots.matrices import plot_contact_map
 from tinyfold.viz.render.py3dmol_viewer import make_dual_viewer_html
-
-# Try to import jinja2, fall back to simple string formatting
-try:
-    from jinja2 import Template
-    HAS_JINJA2 = True
-except ImportError:
-    HAS_JINJA2 = False
-
 
 REPORT_TEMPLATE = """
 <!DOCTYPE html>
@@ -388,58 +381,17 @@ def make_report(
         )
         plt.close()
 
-    # Render HTML report
-    if HAS_JINJA2:
-        template = Template(REPORT_TEMPLATE)
-        html = template.render(
-            sample_id=sample_id,
-            rmsd=rmsd_metrics,
-            contacts=contact_met,
-            samples=samples_data,
-        )
-    else:
-        # Simple fallback without jinja2
-        html = _render_simple_report(sample_id, rmsd_metrics, contact_met, samples_data)
+    # Render HTML report (jinja2 is a hard dependency).
+    template = Template(REPORT_TEMPLATE)
+    html = template.render(
+        sample_id=sample_id,
+        rmsd=rmsd_metrics,
+        contacts=contact_met,
+        samples=samples_data,
+    )
 
     report_path = out_dir / "report.html"
     with open(report_path, "w") as f:
         f.write(html)
 
     return str(report_path)
-
-
-def _render_simple_report(sample_id, rmsd, contacts, samples):
-    """Fallback report rendering without jinja2."""
-    samples_html = ""
-    if samples:
-        rows = "\n".join(
-            f"<tr><td>{i+1}</td><td>{s['name']}</td><td>{s['rmsd_complex']:.2f}</td>"
-            f"<td>{s['lrmsd']:.2f}</td><td>{s['contact_f1']:.2f}</td></tr>"
-            for i, s in enumerate(samples)
-        )
-        samples_html = f"""
-        <div class="section">
-            <h2>Sample Ranking</h2>
-            <table>
-                <tr><th>Rank</th><th>Sample</th><th>RMSD</th><th>LRMSD</th><th>F1</th></tr>
-                {rows}
-            </table>
-        </div>
-        """
-
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head><title>TinyFold Report: {sample_id}</title></head>
-    <body>
-        <h1>{sample_id}</h1>
-        <h2>RMSD Metrics</h2>
-        <p>Complex: {rmsd['rmsd_complex']:.2f} Å, LRMSD: {rmsd['lrmsd']:.2f} Å</p>
-        <h2>Contacts</h2>
-        <p>Precision: {contacts['precision']:.2f}, Recall: {contacts['recall']:.2f}, F1: {contacts['f1']:.2f}</p>
-        <h2>Viewer</h2>
-        <iframe src="viewer.html" width="100%" height="600"></iframe>
-        {samples_html}
-    </body>
-    </html>
-    """
