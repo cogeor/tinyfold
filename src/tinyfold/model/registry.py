@@ -15,6 +15,22 @@ Usage:
 import importlib
 from typing import Any
 
+# Schedule/noiser factories live in one place (tinyfold.model.diffusion); re-export
+# them here so ``registry`` stays the single import surface without duplicating the
+# tables (the local copies used to drift — they lacked karras/ve).
+from tinyfold.model.diffusion import (
+    create_noiser as create_noiser,
+)
+from tinyfold.model.diffusion import (
+    create_schedule as create_schedule,
+)
+from tinyfold.model.diffusion import (
+    list_noise_types as list_noise_types,
+)
+from tinyfold.model.diffusion import (
+    list_schedules as list_schedules,
+)
+
 # Lazy imports to avoid circular dependencies
 _MODEL_CLASSES: dict[str, str] = {
     # resfold line; resfold_onestep is the supported headline model.
@@ -25,17 +41,6 @@ _MODEL_CLASSES: dict[str, str] = {
     "resfold_e2e": "tinyfold.model.resfold.e2e.ResFoldE2E",
     "resfold_assembler": "tinyfold.model.resfold.assembler.ResFoldAssembler",
     "resfold_onestep": "tinyfold.model.resfold.onestep.ResFoldOneStep",
-}
-
-_SCHEDULE_CLASSES: dict[str, str] = {
-    "cosine": "tinyfold.model.diffusion.CosineSchedule",
-    "linear": "tinyfold.model.diffusion.LinearSchedule",
-}
-
-_NOISER_CLASSES: dict[str, str] = {
-    "gaussian": "tinyfold.model.diffusion.GaussianNoise",
-    "linear_chain": "tinyfold.model.diffusion.LinearChainNoise",
-    "linear_flow": "tinyfold.model.diffusion.LinearChainFlow",
 }
 
 # Cache for loaded classes
@@ -59,16 +64,6 @@ def list_models() -> list[str]:
     return list(_MODEL_CLASSES.keys())
 
 
-def list_schedules() -> list[str]:
-    """Return list of available schedule names."""
-    return list(_SCHEDULE_CLASSES.keys())
-
-
-def list_noise_types() -> list[str]:
-    """Return list of available noise type names."""
-    return list(_NOISER_CLASSES.keys())
-
-
 def create_model(name: str, **kwargs) -> Any:
     """Create a model by name.
 
@@ -90,43 +85,6 @@ def create_model(name: str, **kwargs) -> Any:
     return cls(**kwargs)
 
 
-def create_schedule(name: str, **kwargs) -> Any:
-    """Create a schedule by name.
-
-    Args:
-        name: Schedule name ("cosine" or "linear")
-        **kwargs: Schedule-specific args (e.g., T=50)
-
-    Returns:
-        Schedule object
-    """
-    if name not in _SCHEDULE_CLASSES:
-        available = ", ".join(_SCHEDULE_CLASSES.keys())
-        raise ValueError(f"Unknown schedule: {name}. Available: {available}")
-
-    cls = _load_class(_SCHEDULE_CLASSES[name])
-    return cls(**kwargs)
-
-
-def create_noiser(noise_type: str, schedule: Any, **kwargs) -> Any:
-    """Create a noiser by name.
-
-    Args:
-        noise_type: Noise type name ("gaussian", "linear_chain", "linear_flow")
-        schedule: Schedule object to use
-        **kwargs: Noiser-specific args (e.g., noise_scale)
-
-    Returns:
-        Noiser object
-    """
-    if noise_type not in _NOISER_CLASSES:
-        available = ", ".join(_NOISER_CLASSES.keys())
-        raise ValueError(f"Unknown noise type: {noise_type}. Available: {available}")
-
-    cls = _load_class(_NOISER_CLASSES[noise_type])
-    return cls(schedule, **kwargs)
-
-
 def get_model_class(name: str) -> type:
     """Get model class by name (for inspection without instantiation)."""
     if name not in _MODEL_CLASSES:
@@ -144,13 +102,3 @@ def register_model(name: str, module_path: str):
         module_path: Full module path to class (e.g., "mymodule.MyModel")
     """
     _MODEL_CLASSES[name] = module_path
-
-
-def register_schedule(name: str, module_path: str):
-    """Register a new schedule class."""
-    _SCHEDULE_CLASSES[name] = module_path
-
-
-def register_noiser(name: str, module_path: str):
-    """Register a new noiser class."""
-    _NOISER_CLASSES[name] = module_path
