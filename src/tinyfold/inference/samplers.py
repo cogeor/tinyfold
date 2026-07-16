@@ -36,18 +36,23 @@ def sample_atoms_diffusion(model, tokens, centroids, mask, n_steps=8,
 
 
 def _template_kwargs(batch):
-    """Template forward-kwargs, only when a template is present in the batch.
+    """Pair-track conditioning forward-kwargs present in the batch.
 
-    Returns an empty dict when there is no template, so denoisers that do not
-    accept template kwargs (pipeline stage1, test doubles) are unaffected.
+    Carries BOTH pair priors: retrieved templates and cached coevolution
+    features (msa_feats). Each is added only when present, so denoisers that do
+    not accept these kwargs (pipeline stage1, test doubles) are unaffected when
+    neither is set, and the two priors stay independently ablatable.
     """
-    if batch.get('template_coords_res') is None:
-        return {}
-    return dict(
-        template_coords_res=batch.get('template_coords_res'),
-        template_mask=batch.get('template_mask'),
-        template_frame_id=batch.get('template_frame_id'),
-    )
+    kw = {}
+    if batch.get('template_coords_res') is not None:
+        kw.update(
+            template_coords_res=batch.get('template_coords_res'),
+            template_mask=batch.get('template_mask'),
+            template_frame_id=batch.get('template_frame_id'),
+        )
+    if batch.get('msa_feats') is not None:
+        kw['msa_feats'] = batch.get('msa_feats')
+    return kw
 
 
 @torch.no_grad()
