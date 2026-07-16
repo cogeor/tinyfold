@@ -42,6 +42,7 @@ class ResFoldConfig:
     template_cond: bool = False
     template_rbf: int = 32
     template_d_max: float = 4.0
+    msa_cond: bool = False
     grad_checkpoint: bool = False
     pair_to_single: bool = False
     frame_atom_head: bool = False
@@ -86,6 +87,7 @@ class ResFoldConfig:
             template_cond=cfg.get("template_cond", False),
             template_rbf=cfg.get("template_rbf", 32),
             template_d_max=cfg.get("template_d_max", 4.0),
+            msa_cond=cfg.get("msa_cond", False),
             pair_to_single=cfg.get("pair_to_single", False),
             frame_atom_head=cfg.get("frame_atom_head", False),
             global_scale=(cfg.get("global_scale") or 11.0),

@@ -215,6 +215,7 @@ class ResidueEncoder(nn.Module):
         template_cond: bool = False,
         template_rbf: int = 32,
         template_d_max: float = 4.0,
+        msa_cond: bool = False,
         grad_checkpoint: bool = False,
         pair_to_single: bool = False,
     ):
@@ -224,10 +225,16 @@ class ResidueEncoder(nn.Module):
         self.relpos_bias_enabled = bool(relpos_bias)
         self.pair_repr_enabled = bool(pair_repr)
         self.template_cond_enabled = bool(template_cond)
+        self.msa_cond_enabled = bool(msa_cond)
         self.n_heads = n_heads
         if self.template_cond_enabled and not self.pair_repr_enabled:
             raise ValueError(
                 "template_cond=True requires pair_repr=True (templates are "
+                "injected into the pair track)."
+            )
+        if self.msa_cond_enabled and not self.pair_repr_enabled:
+            raise ValueError(
+                "msa_cond=True requires pair_repr=True (coevolution features are "
                 "injected into the pair track)."
             )
 
@@ -288,6 +295,7 @@ class ResidueEncoder(nn.Module):
                     template_cond=self.template_cond_enabled,
                     template_rbf=template_rbf,
                     template_d_max=template_d_max,
+                    msa_cond=self.msa_cond_enabled,
                     grad_checkpoint=grad_checkpoint,
                     pair_to_single=pair_to_single,
                 )
@@ -321,6 +329,7 @@ class ResidueEncoder(nn.Module):
         template_coords_res: Tensor | None = None,  # [B, L, 4, 3]
         template_mask: Tensor | None = None,        # [B, L]
         template_frame_id: Tensor | None = None,    # [B, L]
+        msa_feats: Tensor | None = None,            # [B, L, L, F_msa]
     ) -> Tensor:
         """Encode residue-level sequence features (NO coordinates).
 
@@ -369,6 +378,7 @@ class ResidueEncoder(nn.Module):
                     template_coords_res=template_coords_res,
                     template_mask=template_mask,
                     template_frame_id=template_frame_id,
+                    msa_feats=msa_feats,
                 )
                 attn_bias = pair_bias if attn_bias is None else attn_bias + pair_bias
                 # Higher-bandwidth pair->single injection (zero-init -> no-op at

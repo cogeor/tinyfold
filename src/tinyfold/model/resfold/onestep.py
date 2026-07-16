@@ -227,6 +227,7 @@ class ResFoldOneStep(BaseDecoder):
         template_cond: bool = False,
         template_rbf: int = 32,
         template_d_max: float = 4.0,
+        msa_cond: bool = False,
         grad_checkpoint: bool = False,
         pair_to_single: bool = False,
         frame_atom_head: bool = False,
@@ -240,6 +241,7 @@ class ResFoldOneStep(BaseDecoder):
         self.c_token = c_token
         self.n_timesteps = n_timesteps
         self.template_cond_enabled = bool(template_cond)
+        self.msa_cond_enabled = bool(msa_cond)
         self.atom_diffusion = bool(atom_diffusion)
         self.atom_sigma_min = float(atom_sigma_min)
         self.atom_sigma_max = float(atom_sigma_max)
@@ -271,6 +273,7 @@ class ResFoldOneStep(BaseDecoder):
             template_cond=template_cond,
             template_rbf=template_rbf,
             template_d_max=template_d_max,
+            msa_cond=msa_cond,
             grad_checkpoint=grad_checkpoint,
             pair_to_single=pair_to_single,
         )
@@ -439,6 +442,7 @@ class ResFoldOneStep(BaseDecoder):
         template_coords_res: Tensor | None = None,
         template_mask: Tensor | None = None,
         template_frame_id: Tensor | None = None,
+        msa_feats: Tensor | None = None,
     ) -> ModelOutput:
         """Continuous-sigma forward (EDM-preconditioned).
 
@@ -458,6 +462,7 @@ class ResFoldOneStep(BaseDecoder):
             template_coords_res=template_coords_res,
             template_mask=template_mask,
             template_frame_id=template_frame_id,
+            msa_feats=msa_feats,
         )
         # The trunk is sequence/template-only; the noised-coord denoise + heads
         # live in the shared _with_trunk core.
@@ -479,6 +484,7 @@ class ResFoldOneStep(BaseDecoder):
         template_coords_res: Tensor | None = None,
         template_mask: Tensor | None = None,
         template_frame_id: Tensor | None = None,
+        msa_feats: Tensor | None = None,
     ) -> tuple[Tensor, Tensor, Tensor | None]:
         """Centroid forward that also returns the denoiser tokens.
 
@@ -494,6 +500,7 @@ class ResFoldOneStep(BaseDecoder):
             template_coords_res=template_coords_res,
             template_mask=template_mask,
             template_frame_id=template_frame_id,
+            msa_feats=msa_feats,
         )
         return self.centroid_tokens_with_trunk(
             x_t, trunk_tokens, sigma, mask, x0_prev,
@@ -599,6 +606,7 @@ class ResFoldOneStep(BaseDecoder):
         template_coords_res: Tensor | None = None,
         template_mask: Tensor | None = None,
         template_frame_id: Tensor | None = None,
+        msa_feats: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         """Discrete-timestep forward (legacy path).
 
@@ -614,6 +622,7 @@ class ResFoldOneStep(BaseDecoder):
             template_coords_res=template_coords_res,
             template_mask=template_mask,
             template_frame_id=template_frame_id,
+            msa_feats=msa_feats,
         )
         cond = self.time_embed(t)
         denoiser_tokens = self._denoiser_tokens(
@@ -635,12 +644,14 @@ class ResFoldOneStep(BaseDecoder):
         template_coords_res: Tensor | None = None,
         template_mask: Tensor | None = None,
         template_frame_id: Tensor | None = None,
+        msa_feats: Tensor | None = None,
     ) -> Tensor:
         return self.trunk(
             aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed,
             template_coords_res=template_coords_res,
             template_mask=template_mask,
             template_frame_id=template_frame_id,
+            msa_feats=msa_feats,
         )
 
     def count_parameters(self) -> dict:
