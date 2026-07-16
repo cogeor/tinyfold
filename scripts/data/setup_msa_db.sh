@@ -20,8 +20,8 @@
 #                                                            ~1 TB for
 #                                                            uniref30+envdb.
 #   colabfold_envdb_202108.db.tar  119.7 GB  taxonomy: NO  <-- USELESS HERE.
-#   uniref90.fasta.gz               29.9 GB  taxonomy: YES (OX=)  ~150 GB db
-#   uniref50.fasta.gz                8.2 GB  taxonomy: YES (OX=)  ~45 GB db
+#   uniref90.fasta.gz               29.9 GB  taxonomy: YES (TaxID=)  ~150 GB db
+#   uniref50.fasta.gz                8.2 GB  taxonomy: YES (TaxID=)  ~45 GB db  <- VERIFIED
 #
 # WHY envdb IS EXCLUDED ON THE MERITS, NOT JUST SIZE: pairing is a JOIN ON
 # TAXONOMY. BFD/metagenomic sequences have no reliable species assignment, so
@@ -94,11 +94,20 @@ if [ "$DB" = "uniref30" ]; then
   echo "NOTE: apply the taxonomy update (uniref30_2302_newtaxonomy.tar.gz, 1.8 GB)"
   echo "      -- without taxonomy this db cannot pair."
 else
+  # Prefer a copy already fetched by download_datasets.py --phase2 rather than
+  # pulling 8.8 GB again.
   if [ ! -f "$FASTA" ]; then
-    echo "Downloading $URL ..."
-    curl -sSL "$URL" | gzip -dc > "$FASTA"
+    if [ -f "${FASTA}.gz" ]; then
+      echo "Using already-downloaded ${FASTA}.gz (decompressing)..."
+      gzip -dc "${FASTA}.gz" > "$FASTA"
+    else
+      echo "Downloading $URL ..."
+      curl -sSL "$URL" | gzip -dc > "$FASTA"
+    fi
   fi
-  # UniRef fasta headers carry 'OX=<taxid>', which a3m.parse_taxid reads.
+  # UniRef fasta headers carry 'TaxID=<taxid>' (NOT UniProtKB's 'OX='), which
+  # a3m.parse_taxid reads. VERIFIED on the real download: 50,000/50,000 headers
+  # parsed (100%). Both spellings are accepted by the parser.
   echo "Building MMseqs db (createdb) ..."
   mmseqs createdb "$FASTA" "$DBPATH"
   echo "Freeing the raw fasta (the db supersedes it) ..."

@@ -24,7 +24,8 @@ Phase 3: ``final_raw_dips.tar.gz`` (15.69 GB, Zenodo 8140981, md5-verified).
 Phase 2: ``uniref50.fasta.gz`` (8.80 GB) -- the taxonomy-bearing sequence db.
   UniRef50 rather than UniRef30 (99.4 GB, extracted size unverified, ColabFold
   states ~1 TB for uniref30+envdb) because it fits comfortably and its headers
-  carry ``OX=<taxid>``, which is all pairing needs. Move up the ladder only if
+  carry ``TaxID=<taxid>``, which is all pairing needs (VERIFIED on the real
+  download: 50,000/50,000 headers parsed). Move up the ladder only if
   Step 0 says depth is the limiter.
 
 DISK BUDGET (measured 2026-07-16: 244 GB free)
@@ -190,7 +191,7 @@ def do_phase2(dest: Path, plan_only: bool) -> int:
     size = remote_size(UNIREF50_URL)
     print(f"  target: uniref50.fasta.gz ({human(size or 0)})")
     print("  (UniRef30 is 99.4 GB with unverified extracted size; UniRef50 "
-          "headers carry OX=<taxid>, which is all pairing needs)")
+          "headers carry TaxID=<taxid>, which is all pairing needs)")
     if plan_only:
         return 0
     # Download + later createdb needs room for fasta (~30 GB) + db (~45 GB).

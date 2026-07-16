@@ -74,9 +74,22 @@ class TestParseTaxid:
     def test_uniref_taxid_field(self):
         assert parse_taxid("UniRef100_A n=1 Tax=Homo sapiens TaxID=9606 RepID=X") == 9606
 
+    def test_real_uniref50_header(self):
+        # VERBATIM from the downloaded uniref50.fasta.gz (2026-07-16). UniRef
+        # fasta uses TaxID=, NOT UniProtKB's OX= -- do not "simplify" the parser
+        # to only one spelling. Verified 50,000/50,000 real headers parse.
+        h = ("UniRef50_A0A5A9P0L4 peptidylprolyl isomerase n=1 "
+             "Tax=Triplophysa tibetana TaxID=1572043 RepID=A0A5A9P0L4_9TELE")
+        assert parse_taxid(h) == 1572043
+
     def test_uniprot_ox_field(self):
-        # UniProt-style fasta headers use OX= instead of TaxID=.
+        # UniProtKB-style fasta headers use OX= instead of TaxID=.
         assert parse_taxid("sp|P1|N_HUMAN Desc OS=Homo sapiens OX=9606 GN=X") == 9606
+
+    def test_tax_name_does_not_confuse_taxid(self):
+        # 'Tax=' (species NAME) precedes 'TaxID=' in real headers; the parser
+        # must not latch onto the wrong field.
+        assert parse_taxid("x Tax=Homo sapiens TaxID=9606 y") == 9606
 
     def test_missing_taxonomy_returns_none(self):
         # This is the BFD/DIPS-Plus case: no taxonomy => unpairable.
