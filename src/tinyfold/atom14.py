@@ -175,3 +175,61 @@ def restype_alt_permutation() -> np.ndarray:
         out[i] = alt_atom14_permutation(aa1)
     out[len(AA_CODES)] = np.arange(NUM_ATOM14)
     return out
+
+
+NUM_CHI = 4
+
+
+def chi_atom14_indices(aa: str) -> np.ndarray:
+    """``[4, 4]`` int64 atom14 slot indices for this residue's chi1..chi4.
+
+    Row k holds the four atom14 slots whose dihedral IS chi_(k+1) (order matters:
+    the dihedral is measured a-b-c-d). Rows for chis this residue does not have
+    are zero-filled and flagged absent by :func:`chi_mask`.
+    """
+    aa3 = aa if len(aa) == 3 else aa1_to_aa3(aa)
+    names = atom14_names(aa3)
+    out = np.zeros((NUM_CHI, 4), dtype=np.int64)
+    for k, atoms in enumerate(CHI_ANGLES_ATOMS.get(aa3, [])):
+        out[k] = [names.index(a) for a in atoms]
+    return out
+
+
+def chi_mask(aa: str) -> np.ndarray:
+    """``[4]`` bool: which of chi1..chi4 this residue type defines."""
+    aa3 = aa if len(aa) == 3 else aa1_to_aa3(aa)
+    m = np.zeros(NUM_CHI, dtype=bool)
+    m[: len(CHI_ANGLES_ATOMS.get(aa3, []))] = True
+    return m
+
+
+def restype_chi_atom14_indices() -> np.ndarray:
+    """``[21, 4, 4]`` int64 chi atom14 slots over the project's AA index order."""
+    out = np.zeros((len(AA_CODES) + 1, NUM_CHI, 4), dtype=np.int64)
+    for i, aa1 in enumerate(AA_CODES):
+        out[i] = chi_atom14_indices(aa1)
+    out[len(AA_CODES)] = chi_atom14_indices("GLY")
+    return out
+
+
+def restype_chi_mask() -> np.ndarray:
+    """``[21, 4]`` bool chi presence over the project's AA index order (X -> GLY)."""
+    out = np.zeros((len(AA_CODES) + 1, NUM_CHI), dtype=bool)
+    for i, aa1 in enumerate(AA_CODES):
+        out[i] = chi_mask(aa1)
+    out[len(AA_CODES)] = chi_mask("GLY")
+    return out
+
+
+def restype_chi_pi_periodic() -> np.ndarray:
+    """``[21, 4]`` bool: chi angles that are symmetric under a 180-degree flip.
+
+    Variant-A (torsion) symmetry: a torsion-space loss must treat these chis
+    mod pi (ASP chi2, GLU chi3, PHE/TYR chi2). Distinct from the atom-renaming
+    swaps used by the offset loss -- see the module docstring.
+    """
+    out = np.zeros((len(AA_CODES) + 1, NUM_CHI), dtype=bool)
+    for i, aa1 in enumerate(AA_CODES):
+        out[i] = CHI_PI_PERIODIC[aa1_to_aa3(aa1)]
+    out[len(AA_CODES)] = CHI_PI_PERIODIC["GLY"]
+    return out
