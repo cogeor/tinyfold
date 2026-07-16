@@ -87,7 +87,7 @@ def iter_dills_from_tar(tar_path: Path) -> Iterator[tuple[str, Any]]:
 
             try:
                 yield meta["sample_id"], dill.load(fh)
-            except Exception as exc:  # noqa: BLE001 - one bad member must not kill the run
+            except Exception as exc:
                 print(f"  {meta['sample_id']}: {type(exc).__name__}: {exc} -- skipped")
 
 
@@ -190,7 +190,7 @@ def main() -> int:
                     continue
                 try:
                     yield meta["sample_id"], load_dips_pair(path)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     print(f"  {path.name}: {type(exc).__name__}: {exc} -- skipped")
 
         source = _iter_dir(dills)
@@ -210,7 +210,7 @@ def main() -> int:
         try:
             a = extract_atom14_from_dataframe(pair.df0)
             b = extract_atom14_from_dataframe(pair.df1)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             print(f"  {sample_id}: {type(exc).__name__}: {exc} -- skipped")
             skipped += 1
             continue
