@@ -43,6 +43,7 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 from torch import Tensor
 
+from ...msa.features import msa_feat_dim
 from ...retrieval.template_features import (
     build_template_pair_features,
     template_feat_dim,
@@ -145,6 +146,7 @@ class PairTrack(nn.Module):
         template_cond: bool = False,
         template_rbf: int = 32,
         template_d_max: float = 4.0,
+        msa_cond: bool = False,
         grad_checkpoint: bool = False,
         pair_to_single: bool = False,
     ):
@@ -180,6 +182,20 @@ class PairTrack(nn.Module):
             nn.init.zeros_(self.template_proj.bias)
         else:
             self.template_proj = None
+
+        # Coevolution conditioning: the MIRROR of the template path above.
+        # Templates and coevolution are complementary priors on the SAME pair
+        # bus (spec §3): templates rescue homolog-rich but MSA-shallow targets,
+        # coevolution rescues MSA-deep but analog-poor ones. They are additive
+        # (z += template_proj(...) + msa_proj(...)) and, being zero-init, each
+        # is independently ablatable and a byte-exact no-op at step 0.
+        self.msa_cond = bool(msa_cond)
+        if self.msa_cond:
+            self.msa_proj = nn.Linear(msa_feat_dim(), c_pair)
+            nn.init.zeros_(self.msa_proj.weight)
+            nn.init.zeros_(self.msa_proj.bias)
+        else:
+            self.msa_proj = None
 
         self.blocks = nn.ModuleList(
             [
@@ -240,6 +256,7 @@ class PairTrack(nn.Module):
         template_coords_res: Tensor = None,  # [B, L, 4, 3] template backbone (normalized units)
         template_mask: Tensor = None,        # [B, L] bool coverage
         template_frame_id: Tensor = None,    # [B, L] long rigid-group id
+        msa_feats: Tensor = None,            # [B, L, L, F_msa] coevolution pair features
     ):
         """Return ``(attn_bias [B, n_heads, L, L], single_update or None)``.
 
@@ -251,6 +268,12 @@ class PairTrack(nn.Module):
         added into the pair channel before the triangle blocks. If templates are
         enabled but not supplied for this call, the template term is skipped
         (equivalent to a fully-uncovered template).
+
+        ``msa_feats`` is the same story for coevolution: precomputed
+        ``[B, L, L, F_msa]`` APC-corrected couplings added into the same pair
+        channel. Unlike templates these are NOT built here -- they need the MSA,
+        so they are cached offline (see :mod:`tinyfold.msa.features`). Omitting
+        them is equivalent to a zero-depth MSA.
         """
         pair_mask = mask.unsqueeze(2) & mask.unsqueeze(1)  # [B, L, L]
 
@@ -272,6 +295,10 @@ class PairTrack(nn.Module):
                 d_max=self.template_d_max,
             )
             z = z + self.template_proj(tmpl_feats)
+
+        # Coevolution term: additive on the same bus, independent of templates.
+        if self.msa_proj is not None and msa_feats is not None:
+            z = z + self.msa_proj(msa_feats.to(z.dtype))
 
         z = z * pair_mask.unsqueeze(-1).to(z.dtype)
 
