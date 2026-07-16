@@ -16,8 +16,14 @@ We deliberately fetch ONLY that file. The record also ships
 which is useless to us: BFD carries no taxonomy, so those MSAs cannot be paired
 across chains (plan §B4). Downloading it would waste 11 GB.
 
-Output: one .npz per sample_id with coords [L,14,3] fp16 + mask [L,14].
-Cheap -- ~84 B/residue, ~1.9 GB for the full 22.03 M residues.
+Output: one .npz per sample_id with coords [L,14,3] fp32 + mask [L,14].
+Cheap -- measured ~0.01 GB per 366 complexes compressed, so ~2 GB for the full
+41,883 (22.03 M residues). See the fp32 note at the write site: fp16 would halve
+that but costs a 0.03 A systematic error floor against a 0.5 A gate.
+
+NOTE ON RUNTIME: extraction is ~0.35 s/complex (the per-residue iterrows() in
+the extractor dominates), so a full rebuild is ~4 hours single-process. It is
+resumable -- existing .npz are skipped -- and --limit exists for slices.
 
 START HERE (costs nothing, validates the premise before the 14.6 GB download):
     uv run python scripts/data/prepare_atom14.py --verify-only --data-dir data/raw
@@ -153,11 +159,17 @@ def main() -> int:
             skipped += 1
             continue
 
-        coords = np.concatenate([a.coords, b.coords], axis=0).astype(np.float16)
+        # fp32, NOT fp16. These are RAW PDB coordinates (~100 A magnitude), where
+        # fp16's ulp is ~0.06 A -- measured against samples.parquet, fp16 storage
+        # alone cost up to 0.031 A on CA. That is 6% of the stage-3 overfit gate
+        # (sidechain RMSD < 0.5 A) as a pure systematic floor, for a saving of
+        # ~1 GB on a ~2 GB cache. Not worth it. (The ESM cache can afford fp16
+        # because embeddings are O(1); coordinates here are not centred.)
+        coords = np.concatenate([a.coords, b.coords], axis=0).astype(np.float32)
         mask = np.concatenate([a.mask, b.mask], axis=0)
         np.savez_compressed(
             out,
-            coords_atom14=coords,                       # [L, 14, 3] fp16
+            coords_atom14=coords,                       # [L, 14, 3] fp32
             mask_atom14=mask,                           # [L, 14] bool
             seq_indices=np.concatenate([a.seq_indices, b.seq_indices]),
             LA=np.int32(len(a.sequence)),
