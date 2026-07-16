@@ -1,0 +1,92 @@
+# Coevolution A/B (FAST le240 first cut) — ARM A1: + coevolution (the treatment).
+#
+# The immediate next experiment: fastest, most sensitive confirmation of whether
+# cross-chain coevolution carries usable interface signal. Design choices (per the
+# "get to a result as fast as possible, cut when good enough" directive):
+#   * SMALLEST set only: le240 (<=240 res), 5K train samples, eval on le240.
+#   * NOTEMPLATE pair-track baseline (not template-additive): a weaker baseline
+#     leaves MORE headroom for the coev delta -> a more sensitive, faster test than
+#     stacking coev on strong templates. Matches retr_6M_le240_notemplate exactly.
+#   * eff-batch 32 (batch 8 x accum 4) -- the PROVEN pair-track le240 recipe that
+#     converges properly (oracle's batch 4 converges only because the template IS
+#     the answer). Cutting eff-batch would undertrain and hide the signal.
+#   * n_steps 20000 (cut from 36000): the scale_6M_le240 curve reaches DockQ ~0.15
+#     and its plateau ONSET by ~18-21k; the last third gains only ~0.02. eval_every
+#     2000 (10 evals) so the run can be KILLED the moment A0/A1 clearly separate or
+#     clearly converge together.
+#
+# A1 (coev_le240_A1_coev) is byte-identical EXCEPT msa_cond + msa_cache_dir, so the
+# A/B isolates the coevolution prior. Follow-up (only if this shows signal): the
+# template-additive coev_6M_le{240,400,600}_{template,template_coev} set.
+
+model_kind: onestep
+mode: stage1_only
+
+n_train: 5000
+n_test: 200
+n_eval_train: 200
+min_atoms: 0
+max_atoms: 960
+batch_size: 8
+grad_accum: 4
+dynamic_batch: false
+use_bucketing: false
+
+n_steps: 20000
+eval_every: 2000
+lr: 1.0e-04
+min_lr: 1.0e-05
+seed: 42
+
+c_token_s1: 192
+trunk_layers: 6
+denoiser_blocks: 6
+atom_head_layers: 2
+atom_head_heads: 4
+
+aa_embed: esm2_35M
+per_chain_res_idx: true
+
+global_scale: 11.0
+crop_strategy: none
+relpos_bias: true
+relpos_clip: 32
+pair_repr: true
+c_pair: 64
+pair_layers: 3
+pair_hidden: 64
+
+# --- Templates OFF, coevolution ON (treatment) ---
+template_cond: false
+template_source: none
+msa_cond: true
+msa_cache_dir: data/processed/msa_feats
+
+T: 50
+continuous_sigma: true
+sigma_data: 1.0
+sigma_min: 0.002
+sigma_max: 10.0
+
+confidence_head: true
+confidence_head_weight: 0.1
+rank_by: self_consistency
+
+loss_weighting: true
+augment_rotation: true
+multi_copy: 0
+self_cond_prob: 0.0
+dist_weight: 0.1
+geom_weight: 0.1
+contact_weight: 0.0
+atom_weight: 0.5
+atom_warmup_steps: 500
+
+one_shot_sample: true
+n_samples: 20
+eval_K_list: "1,5,20"
+cluster_radius: 5.0
+
+eval_train_dockq: true
+
+output_dir: outputs/resfold/coev_le240_A1_coev
