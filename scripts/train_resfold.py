@@ -85,6 +85,7 @@ from tinyfold.training import (
     random_rotation_matrix,
 )
 from tinyfold.training.eval import sample_centroids_continuous, summarize_eval_metrics
+from tinyfold.training.objective import atom_loss_ramp
 from tinyfold.training.registry_append import append_registry_row
 from tinyfold.training.run_naming import generate_run_name
 from tinyfold.training.utils import edm_loss_weight
@@ -366,6 +367,15 @@ def parse_args():
                         help="Weight on atom-MSE loss (onestep only)")
     parser.add_argument("--atom_warmup_steps", type=int, default=500,
                         help="Linear warmup steps for the atom-MSE weight (onestep only)")
+    parser.add_argument("--atom_start_step", type=int, default=0,
+                        help="Step at which the atom loss first enters (onestep only). "
+                             "0 (default) = legacy schedule (ramp from step 0). A "
+                             "positive value lets the centroid stage converge first, "
+                             "THEN anneals atoms in over --atom_warmup_steps -- the "
+                             "loss-balance lever for the measured 'atom loss slows "
+                             "centroid convergence' effect. Do NOT instead detach the "
+                             "atom conditioning: that was measured much worse for "
+                             "atoms (0.32 A -> 1.14 A).")
 
     # Model - OneStep confidence head (Loop 06 — optional per-target lDDT regressor
     # for multi-sample ranking at eval; small weight by default so a noisy
@@ -1558,9 +1568,12 @@ def _run_training(args, progress):
                             batch['mask_atom'], use_kabsch=False, reduction='per_sample',
                         )
                         atom_loss_t = (per_sample_atom * lam_a).mean()
-                        warmup = args.atom_warmup_steps
-                        ramp = min(1.0, float(step) / float(warmup)) if warmup > 0 else 1.0
-                        alpha_atom = ramp * args.atom_weight
+                        alpha_atom = atom_loss_ramp(
+                            step,
+                            weight=args.atom_weight,
+                            warmup_steps=args.atom_warmup_steps,
+                            start_step=getattr(args, "atom_start_step", 0),
+                        )
                         loss = loss + alpha_atom * atom_loss_t
                         loss_atom = atom_loss_t.item()
                         atoms_pred_ad = cen_anchor.unsqueeze(2) + delta_pred   # GT centroid + pred offset (same frame)

@@ -14,6 +14,41 @@ import torch
 LossFn = Callable[..., torch.Tensor]
 
 
+def atom_loss_ramp(
+    step: int,
+    *,
+    weight: float,
+    warmup_steps: int,
+    start_step: int = 0,
+) -> float:
+    """Weight on the atom-diffusion loss at ``step`` (linear warmup).
+
+    The atom stage shares the trunk with the centroid stage, so its gradient
+    competes with centroid convergence. This is a loss-BALANCE knob: it shapes
+    how much atom gradient enters over time WITHOUT detaching the conditioning
+    (detaching was measured decisively worse for atoms: 0.32 A -> 1.14 A).
+
+    Args:
+        step:         current global training step.
+        weight:       target weight once warmed up (``--atom_weight``).
+        warmup_steps: linear ramp length. ``<= 0`` applies ``weight`` at once.
+        start_step:   step at which the atom loss first enters. ``0`` (default)
+                      reproduces the original schedule; a positive value lets
+                      centroids converge first, then anneals atoms in.
+
+    Returns:
+        The scalar weight in ``[0, weight]``, non-decreasing in ``step``.
+    """
+    if start_step < 0:
+        raise ValueError(f"start_step must be >= 0, got {start_step}")
+    if step < start_step:
+        return 0.0
+    if warmup_steps <= 0:
+        return weight
+    ramp = min(1.0, (step - start_step) / warmup_steps)
+    return ramp * weight
+
+
 @dataclass(frozen=True)
 class LossTerm:
     """A named objective term with an optional scalar weight."""
