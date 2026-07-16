@@ -35,6 +35,10 @@ def main() -> int:
     ap.add_argument("--parquet", type=Path, default=Path("data/processed/samples.parquet"))
     ap.add_argument("--split", type=Path, default=None,
                     help="split json; omit to use the whole dataset (22,293 chains)")
+    ap.add_argument("--subset", choices=["all", "train", "test"], default="all",
+                    help="with --split: which ids to include. 'test' is the "
+                         "Step-0 workload (~200 complexes), far cheaper to search "
+                         "than the full train+test set.")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--index-out", type=Path, default=None,
                     help="also write {sample_id: [key_a, key_b]} json for the feature step")
@@ -43,7 +47,12 @@ def main() -> int:
     df = pd.read_parquet(args.parquet, columns=["sample_id", "seq", "LA", "LB"])
     if args.split:
         split = json.loads(args.split.read_text())
-        ids = set(split["train_ids"]) | set(split["test_ids"])
+        if args.subset == "train":
+            ids = set(split["train_ids"])
+        elif args.subset == "test":
+            ids = set(split["test_ids"])
+        else:
+            ids = set(split["train_ids"]) | set(split["test_ids"])
         df = df[df.sample_id.isin(ids)]
 
     complexes = [
