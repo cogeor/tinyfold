@@ -39,22 +39,29 @@ DB="${1:-uniref50}"
 DEST="${2:-data/msa_db}"
 THREADS="$(nproc 2>/dev/null || echo 8)"
 
+# INSTALLED 2026-07-16: mmseqs avx2 static build at ~/mmseqs/bin (WSL2 Ubuntu),
+# on PATH via ~/.bashrc. No sudo, no Docker. Functionally smoke-tested.
+#
+# WSL NETWORKING IS BROKEN ON THIS HOST: DNS resolves but ALL outbound HTTPS from
+# inside WSL times out (verified against github.com, mmseqs.com, ftp.uniprot.org).
+# So the mmseqs binary AND the uniref50 fasta had to be downloaded on the WINDOWS
+# side and handed to WSL via /mnt/c. Consequences encoded below:
+#   * This script must NEVER curl from inside WSL -- it will hang.
+#   * The fasta is read from /mnt/c (Windows-downloaded) but the DB is BUILT ON
+#     ext4 (~/msa_db): /mnt/c is slow for random IO and mmseqs search hammers it.
 command -v mmseqs >/dev/null 2>&1 || {
   cat <<'EOF'
-ERROR: mmseqs not found.
+ERROR: mmseqs not found on PATH.
 
-MMseqs2 is not installed on the host and Foldseek/MMseqs2 have no clean Windows
-build -- but WSL2 Ubuntu IS available on this machine, which removes the old
-objection recorded in the retrieval BUILD-REPORT (D1). Install inside WSL:
+It was installed at ~/mmseqs/bin (WSL2 Ubuntu, avx2 static build). Put it back
+on PATH:
+    export PATH=$HOME/mmseqs/bin:$PATH
 
-    wsl -d Ubuntu
-    sudo apt-get update && sudo apt-get install -y mmseqs2
-    # or the static build:
-    # wget https://mmseqs.com/latest/mmseqs-linux-avx2.tar.gz
-    # tar xzf mmseqs-linux-avx2.tar.gz && export PATH=$PWD/mmseqs/bin:$PATH
-
-Then re-run this script from inside WSL. Note /mnt/c is slow for random IO --
-prefer a DB path on the WSL ext4 filesystem if you have room.
+If it is genuinely gone, WSL outbound network is dead on this host, so DO NOT
+curl from inside WSL. Download on the Windows side and copy in:
+    # (Windows) curl -fsSL -o mmseqs.tgz \
+    #   https://github.com/soedinglab/MMseqs2/releases/latest/download/mmseqs-linux-avx2.tar.gz
+    # (WSL) tar xzf /mnt/c/path/to/mmseqs.tgz -C ~ && export PATH=$HOME/mmseqs/bin:$PATH
 EOF
   exit 1
 }
