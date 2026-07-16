@@ -124,39 +124,75 @@ def dedup_by_sequence(records: list[MsaRecord]) -> list[MsaRecord]:
     return out
 
 
-def _encode(seqs: list[str]) -> np.ndarray:
-    """[N, L] uint8 of raw byte codes."""
-    return np.frombuffer("".join(seqs).encode(), dtype=np.uint8).reshape(len(seqs), -1)
+# --- MSA encoding + redundancy reweighting ---------------------------------
+# 20 standard amino acids + gap. Anything else (X, B, Z, U, ...) folds into the
+# gap state: unknown residues carry no coevolution signal.
+MSA_ALPHABET = "ACDEFGHIKLMNPQRSTVWY-"
+MSA_GAP_IDX = 20
+MSA_NUM_STATES = 21
 
 
-def neff(seqs: list[str], identity_threshold: float = 0.8) -> float:
-    """Effective sequence count: sum_i 1 / |{j : seqid(i, j) > threshold}|.
+def _lookup_table() -> np.ndarray:
+    """byte value -> state index; everything unmapped -> gap."""
+    table = np.full(256, MSA_GAP_IDX, dtype=np.uint8)
+    for i, ch in enumerate(MSA_ALPHABET):
+        table[ord(ch)] = i
+        table[ord(ch.lower())] = i
+    return table
 
-    The standard MSA-depth statistic. A deep-but-redundant alignment (many near
-    copies) has a LOW Neff and carries little coevolution signal -- which is
-    exactly what Step 0 needs to measure.
 
-    Gaps never count as a match, so an all-gap row is dissimilar to everything.
+_LOOKUP = _lookup_table()
 
-    O(N^2 L). Fine for the Step-0 sample; cap N before calling on deep MSAs.
-    """
+
+def encode_msa(seqs: list[str]) -> np.ndarray:
+    """``[N, L]`` uint8 state indices (20 = gap/unknown)."""
     if not seqs:
-        return 0.0
-    arr = _encode(seqs)
-    n, length = arr.shape
-    if length == 0:
-        return float(n)
+        raise ValueError("empty MSA")
+    lengths = {len(s) for s in seqs}
+    if len(lengths) != 1:
+        raise ValueError(f"ragged MSA: row lengths {sorted(lengths)}")
+    raw = np.frombuffer("".join(seqs).encode(), dtype=np.uint8)
+    return _LOOKUP[raw].reshape(len(seqs), -1)
 
-    gap = ord("-")
-    is_res = arr != gap
-    # same[i, j] = # positions where i and j carry the SAME non-gap residue.
-    weights = np.empty(n, dtype=np.float64)
+
+def sequence_weights(codes: np.ndarray, identity_threshold: float = 0.8) -> np.ndarray:
+    """``w[n] = 1 / |{m : seqid(n, m) > threshold}|`` -- redundancy reweighting.
+
+    A database dump is dominated by near-duplicate orthologs; without
+    reweighting, 100 copies of one sequence would masquerade as 100 independent
+    observations. This is the single weighting used BOTH for reported depth
+    (:func:`neff`) and for the coevolution statistics, so the depth a Step-0
+    report quotes is the depth the features actually saw.
+
+    Gaps never count as a match. O(N^2 L) -- cap N before calling.
+    """
+    n, length = codes.shape
+    if length == 0:
+        return np.ones(n, dtype=np.float64)
+    is_res = codes != MSA_GAP_IDX
+    w = np.empty(n, dtype=np.float64)
     for i in range(n):
-        same = (arr[i] == arr) & is_res[i] & is_res
+        # same[m] = # positions where n and m carry the SAME non-gap residue.
+        same = (codes[i] == codes) & is_res[i] & is_res
         ident = same.sum(axis=1) / length
         # A row is always its own neighbour, even when it shares no residue
         # identity with anything (e.g. an all-gap row, whose self-identity is 0
         # because gaps never match). Without the floor such a row would divide
         # by zero instead of forming its own cluster.
-        weights[i] = 1.0 / max(int(np.count_nonzero(ident > identity_threshold)), 1)
-    return float(weights.sum())
+        w[i] = 1.0 / max(int(np.count_nonzero(ident > identity_threshold)), 1)
+    return w
+
+
+def neff(seqs: list[str], identity_threshold: float = 0.8) -> float:
+    """Effective sequence count = sum of :func:`sequence_weights`.
+
+    The standard MSA-depth statistic. A deep-but-redundant alignment (many near
+    copies) has a LOW Neff and carries little coevolution signal -- which is
+    exactly what Step 0 needs to measure.
+    """
+    if not seqs:
+        return 0.0
+    codes = encode_msa(seqs)
+    if codes.shape[1] == 0:
+        return float(codes.shape[0])
+    return float(sequence_weights(codes, identity_threshold).sum())
