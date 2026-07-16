@@ -112,11 +112,30 @@ else
       curl -sSL "$URL" | gzip -dc > "$FASTA"
     fi
   fi
+  # Verify the fasta decompressed FULLY before createdb. HARD-WON: reading the
+  # .gz off the slow /mnt/c and starting createdb too early produced a db whose
+  # HEADER file (${DB}_db_h) was 0 bytes -- search still ran but convertalis /
+  # result2msa died ("Invalid database read for ..._h"), i.e. NO taxonomy, i.e.
+  # no pairing. The failure was silent until the a3m step. So: count seqs first.
+  nseq=$(grep -c '^>' "$FASTA")
+  echo "fasta: $(du -h "$FASTA" | cut -f1), ${nseq} sequences"
+  [ "$nseq" -gt 1000000 ] || { echo "ERROR: only ${nseq} seqs -- fasta looks truncated" >&2; exit 1; }
+
   # UniRef fasta headers carry 'TaxID=<taxid>' (NOT UniProtKB's 'OX='), which
   # a3m.parse_taxid reads. VERIFIED on the real download: 50,000/50,000 headers
   # parsed (100%). Both spellings are accepted by the parser.
   echo "Building MMseqs db (createdb) ..."
   mmseqs createdb "$FASTA" "$DBPATH"
+
+  # Verify BOTH the sequence db AND the header db (taxonomy) are non-empty. An
+  # empty ${DB}_db_h is the exact corruption above and must fail loudly here,
+  # not three steps later at the a3m.
+  for suffix in "" "_h"; do
+    f="${DBPATH}${suffix}"
+    s=$(stat -c%s "$f" 2>/dev/null || echo 0)
+    echo "  ${f}: ${s} bytes"
+    [ "$s" -gt 0 ] || { echo "ERROR: ${f} is empty -- createdb corrupt, rerun" >&2; exit 1; }
+  done
   echo "Freeing the raw fasta (the db supersedes it) ..."
   rm -f "$FASTA"
 fi
