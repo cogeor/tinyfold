@@ -38,7 +38,10 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tarfile
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -57,6 +60,35 @@ from tinyfold.data.sources.dips_plus import (
 )
 
 RAW_ARCHIVE = "final_raw_dips.tar.gz"
+
+
+def iter_dills_from_tar(tar_path: Path) -> Iterator[tuple[str, Any]]:
+    """Stream (sample_id, pair) straight out of the .tar.gz -- never extract it.
+
+    MEASURED: the archive compresses ~6x, so extracting all of it would land
+    ~90 GB of dill files on disk (against ~244 GB free) purely to read each one
+    once and throw it away. Members are decompressed sequentially in memory and
+    only the ~2 GB atom14 cache is written.
+
+    Sequential access only -- do not seek. A .tar.gz has no index, so random
+    access would re-decompress from the start for every member.
+    """
+    with tarfile.open(tar_path, "r|gz") as tar:   # '|' = pure stream, no seeking
+        for member in tar:
+            if not member.isfile() or not member.name.endswith(".dill"):
+                continue
+            meta = parse_dips_dill_filename(Path(member.name))
+            if meta is None:
+                continue
+            fh = tar.extractfile(member)
+            if fh is None:
+                continue
+            import dill
+
+            try:
+                yield meta["sample_id"], dill.load(fh)
+            except Exception as exc:  # noqa: BLE001 - one bad member must not kill the run
+                print(f"  {meta['sample_id']}: {type(exc).__name__}: {exc} -- skipped")
 
 
 def download_raw_only(dest: Path) -> None:
@@ -112,10 +144,15 @@ def verify_sidechains(data_dir: Path, n: int = 3) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--data-dir", type=Path, default=Path("data/raw"))
+    ap.add_argument("--data-dir", type=Path, default=Path("data/raw"),
+                    help="directory of extracted .dill files")
+    ap.add_argument("--from-tar", type=Path, default=None,
+                    help=f"stream members straight out of {RAW_ARCHIVE} instead of "
+                         "reading an extracted tree. PREFERRED: the archive expands "
+                         "~6x (~90 GB), and this never lands it on disk.")
     ap.add_argument("--out-dir", type=Path, default=Path("data/processed/atom14"))
     ap.add_argument("--download", action="store_true",
-                    help=f"fetch + extract {RAW_ARCHIVE} (14.62 GB) first")
+                    help=f"fetch + extract {RAW_ARCHIVE} (15.69 GB) first")
     ap.add_argument("--verify-only", action="store_true",
                     help="check the source carries sidechains, then stop")
     ap.add_argument("--limit", type=int, default=None)
@@ -128,33 +165,52 @@ def main() -> int:
     if args.verify_only:
         return verify_sidechains(args.data_dir)
 
-    dills = list(find_dips_dill_files(args.data_dir))
-    if not dills:
-        print(f"No .dill files under {args.data_dir}. Run with --download first.")
-        return 1
-    if args.limit:
-        dills = dills[: args.limit]
+    if args.from_tar:
+        if not args.from_tar.exists():
+            print(f"{args.from_tar} not found. Fetch it with:\n"
+                  f"  uv run python scripts/data/download_datasets.py --phase3")
+            return 1
+        print(f"streaming from {args.from_tar} ({args.from_tar.stat().st_size / 1e9:.2f} GB)")
+        source = iter_dills_from_tar(args.from_tar)
+        n_total = None
+    else:
+        dills = list(find_dips_dill_files(args.data_dir))
+        if not dills:
+            print(f"No .dill files under {args.data_dir}. Run with --download, or "
+                  f"pass --from-tar {args.data_dir / RAW_ARCHIVE}.")
+            return 1
+        if args.limit:
+            dills = dills[: args.limit]
+        n_total = len(dills)
+
+        def _iter_dir(paths):
+            for path in paths:
+                meta = parse_dips_dill_filename(path)
+                if meta is None:
+                    continue
+                try:
+                    yield meta["sample_id"], load_dips_pair(path)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  {path.name}: {type(exc).__name__}: {exc} -- skipped")
+
+        source = _iter_dir(dills)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     done = skipped = 0
     total_res = total_sc = 0
     total_bytes = 0
 
-    for path in dills:
-        meta = parse_dips_dill_filename(path)
-        if meta is None:
-            skipped += 1
-            continue
-        sample_id = meta["sample_id"]
+    for sample_id, pair in source:
+        if args.limit and done >= args.limit:
+            break
         out = args.out_dir / f"{sample_id}.npz"
         if out.exists() and not args.overwrite:
             done += 1
             continue
         try:
-            pair = load_dips_pair(path)
             a = extract_atom14_from_dataframe(pair.df0)
             b = extract_atom14_from_dataframe(pair.df1)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             print(f"  {sample_id}: {type(exc).__name__}: {exc} -- skipped")
             skipped += 1
             continue
@@ -180,7 +236,8 @@ def main() -> int:
         total_bytes += out.stat().st_size
         done += 1
         if done % 500 == 0:
-            print(f"  {done}/{len(dills)} ({total_bytes / 1e9:.2f} GB)")
+            of = f"/{n_total}" if n_total else ""
+            print(f"  {done}{of} ({total_bytes / 1e9:.2f} GB)", flush=True)
 
     print(f"\ncached  : {done}")
     print(f"skipped : {skipped}")
