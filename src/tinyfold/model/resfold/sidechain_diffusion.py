@@ -111,6 +111,7 @@ class SidechainDiffusionHead(nn.Module):
         sigma_data: float = 0.35,
         n_restypes: int = 21,
         use_tokens: bool = True,
+        backbone_cond: bool = False,
     ):
         super().__init__()
         self.c_token = c_token
@@ -119,6 +120,19 @@ class SidechainDiffusionHead(nn.Module):
 
         self.coord_in = nn.Linear(NUM_SIDECHAIN_SLOTS * 3, c_token)
         self.restype_emb = nn.Embedding(n_restypes, c_token)
+
+        # Backbone conditioning: the strong per-residue signal a standalone packer
+        # needs. When denoising jointly, attention mixes every residue's NOISED
+        # sidechain state, so at high sigma each prediction is corrupted by the
+        # others' noise unless a dominant per-residue signal is present. The trunk
+        # token h_i plays that role for AtomDiffusionHead; here the frozen backbone
+        # geometry (4 atoms/residue, in a per-complex-centered frame) supplies it,
+        # exactly the "i's backbone frame + identity" conditioning of spec §5.
+        self.backbone_cond = bool(backbone_cond)
+        if self.backbone_cond:
+            self.bb_enc = nn.Sequential(
+                nn.Linear(4 * 3, c_token), nn.SiLU(), nn.Linear(c_token, c_token)
+            )
         self.sigma_mlp = nn.Sequential(
             nn.Linear(c_token, c_token), nn.SiLU(), nn.Linear(c_token, c_token)
         )
@@ -155,6 +169,24 @@ class SidechainDiffusionHead(nn.Module):
         emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
         return self.sigma_mlp(emb)  # [B, c_token]
 
+    def _pos_embed(self, length: int, device) -> Tensor:
+        """Sinusoidal positional encoding by residue index -> [L, c_token].
+
+        Without this the residue TransformerEncoder is permutation-invariant, so
+        two residues of the same type get identical conditioning (restype + sigma)
+        and the head can only ever predict the per-restype MEAN rotamer -- a hard
+        floor (~2.5 A on the S5 overfit). Position lets the head distinguish
+        residues and attend by sequence locality, exactly the role the trunk
+        token h_i plays for AtomDiffusionHead. When real tokens are supplied they
+        already carry this, so it is additive and harmless.
+        """
+        half = self.c_token // 2
+        scale = math.log(10000) / (half - 1)
+        freqs = torch.exp(torch.arange(half, device=device) * -scale)
+        pos = torch.arange(length, device=device).unsqueeze(-1).float()
+        ang = pos * freqs.unsqueeze(0)                       # [L, half]
+        return torch.cat([torch.sin(ang), torch.cos(ang)], dim=-1)  # [L, c_token]
+
     def forward(
         self,
         x_t: Tensor,                 # [B, L, 10, 3] noised LOCAL-frame sidechain coords
@@ -162,6 +194,7 @@ class SidechainDiffusionHead(nn.Module):
         sigma: Tensor,               # [B]
         tokens: Tensor | None = None,  # [B, L, c_token] trunk tokens
         mask: Tensor | None = None,    # [B, L] bool, True = valid residue
+        backbone_feats: Tensor | None = None,  # [B, L, 4, 3] per-complex-centered backbone
     ) -> Tensor:
         """Denoise to ``x_0`` ``[B, L, 10, 3]`` (local frame)."""
         B, L = x_t.shape[:2]
@@ -170,6 +203,9 @@ class SidechainDiffusionHead(nn.Module):
         h = self.coord_in((c_in * x_t).reshape(B, L, NUM_SIDECHAIN_SLOTS * 3))
         h = h + self.restype_emb(aatype)
         h = h + self._sigma_embed(c_noise).unsqueeze(1)
+        h = h + self._pos_embed(L, x_t.device).unsqueeze(0)
+        if self.backbone_cond and backbone_feats is not None:
+            h = h + self.bb_enc(backbone_feats.reshape(B, L, 4 * 3))
         if self.use_tokens and tokens is not None:
             h = h + tokens
 

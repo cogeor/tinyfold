@@ -167,6 +167,19 @@ class TestConditioning:
         b = h(x_t, aatype, torch.full((2,), 2.0), mask=mask)
         assert not torch.allclose(a, b)
 
+    def test_same_type_residues_are_distinguishable_by_position(self):
+        # Without positional encoding a residue transformer is permutation-
+        # invariant, so two same-type residues get identical predictions -- the
+        # bug that floored the S5 overfit at ~2.5 A. Position must break the tie.
+        h = _head()
+        torch.nn.init.normal_(h.proj.weight, std=0.5)
+        # Identical noised state + identical restype at every position.
+        x_t = torch.zeros(1, 5, NUM_SIDECHAIN_SLOTS, 3)
+        aatype = torch.full((1, 5), AA_TO_IDX["L"])
+        out = h(x_t, aatype, torch.full((1,), 0.5), mask=torch.ones(1, 5, dtype=torch.bool))
+        # Predictions for residue 0 and residue 4 must differ purely from position.
+        assert not torch.allclose(out[:, 0], out[:, 4])
+
     def test_residues_are_coupled_not_independent(self):
         # §5 rejects independent per-residue packing: perturbing residue 0 must
         # be able to move residue 4, or clashes can never resolve.
