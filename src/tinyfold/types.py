@@ -32,6 +32,7 @@ class Batch(TypedDict, total=False):
     template_coords_res: Tensor  # [B, L, 4, 3] (template conditioning only)
     template_mask: Tensor
     template_frame_id: Tensor
+    msa_feats: Tensor           # [B, L, L, F_msa] coevolution pair features (msa_cond only)
     stds: list[float]           # per-sample coordinate std used for de-normalisation
     n_res: list[int]
     n_atoms: list[int]

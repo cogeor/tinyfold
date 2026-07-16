@@ -76,6 +76,12 @@ def _apply_residue_indices(sample: dict[str, Any], idx: Tensor) -> dict[str, Any
     if 'esm_embed' in sample:
         out['esm_embed'] = sample['esm_embed'][idx]
 
+    # Coevolution features are O(L^2): crop BOTH residue axes so [L,L,F] stays
+    # aligned with the cropped residue set (a one-axis slice would silently
+    # desync i/j and crash collate on the [:L,:L] assignment).
+    if 'msa_feats' in sample:
+        out['msa_feats'] = sample['msa_feats'][idx][:, idx]
+
     # Re-derive the flat atom-level tensors from the residue slice. The atom
     # ordering is (res_0_N, res_0_CA, res_0_C, res_0_O, res_1_N, ...) so we
     # expand each residue index to its 4 atom positions.

@@ -22,6 +22,7 @@ def load_sample(
     per_chain_res_idx: bool = False,
     global_scale: float | None = None,
     template_cache_dir: str | Path | None = None,
+    msa_feats_cache_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Load sample at residue level (4 atoms per residue).
 
@@ -171,6 +172,21 @@ def load_sample(
         out['template_coords_res'] = tcoords_t          # [L, 4, 3]
         out['template_mask'] = torch.from_numpy(tmask)  # [L]
 
+    if msa_feats_cache_dir is not None:
+        mpath = Path(msa_feats_cache_dir) / f"{sample_id}.npz"
+        if not mpath.exists():
+            raise ValueError(f"MSA-feature cache missing for {sample_id}: {mpath}")
+        with np.load(mpath) as npz:
+            mfeats = np.asarray(npz['msa_feats']).astype('float32')  # [L, L, F]
+        if mfeats.shape[0] != n_res or mfeats.shape[1] != n_res:
+            raise ValueError(
+                f"MSA-feature cache shape mismatch for {sample_id}: got "
+                f"{mfeats.shape[:2]} residues, expected ({n_res}, {n_res})."
+            )
+        # No scale normalization: MI/APC channels are already scale-free (unlike
+        # template coords, which get divided by global_scale). The proj upcasts.
+        out['msa_feats'] = torch.from_numpy(mfeats)     # [L, L, F]
+
     return out
 
 
@@ -254,6 +270,16 @@ def collate_batch(
         template_coords_padded = torch.zeros(B, max_res, 4, 3)
         template_mask_padded = torch.zeros(B, max_res, dtype=torch.bool)
 
+    # Optional coevolution pathway. Unlike every other feature this is O(L^2):
+    # msa_feats is [L, L, F], so padding is the [B, max_res, max_res, F] block
+    # rather than a per-residue [B, max_res, ...] tensor. fp16 to halve the pad
+    # tensor; the pair-track in-proj already upcasts to z.dtype.
+    have_msa = any('msa_feats' in s for s in samples)
+    msa_feats_padded = None
+    if have_msa:
+        msa_dim = next(s['msa_feats'].shape[-1] for s in samples if 'msa_feats' in s)
+        msa_feats_padded = torch.zeros(B, max_res, max_res, msa_dim, dtype=torch.float16)
+
     for i, s in enumerate(samples):
         L = s['n_res']
         N = s['n_atoms']
@@ -276,6 +302,9 @@ def collate_batch(
         if have_template and 'template_coords_res' in s:
             template_coords_padded[i, :L] = s['template_coords_res']
             template_mask_padded[i, :L] = s['template_mask']
+
+        if have_msa and 'msa_feats' in s:
+            msa_feats_padded[i, :L, :L] = s['msa_feats'].to(torch.float16)
 
         stds.append(s['std'])
 
@@ -300,6 +329,8 @@ def collate_batch(
     if template_coords_padded is not None:
         out['template_coords_res'] = template_coords_padded.to(device)
         out['template_mask'] = template_mask_padded.to(device)
+    if msa_feats_padded is not None:
+        out['msa_feats'] = msa_feats_padded.to(device)
     return out
 
 
