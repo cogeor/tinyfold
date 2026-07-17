@@ -283,6 +283,26 @@ def parse_args():
     parser.add_argument("--atom_sigma_max", type=float, default=1.0)
     parser.add_argument("--atom_steps", type=int, default=8,
                         help="Atom-diffusion sampling steps at eval.")
+    # --- Sidechain (third) diffusion stage: torsion (chi) packing ---
+    parser.add_argument("--sidechain_diffusion", action="store_true",
+                        help="Add a THIRD diffusion stage: torsion (chi) sidechain "
+                             "packing conditioned on denoiser tokens + the predicted "
+                             "backbone. Requires --atom14_cache_dir and (in practice) "
+                             "--atom_diffusion. Default off = byte-identical.")
+    parser.add_argument("--atom14_cache_dir", type=str, default=None,
+                        help="Directory of per-sample atom14 npz "
+                             "(coords_atom14/mask_atom14/seq_indices), keyed by "
+                             "sample_id. Required for --sidechain_diffusion.")
+    parser.add_argument("--sc_head_layers", type=int, default=2)
+    parser.add_argument("--sc_head_heads", type=int, default=4)
+    parser.add_argument("--sc_weight", type=float, default=0.5,
+                        help="Weight of the sidechain chi loss (C2).")
+    parser.add_argument("--sc_warmup_steps", type=int, default=500,
+                        help="Warmup before the chi loss engages (C2).")
+    parser.add_argument("--sc_sigma_min", type=float, default=0.02,
+                        help="Min angular noise (radians) for chi diffusion.")
+    parser.add_argument("--sc_sigma_max", type=float, default=3.0,
+                        help="Max angular noise (radians) for chi diffusion.")
     parser.add_argument("--fixed_sigma", type=float, default=None,
                         help="Isolation test: train at this single fixed sigma "
                              "(near-clean input) to decouple the atom head from "
@@ -1000,8 +1020,11 @@ def _run_training(args, progress):
     _msa_dir = getattr(args, "msa_cache_dir", None)
     if getattr(args, "msa_cond", False) and _msa_dir is None:
         raise ValueError("--msa_cond requires --msa_cache_dir")
-    train_samples = {idx: load_sample_raw(table, idx, normalize=normalize, esm_cache_dir=_esm_dir, per_chain_res_idx=per_chain, global_scale=gscale, template_cache_dir=_tmpl_dir, msa_feats_cache_dir=_msa_dir) for idx in train_indices}
-    test_samples = {idx: load_sample_raw(table, idx, normalize=normalize, esm_cache_dir=_esm_dir, per_chain_res_idx=per_chain, global_scale=gscale, template_cache_dir=_tmpl_dir, msa_feats_cache_dir=_msa_dir) for idx in test_indices}
+    _atom14_dir = getattr(args, "atom14_cache_dir", None)
+    if getattr(args, "sidechain_diffusion", False) and _atom14_dir is None:
+        raise ValueError("--sidechain_diffusion requires --atom14_cache_dir")
+    train_samples = {idx: load_sample_raw(table, idx, normalize=normalize, esm_cache_dir=_esm_dir, per_chain_res_idx=per_chain, global_scale=gscale, template_cache_dir=_tmpl_dir, msa_feats_cache_dir=_msa_dir, atom14_cache_dir=_atom14_dir) for idx in train_indices}
+    test_samples = {idx: load_sample_raw(table, idx, normalize=normalize, esm_cache_dir=_esm_dir, per_chain_res_idx=per_chain, global_scale=gscale, template_cache_dir=_tmpl_dir, msa_feats_cache_dir=_msa_dir, atom14_cache_dir=_atom14_dir) for idx in test_indices}
     logger.log(f"  Loaded {len(train_samples)} train, {len(test_samples)} test samples")
     if _tmpl_dir is not None:
         _cov = [float(s['template_mask'].float().mean()) for s in list(train_samples.values()) if 'template_mask' in s]
@@ -1131,6 +1154,9 @@ def _run_training(args, progress):
             atom_sigma_data=getattr(args, "atom_sigma_data", 0.15),
             atom_sigma_min=getattr(args, "atom_sigma_min", 0.002),
             atom_sigma_max=getattr(args, "atom_sigma_max", 1.0),
+            sidechain_diffusion=getattr(args, "sidechain_diffusion", False),
+            sc_head_layers=getattr(args, "sc_head_layers", 2),
+            sc_head_heads=getattr(args, "sc_head_heads", 4),
             atom_head_layers=args.atom_head_layers,
             atom_head_heads=args.atom_head_heads,
             n_timesteps=args.T,
@@ -1159,6 +1185,11 @@ def _run_training(args, progress):
             logger.log(
                 f"  Confidence-head params: {pc['confidence_head']:,} "
                 f"({pc['confidence_head_pct']:.1f}%)"
+            )
+        if pc.get('sc_head', 0) > 0:
+            logger.log(
+                f"  Sidechain-head params: {pc['sc_head']:,} "
+                f"({pc['sc_head_pct']:.1f}%)"
             )
         logger.log(f"  Total params:     {pc['total']:,}")
         logger.log("")

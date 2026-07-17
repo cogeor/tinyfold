@@ -51,6 +51,9 @@ class ResFoldConfig:
     atom_sigma_data: float = 0.15
     atom_sigma_min: float = 0.002
     atom_sigma_max: float = 1.0
+    sidechain_diffusion: bool = False
+    sc_head_layers: int = 2
+    sc_head_heads: int = 4
 
     def to_kwargs(self) -> dict:
         """Return the fields as a kwargs dict for ``ResFoldOneStep(**...)``."""
@@ -95,4 +98,7 @@ class ResFoldConfig:
             atom_sigma_data=cfg.get("atom_sigma_data", 0.15),
             atom_sigma_min=cfg.get("atom_sigma_min", 0.002),
             atom_sigma_max=cfg.get("atom_sigma_max", 1.0),
+            sidechain_diffusion=cfg.get("sidechain_diffusion", False),
+            sc_head_layers=cfg.get("sc_head_layers", 2),
+            sc_head_heads=cfg.get("sc_head_heads", 4),
         )

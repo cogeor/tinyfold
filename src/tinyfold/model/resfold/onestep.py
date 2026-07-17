@@ -236,6 +236,9 @@ class ResFoldOneStep(BaseDecoder):
         atom_sigma_data: float = 0.15,
         atom_sigma_min: float = 0.002,
         atom_sigma_max: float = 1.0,
+        sidechain_diffusion: bool = False,
+        sc_head_layers: int = 2,
+        sc_head_heads: int = 4,
     ):
         super().__init__()
         self.c_token = c_token
@@ -245,6 +248,7 @@ class ResFoldOneStep(BaseDecoder):
         self.atom_diffusion = bool(atom_diffusion)
         self.atom_sigma_min = float(atom_sigma_min)
         self.atom_sigma_max = float(atom_sigma_max)
+        self.sidechain_diffusion = bool(sidechain_diffusion)
         # sigma_data is the EDM preconditioning constant; should match the
         # std of the data distribution in the units the model trains in.
         # 1.0 is correct when coords are per-sample-normalized to unit std;
@@ -329,6 +333,24 @@ class ResFoldOneStep(BaseDecoder):
             )
         else:
             self.atom_diff_head = None
+
+        # Optional THIRD diffusion stage: sidechain packing by torsion (chi)
+        # diffusion, conditioned on the denoiser tokens + the predicted backbone.
+        # Sits on top of the atom-diffusion backbone; default off keeps every
+        # existing run byte-identical. See sidechain_torsion_head.py + the
+        # 2026-07-17 third-stage SPEC.
+        if self.sidechain_diffusion:
+            from .sidechain_torsion_head import SidechainTorsionHead
+            self.sc_head = SidechainTorsionHead(
+                c_token=c_token,
+                n_layers=sc_head_layers,
+                n_heads=sc_head_heads,
+                dropout=dropout,
+                use_tokens=True,
+                backbone_cond=True,
+            )
+        else:
+            self.sc_head = None
 
         # Optional per-target confidence head (Loop 06). Disabled by default so
         # legacy training runs stay byte-identical. When enabled, returns a
@@ -522,6 +544,29 @@ class ResFoldOneStep(BaseDecoder):
         assert self.atom_diff_head is not None, "atom_diffusion=False"
         return self.atom_diff_head(delta_t, denoiser_tokens, sigma_a, mask)
 
+    def denoise_chi(
+        self,
+        chi_t: Tensor,
+        denoiser_tokens: Tensor,
+        sigma_c: Tensor,
+        backbone_feats: Tensor,
+        aatype: Tensor,
+        mask: Tensor | None = None,
+    ) -> tuple[Tensor, Tensor]:
+        """One sidechain-diffusion denoise step: noised chi -> clean chi0.
+
+        Third diffusion stage. ``chi_t [B,L,4]`` are noised chi torsions;
+        conditions on ``denoiser_tokens`` (centroid stage) and ``backbone_feats``
+        ([B,L,4,3], the PREDICTED backbone, per-residue-centered/normalized).
+        Returns ``(chi0 [B,L,4], vec [B,L,4,2])`` -- vec is the unit (cos,sin)
+        used by the symmetry-corrected torsion loss.
+        """
+        assert self.sc_head is not None, "sidechain_diffusion=False"
+        return self.sc_head(
+            chi_t, aatype, sigma_c, tokens=denoiser_tokens, mask=mask,
+            backbone_feats=backbone_feats, return_vec=True,
+        )
+
     def centroid_tokens_with_trunk(
         self,
         x_t: Tensor,
@@ -675,17 +720,24 @@ class ResFoldOneStep(BaseDecoder):
             if self.confidence_head is not None
             else 0
         )
-        total = trunk + denoiser + atom_head + atom_diff + confidence_head
+        sc_head = (
+            sum(p.numel() for p in self.sc_head.parameters())
+            if self.sc_head is not None
+            else 0
+        )
+        total = trunk + denoiser + atom_head + atom_diff + confidence_head + sc_head
         return {
             "trunk": trunk,
             "denoiser": denoiser,
             "atom_head": atom_head,
             "atom_diff": atom_diff,
             "confidence_head": confidence_head,
+            "sc_head": sc_head,
             "total": total,
             "trunk_pct": 100 * trunk / total,
             "denoiser_pct": 100 * denoiser / total,
             "atom_head_pct": 100 * atom_head / total,
             "atom_diff_pct": 100 * atom_diff / total,
             "confidence_head_pct": 100 * confidence_head / total,
+            "sc_head_pct": 100 * sc_head / total,
         }

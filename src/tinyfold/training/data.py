@@ -23,6 +23,7 @@ def load_sample(
     global_scale: float | None = None,
     template_cache_dir: str | Path | None = None,
     msa_feats_cache_dir: str | Path | None = None,
+    atom14_cache_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Load sample at residue level (4 atoms per residue).
 
@@ -187,6 +188,27 @@ def load_sample(
         # template coords, which get divided by global_scale). The proj upcasts.
         out['msa_feats'] = torch.from_numpy(mfeats)     # [L, L, F]
 
+    if atom14_cache_dir is not None:
+        apath = Path(atom14_cache_dir) / f"{sample_id}.npz"
+        if not apath.exists():
+            raise ValueError(f"atom14 cache missing for {sample_id}: {apath}")
+        with np.load(apath) as npz:
+            a14 = np.asarray(npz['coords_atom14']).astype('float32')  # [L,14,3] raw A
+            a14_mask = np.asarray(npz['mask_atom14']).astype(bool)    # [L,14]
+            a14_seq = np.asarray(npz['seq_indices']).astype('int64')  # [L] atom14 restype
+        if a14.shape[0] != n_res:
+            raise ValueError(
+                f"atom14 cache shape mismatch for {sample_id}: got "
+                f"{a14.shape[0]} residues, expected {n_res}."
+            )
+        # Kept in RAW Angstroms: chi torsions (the training target) are dihedral
+        # angles -- invariant to the rigid transform / uniform scale that separate
+        # this cache's frame from coords_res -- and the all-atom RMSD eval aligns
+        # (Kabsch) before scoring. So no normalization is needed or wanted here.
+        out['atom14_gt'] = torch.from_numpy(a14)          # [L, 14, 3]
+        out['atom14_mask'] = torch.from_numpy(a14_mask)   # [L, 14]
+        out['atom14_seq'] = torch.from_numpy(a14_seq)     # [L]
+
     return out
 
 
@@ -280,6 +302,15 @@ def collate_batch(
         msa_dim = next(s['msa_feats'].shape[-1] for s in samples if 'msa_feats' in s)
         msa_feats_padded = torch.zeros(B, max_res, max_res, msa_dim, dtype=torch.float16)
 
+    # Optional atom14 sidechain GT (per-residue [L,14,*]), padded lazily so the
+    # default path stays byte-identical. Only present when atom14_cache_dir is set.
+    have_atom14 = any('atom14_gt' in s for s in samples)
+    atom14_gt_padded = atom14_mask_padded = atom14_seq_padded = None
+    if have_atom14:
+        atom14_gt_padded = torch.zeros(B, max_res, 14, 3)
+        atom14_mask_padded = torch.zeros(B, max_res, 14, dtype=torch.bool)
+        atom14_seq_padded = torch.zeros(B, max_res, dtype=torch.long)
+
     for i, s in enumerate(samples):
         L = s['n_res']
         N = s['n_atoms']
@@ -306,6 +337,11 @@ def collate_batch(
         if have_msa and 'msa_feats' in s:
             msa_feats_padded[i, :L, :L] = s['msa_feats'].to(torch.float16)
 
+        if have_atom14 and 'atom14_gt' in s:
+            atom14_gt_padded[i, :L] = s['atom14_gt']
+            atom14_mask_padded[i, :L] = s['atom14_mask']
+            atom14_seq_padded[i, :L] = s['atom14_seq']
+
         stds.append(s['std'])
 
     out = {
@@ -331,6 +367,10 @@ def collate_batch(
         out['template_mask'] = template_mask_padded.to(device)
     if msa_feats_padded is not None:
         out['msa_feats'] = msa_feats_padded.to(device)
+    if atom14_gt_padded is not None:
+        out['atom14_gt'] = atom14_gt_padded.to(device)
+        out['atom14_mask'] = atom14_mask_padded.to(device)
+        out['atom14_seq'] = atom14_seq_padded.to(device)
     return out
 
 

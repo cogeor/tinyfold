@@ -82,6 +82,11 @@ def _apply_residue_indices(sample: dict[str, Any], idx: Tensor) -> dict[str, Any
     if 'msa_feats' in sample:
         out['msa_feats'] = sample['msa_feats'][idx][:, idx]
 
+    # atom14 sidechain GT is per-residue ([L,14,3], [L,14], [L]) -> single-axis crop.
+    for key in ('atom14_gt', 'atom14_mask', 'atom14_seq'):
+        if key in sample:
+            out[key] = sample[key][idx]
+
     # Re-derive the flat atom-level tensors from the residue slice. The atom
     # ordering is (res_0_N, res_0_CA, res_0_C, res_0_O, res_1_N, ...) so we
     # expand each residue index to its 4 atom positions.
