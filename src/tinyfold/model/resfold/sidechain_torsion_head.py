@@ -60,10 +60,17 @@ class SidechainTorsionHead(nn.Module):
         n_restypes: int = 21,
         use_tokens: bool = True,
         backbone_cond: bool = True,
+        neighbor_graph: bool = False,
+        neighbor_radius: float = 10.0,
     ):
         super().__init__()
         self.c_token = c_token
         self.use_tokens = bool(use_tokens)
+        # Optional sparse spatial attention: each residue attends only to CA
+        # neighbours within `neighbor_radius` (+ itself). Off by default -> dense
+        # global attention (byte-identical). Clash-resolution fallback (C5).
+        self.neighbor_graph = bool(neighbor_graph)
+        self.neighbor_radius = float(neighbor_radius)
 
         # chi_t as (cos, sin) per chi -> 2 * NUM_CHI features.
         self.chi_in = nn.Linear(2 * NUM_CHI, c_token)
@@ -116,6 +123,7 @@ class SidechainTorsionHead(nn.Module):
         tokens: Tensor | None = None,        # [B, L, c_token]
         mask: Tensor | None = None,          # [B, L] bool
         backbone_feats: Tensor | None = None,  # [B, L, 4, 3] per-complex-centered
+        ca_pos: Tensor | None = None,        # [B, L, 3] ABSOLUTE CA (neighbor graph only)
         return_vec: bool = False,
     ) -> Tensor | tuple[Tensor, Tensor]:
         """Denoise to chi0. Returns ``chi0 [B,L,4]`` (angles), or ``(chi0, vec)``
@@ -133,7 +141,21 @@ class SidechainTorsionHead(nn.Module):
             h = h + tokens
 
         attn_mask = ~mask if mask is not None else None
-        h = self.norm(self.transformer(h, src_key_padding_mask=attn_mask))
+        src_mask = None
+        if self.neighbor_graph and ca_pos is not None:
+            # Sparse spatial attention: disallow attending to CA neighbours beyond
+            # the radius; the diagonal is always allowed so no row is fully masked
+            # (a fully-masked row would NaN the softmax). Shape [B*nhead, L, L] so
+            # each batch element carries its own adjacency.
+            with torch.no_grad():
+                d = torch.cdist(ca_pos, ca_pos)                     # [B, L, L]
+                far = d >= self.neighbor_radius                     # True = block
+                eye = torch.eye(L, dtype=torch.bool, device=ca_pos.device)
+                far = far & ~eye.unsqueeze(0)
+                nhead = self.transformer.layers[0].self_attn.num_heads
+                src_mask = far.repeat_interleave(nhead, dim=0)      # [B*nhead, L, L]
+        h = self.norm(self.transformer(
+            h, mask=src_mask, src_key_padding_mask=attn_mask))
         vec = self.proj(h).reshape(B, L, NUM_CHI, 2)                        # [B,L,4,2]
         vec = vec / (vec.norm(dim=-1, keepdim=True) + 1e-8)                 # unit circle
         chi0 = torch.atan2(vec[..., 1], vec[..., 0])                       # [B,L,4]

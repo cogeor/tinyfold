@@ -56,6 +56,7 @@ def sample_chi_diffusion(model, tokens, backbone, aatype, mask, n_steps=32,
     B, L = mask.shape
     device = backbone.device
     bb_feats = backbone - backbone[:, :, 1:2, :]
+    ca_pos = backbone[:, :, 1, :]   # absolute CA for the neighbor graph (no-op if dense)
 
     i = torch.arange(n_steps, device=device) / max(n_steps - 1, 1)
     inv = sigma_max ** (1 / rho) + i * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))
@@ -67,7 +68,7 @@ def sample_chi_diffusion(model, tokens, backbone, aatype, mask, n_steps=32,
     )
     for j in range(n_steps):
         chi0, _ = model.denoise_chi(
-            chi, tokens, sig[j].expand(B), bb_feats, aatype, mask)
+            chi, tokens, sig[j].expand(B), bb_feats, aatype, mask, ca_pos=ca_pos)
         delta = wrap_angle(chi - chi0)
         chi = wrap_angle(chi0 + delta * (sig[j + 1] / sig[j]))
     return chi

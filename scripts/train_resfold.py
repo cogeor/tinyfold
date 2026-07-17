@@ -298,6 +298,11 @@ def parse_args():
                              "sample_id. Required for --sidechain_diffusion.")
     parser.add_argument("--sc_head_layers", type=int, default=2)
     parser.add_argument("--sc_head_heads", type=int, default=4)
+    parser.add_argument("--sc_neighbor_graph", action="store_true",
+                        help="C5 fallback: restrict sidechain-head attention to CA "
+                             "neighbors within --sc_neighbor_radius (clash resolution). "
+                             "Default off = dense global attention.")
+    parser.add_argument("--sc_neighbor_radius", type=float, default=10.0)
     parser.add_argument("--sc_weight", type=float, default=0.5,
                         help="Weight of the sidechain chi loss (C2).")
     parser.add_argument("--sc_warmup_steps", type=int, default=500,
@@ -1160,6 +1165,8 @@ def _run_training(args, progress):
             sidechain_diffusion=getattr(args, "sidechain_diffusion", False),
             sc_head_layers=getattr(args, "sc_head_layers", 2),
             sc_head_heads=getattr(args, "sc_head_heads", 4),
+            sc_neighbor_graph=getattr(args, "sc_neighbor_graph", False),
+            sc_neighbor_radius=getattr(args, "sc_neighbor_radius", 10.0),
             atom_head_layers=args.atom_head_layers,
             atom_head_heads=args.atom_head_heads,
             n_timesteps=args.T,
@@ -1670,6 +1677,7 @@ def _run_training(args, progress):
                             # arrives via atom_cond_tokens + the head's attention.
                             pred_bb = atoms_pred_ad.detach()                 # [B,L,4,3]
                             bb_feats = pred_bb - pred_bb[:, :, 1:2, :]
+                            ca_pos_sc = pred_bb[:, :, 1, :]                  # absolute CA (neighbor graph)
                             lo_c = math.log(args.sc_sigma_min)
                             hi_c = math.log(args.sc_sigma_max)
                             sig_c = torch.exp(
@@ -1679,7 +1687,7 @@ def _run_training(args, progress):
                             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=_amp):
                                 _, vec = stage1_module.denoise_chi(
                                     chi_t, atom_cond_tokens, sig_c, bb_feats,
-                                    aatype_sc, batch['mask_res'])
+                                    aatype_sc, batch['mask_res'], ca_pos=ca_pos_sc)
                             vec = vec.float()
                             chi_loss_t = torsion_symmetry_loss(
                                 vec, gt_chi, chi_mask, aatype_sc)

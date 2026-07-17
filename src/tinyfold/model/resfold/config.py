@@ -54,6 +54,8 @@ class ResFoldConfig:
     sidechain_diffusion: bool = False
     sc_head_layers: int = 2
     sc_head_heads: int = 4
+    sc_neighbor_graph: bool = False
+    sc_neighbor_radius: float = 10.0
 
     def to_kwargs(self) -> dict:
         """Return the fields as a kwargs dict for ``ResFoldOneStep(**...)``."""
@@ -101,4 +103,6 @@ class ResFoldConfig:
             sidechain_diffusion=cfg.get("sidechain_diffusion", False),
             sc_head_layers=cfg.get("sc_head_layers", 2),
             sc_head_heads=cfg.get("sc_head_heads", 4),
+            sc_neighbor_graph=cfg.get("sc_neighbor_graph", False),
+            sc_neighbor_radius=cfg.get("sc_neighbor_radius", 10.0),
         )

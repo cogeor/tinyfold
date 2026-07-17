@@ -239,6 +239,8 @@ class ResFoldOneStep(BaseDecoder):
         sidechain_diffusion: bool = False,
         sc_head_layers: int = 2,
         sc_head_heads: int = 4,
+        sc_neighbor_graph: bool = False,
+        sc_neighbor_radius: float = 10.0,
     ):
         super().__init__()
         self.c_token = c_token
@@ -348,6 +350,8 @@ class ResFoldOneStep(BaseDecoder):
                 dropout=dropout,
                 use_tokens=True,
                 backbone_cond=True,
+                neighbor_graph=sc_neighbor_graph,
+                neighbor_radius=sc_neighbor_radius,
             )
         else:
             self.sc_head = None
@@ -552,6 +556,7 @@ class ResFoldOneStep(BaseDecoder):
         backbone_feats: Tensor,
         aatype: Tensor,
         mask: Tensor | None = None,
+        ca_pos: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         """One sidechain-diffusion denoise step: noised chi -> clean chi0.
 
@@ -564,7 +569,7 @@ class ResFoldOneStep(BaseDecoder):
         assert self.sc_head is not None, "sidechain_diffusion=False"
         return self.sc_head(
             chi_t, aatype, sigma_c, tokens=denoiser_tokens, mask=mask,
-            backbone_feats=backbone_feats, return_vec=True,
+            backbone_feats=backbone_feats, ca_pos=ca_pos, return_vec=True,
         )
 
     def centroid_tokens_with_trunk(
