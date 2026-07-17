@@ -41,7 +41,12 @@ def load_model(run_dir: Path, device):
     if not ckpt.exists():
         ckpt = run_dir / "final_model.pt"
     state = torch.load(ckpt, map_location=device)
-    model.load_state_dict(state.get("model", state), strict=False)
+    # train_resfold saves under "model_state_dict"; fall back for other layouts.
+    sd = state.get("model_state_dict") or state.get("model") or state
+    missing, unexpected = model.load_state_dict(sd, strict=False)
+    sc_loaded = [k for k in sd if k.startswith("sc_head")]
+    if not sc_loaded:
+        raise ValueError(f"checkpoint has no sc_head weights: {ckpt}")
     model.eval()
     model._atom_eval_steps = cfg.get("atom_steps", 8)
     return model, cfg
