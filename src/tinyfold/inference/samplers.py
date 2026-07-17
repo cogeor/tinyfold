@@ -35,6 +35,44 @@ def sample_atoms_diffusion(model, tokens, centroids, mask, n_steps=8,
     return centroids.unsqueeze(2) + delta
 
 
+@torch.no_grad()
+def sample_chi_diffusion(model, tokens, backbone, aatype, mask, n_steps=32,
+                         sigma_min=0.02, sigma_max=3.0, rho=7.0, generator=None):
+    """Wrapped-Euler reverse process on SO(2)^4 for sidechain chi torsions.
+
+    Third-stage sampler: given the centroid-stage ``tokens`` and the PREDICTED
+    ``backbone`` [B,L,4,3], denoise chi from noise to a clean estimate. Every
+    difference is wrapped to (-pi, pi] so the trajectory stays on the torus.
+    Mirrors scripts/train/overfit_sidechain_torsion.py:sample() exactly, but
+    calls ``model.denoise_chi`` (tokens-conditioned). Returns ``chi [B,L,4]``.
+
+    ``backbone`` is the RAW predicted backbone [B,L,4,3]; the sampler centers it
+    per-residue by CA (``backbone - backbone[:, :, 1:2, :]``) to match the exact
+    conditioning convention used at train time (C2).
+    """
+    import math
+
+    from tinyfold.model.resfold.sidechain_torsion_head import wrap_angle
+    B, L = mask.shape
+    device = backbone.device
+    bb_feats = backbone - backbone[:, :, 1:2, :]
+
+    i = torch.arange(n_steps, device=device) / max(n_steps - 1, 1)
+    inv = sigma_max ** (1 / rho) + i * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))
+    sig = torch.cat([inv ** rho, torch.zeros(1, device=device)])
+
+    chi = wrap_angle(
+        (torch.rand(B, L, 4, device=device, generator=generator) * 2 * math.pi - math.pi)
+        * sig[0]
+    )
+    for j in range(n_steps):
+        chi0, _ = model.denoise_chi(
+            chi, tokens, sig[j].expand(B), bb_feats, aatype, mask)
+        delta = wrap_angle(chi - chi0)
+        chi = wrap_angle(chi0 + delta * (sig[j + 1] / sig[j]))
+    return chi
+
+
 def _template_kwargs(batch):
     """Pair-track conditioning forward-kwargs present in the batch.
 
