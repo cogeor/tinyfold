@@ -1,0 +1,90 @@
+# Sidechain impact A/B -- ARM SC1: + sidechains (third-stage torsion diffusion).
+#
+# Derived from scale_6M_le200.yaml (the proven fair small-model regime: test DockQ
+# 0.233, notemplate = no leakage, train converges). The ONLY change vs that baseline
+# is atom_diffusion ON: the sidechain stage (SC1) sits on top of the atom-diffusion
+# backbone, so both arms must share that backbone stage -- otherwise "atom diffusion"
+# would confound "sidechains". This arm is the honest control: same architecture as
+# SC1, sidechains OFF.
+#
+#   SC1 - SC0 = the sidechain contribution (all-atom sidechain RMSD / all-atom DockQ).
+#
+# FAIR: notemplate (nothing handed the answer), le200 so train converges to ~0.2.
+# No pair track (irrelevant to sidechains; keeps it fast).
+
+model_kind: onestep
+mode: stage1_only
+
+n_train: 3000
+n_test: 200
+n_eval_train: 200
+min_atoms: 0
+max_atoms: 800
+batch_size: 32
+grad_accum: 1
+dynamic_batch: false
+use_bucketing: false
+
+n_steps: 12000
+eval_every: 3000
+lr: 1.0e-04
+min_lr: 1.0e-05
+seed: 42
+
+c_token_s1: 192
+trunk_layers: 6
+denoiser_blocks: 6
+atom_head_layers: 2
+atom_head_heads: 4
+
+aa_embed: esm2_35M
+per_chain_res_idx: true
+
+global_scale: 11.0
+crop_strategy: none
+relpos_bias: true
+relpos_clip: 32
+pair_repr: false
+
+# --- Backbone via atom DIFFUSION (the stage the sidechain head conditions on) ---
+atom_diffusion: true
+atom_sigma_data: 0.15
+atom_sigma_min: 0.002
+atom_sigma_max: 1.0
+atom_steps: 8
+
+template_cond: false
+template_source: none
+sidechain_diffusion: true
+atom14_cache_dir: data/processed/atom14
+sc_weight: 0.5
+sc_warmup_steps: 1000
+
+T: 50
+continuous_sigma: true
+sigma_data: 1.0
+sigma_min: 0.002
+sigma_max: 10.0
+
+confidence_head: true
+confidence_head_weight: 0.1
+rank_by: confidence
+
+loss_weighting: true
+augment_rotation: true
+multi_copy: 0
+self_cond_prob: 0.0
+dist_weight: 0.1
+geom_weight: 0.1
+contact_weight: 0.0
+atom_weight: 1.0
+atom_warmup_steps: 500
+
+one_shot_sample: true
+n_samples: 20
+eval_K_list: "1,5,20"
+cluster_radius: 5.0
+
+eval_train_dockq: true
+
+output_dir: outputs/resfold/sc_le200_SC1_sidechain
