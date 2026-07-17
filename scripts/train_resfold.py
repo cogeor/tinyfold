@@ -64,6 +64,7 @@ from tinyfold.model.losses import (
     compute_rmse,
     kabsch_align,
 )
+from tinyfold.model.losses.torsion import torsion_symmetry_loss
 from tinyfold.model.metrics import (
     cluster_poses,
     compute_dockq,
@@ -72,7 +73,9 @@ from tinyfold.model.metrics import (
     score_self_consistency,
 )
 from tinyfold.model.resfold import ResFoldPipeline
+from tinyfold.model.resfold.sidechain_torsion_head import wrap_angle
 from tinyfold.retrieval import make_template_inputs
+from tinyfold.sidechain_geometry import extract_chi
 
 # Training utilities from tinyfold.training
 from tinyfold.training import (
@@ -1583,6 +1586,7 @@ def _run_training(args, progress):
 
                     # OneStep: add atom-MSE (with warmup) and geometry losses on atoms_pred.
                     loss_atom = 0.0
+                    loss_chi = 0.0
                     loss_geom = 0.0
                     loss_bond = 0.0
                     loss_angle = 0.0
@@ -1649,6 +1653,41 @@ def _run_training(args, progress):
                             loss_bond = geom_losses['bond_length'].item()
                             loss_angle = geom_losses['bond_angle'].item()
                             loss_omega = geom_losses['omega'].item()
+
+                        # === SIDECHAIN (third-stage) chi loss (C2) ===
+                        # Co-trained on top of the atom-diff backbone. Denoise
+                        # noised chi conditioned on the denoiser tokens + the
+                        # model's OWN predicted backbone (detached so chi grads
+                        # cannot perturb the backbone/centroid stages). chi is a
+                        # dihedral -> rigid+scale-invariant, so the atom14 frame
+                        # vs the training frame is irrelevant to the target.
+                        _sc_on = getattr(stage1_module, "sidechain_diffusion", False)
+                        if _sc_on and stage1_module.sc_head is not None and 'atom14_gt' in batch:
+                            aatype_sc = batch['aa_seq'].long()
+                            gt_chi, chi_mask = extract_chi(
+                                batch['atom14_gt'], aatype_sc, batch['atom14_mask'])
+                            # Per-residue CA-centered local frame; global context
+                            # arrives via atom_cond_tokens + the head's attention.
+                            pred_bb = atoms_pred_ad.detach()                 # [B,L,4,3]
+                            bb_feats = pred_bb - pred_bb[:, :, 1:2, :]
+                            lo_c = math.log(args.sc_sigma_min)
+                            hi_c = math.log(args.sc_sigma_max)
+                            sig_c = torch.exp(
+                                torch.rand(B, device=gt_chi.device) * (hi_c - lo_c) + lo_c)
+                            chi_t = wrap_angle(
+                                gt_chi + sig_c.view(B, 1, 1) * torch.randn_like(gt_chi))
+                            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=_amp):
+                                _, vec = stage1_module.denoise_chi(
+                                    chi_t, atom_cond_tokens, sig_c, bb_feats,
+                                    aatype_sc, batch['mask_res'])
+                            vec = vec.float()
+                            chi_loss_t = torsion_symmetry_loss(
+                                vec, gt_chi, chi_mask, aatype_sc)
+                            warmup_sc = args.sc_warmup_steps
+                            ramp_sc = (min(1.0, float(step) / float(warmup_sc))
+                                       if warmup_sc > 0 else 1.0)
+                            loss = loss + ramp_sc * args.sc_weight * chi_loss_t
+                            loss_chi = chi_loss_t.item()
                     elif is_onestep and atoms_pred is not None:
                         B, L = centroids_pred.shape[:2]
                         atoms_target_BL43 = batch['coords_res']  # [B, L, 4, 3]
@@ -1732,6 +1771,7 @@ def _run_training(args, progress):
                         if is_onestep:
                             loss_components.update({
                                 'atom_mse': loss_atom,
+                                'chi': loss_chi,
                                 'alpha_atom': alpha_atom,
                                 'geom': loss_geom,
                                 'bond': loss_bond,
@@ -1904,7 +1944,8 @@ def _run_training(args, progress):
                     if getattr(args, "confidence_head", False)
                     else ""
                 )
-                logger.log(f"Step {step:5d} | loss: {loss:.6f} | mse: {lc['mse']:.4f} | dst: {lc['dist']:.4f}{contact_str}{weight_str}{conf_str} | lr: {scheduler.get_last_lr()[0]:.2e} | {elapsed:.0f}s")
+                chi_str = f" | chi: {lc['chi']:.4f}" if lc.get('chi', 0) else ""
+                logger.log(f"Step {step:5d} | loss: {loss:.6f} | mse: {lc['mse']:.4f} | dst: {lc['dist']:.4f}{contact_str}{weight_str}{conf_str}{chi_str} | lr: {scheduler.get_last_lr()[0]:.2e} | {elapsed:.0f}s")
             else:
                 logger.log(f"Step {step:5d} | loss: {loss:.6f} | lr: {scheduler.get_last_lr()[0]:.2e} | {elapsed:.0f}s")
 
