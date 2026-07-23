@@ -173,6 +173,7 @@ class TrunkEncoder(nn.Module):
 ESM_DIMS = {
     "esm2_35M": 480,
     "esm2_150M": 640,
+    "esm2_650M": 1280,
 }
 
 
@@ -189,7 +190,7 @@ class ResidueEncoder(nn.Module):
         * ``"learned"`` (default): the historical ``nn.Embedding(n_aa_types,
           c_token)`` lookup. Trainable from scratch; loss curve and parameter
           count are byte-identical to pre-Loop-05.
-        * ``"esm2_35M"`` / ``"esm2_150M"``: frozen ESM-2 features supplied per
+        * ``"esm2_35M"`` / ``"esm2_150M"`` / ``"esm2_650M"``: frozen ESM-2 features supplied per
           forward via ``esm_embed=[B, L, esm_dim]`` (loaded from the parquet
           cache built by ``scripts/prepare_esm2_embeddings.py``). Projected
           through ``nn.Linear(esm_dim -> c_token)``; the chain + sinusoidal

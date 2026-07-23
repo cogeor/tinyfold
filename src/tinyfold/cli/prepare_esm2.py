@@ -22,10 +22,20 @@ on the next save).
 Variants (model id, hidden dim):
     35M  -> facebook/esm2_t12_35M_UR50D   (480)
     150M -> facebook/esm2_t30_150M_UR50D  (640)
+    650M -> facebook/esm2_t33_650M_UR50D  (1280)
+
+Disk: the cache stores one frozen hidden vector per residue, so the on-disk size
+scales with the hidden dim -- the 650M cache is ~2.67x the 35M cache (1280d vs
+480d), NOT ~19x. (~19x is the parameter-count ratio 650M/35M, which is what makes
+the one-time encode pass slower, but it does not touch cache size.) Because the
+embeddings are frozen and cached, a bigger pLM costs one preprocessing pass +
+disk and ZERO training time. Chai-1 reaches 69.8% DockQ success in single-
+sequence mode with a strong pLM track, beating AF-Multimer *with* MSAs.
 
 Typical wall-time on a 4070 Ti SUPER:
     ~25-35 min for the full 28352-sample cache at variant=35M.
     ~10-15 min for the in-filter subset (LA+LB in [200, 1200]).
+    650M is markedly slower per sample (33 layers vs 12) but still a one-time cost.
 """
 
 import argparse
@@ -43,6 +53,7 @@ from tinyfold.constants import IDX_TO_AA
 ESM_VARIANTS = {
     "35M":  ("facebook/esm2_t12_35M_UR50D",  480),
     "150M": ("facebook/esm2_t30_150M_UR50D", 640),
+    "650M": ("facebook/esm2_t33_650M_UR50D", 1280),
 }
 
 
@@ -55,7 +66,7 @@ def parse_args() -> argparse.Namespace:
                    help="Directory to write per-sample .npz files")
     p.add_argument("--variant", type=str, default="35M",
                    choices=sorted(ESM_VARIANTS.keys()),
-                   help="ESM-2 variant: 35M (480d) or 150M (640d)")
+                   help="ESM-2 variant: 35M (480d), 150M (640d) or 650M (1280d)")
     p.add_argument("--device", type=str, default="cuda",
                    choices=["cuda", "cpu"],
                    help="Device for ESM forward pass")
