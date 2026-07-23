@@ -7,9 +7,10 @@ from .cluster import (
     score_geometric_energy,
     score_self_consistency,
 )
-from .dockq import compute_dockq
+from .dockq import chains_are_interchangeable, compute_dockq
 
 __all__ = [
+    "chains_are_interchangeable",
     "cluster_poses",
     "compute_dockq",
     "interface_mask_from_gt",
