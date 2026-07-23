@@ -42,6 +42,7 @@ from tinyfold.inference import (
     sample_centroids,
     sample_centroids_with_sampler,
     sample_k_centroids,
+    self_cond_rollout,
 )
 
 # Model imports
@@ -503,6 +504,10 @@ def parse_args():
     # Self-conditioning
     parser.add_argument("--self_cond_prob", type=float, default=0.5,
                         help="Probability of using self-conditioning during training (0 to disable)")
+    parser.add_argument("--self_cond_steps", type=int, default=1,
+                        help="AF3 detached mini-rollout length for self-conditioning "
+                             "(C4). 1 = single forward at the current sigma; 2-3 runs "
+                             "a short reverse-diffusion rollout from the noised state.")
 
     # Recycling (C1)
     parser.add_argument("--n_recycle", type=int, default=0,
@@ -1641,23 +1646,28 @@ def _run_training(args, progress):
                             int(torch.randint(0, args.n_recycle + 1, (1,)).item())
                             if args.n_recycle > 0 else 0
                         )
-                        # Self-conditioning: with probability p, first run model to get x0_prev
+                        # Self-conditioning (C4): with probability p, run an AF3
+                        # detached mini-rollout from the current noised state and
+                        # feed its clean-coord estimate back as x0_prev for the one
+                        # trained step. Shared with inference via self_cond_rollout
+                        # (no_grad + detached inside), so train and eval cannot
+                        # drift. self_cond_prob=0 skips this entirely -> x0_prev
+                        # stays None, bitwise-identical to the no-self-cond step.
                         x0_prev = None
                         _amp = getattr(args, "amp", False) and torch.cuda.is_available()
                         if args.self_cond_prob > 0 and torch.rand(1).item() < args.self_cond_prob:
-                            with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, enabled=_amp):
-                                sc_out = stage1_module.forward_sigma(
-                                    x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
-                                    sigma, batch['mask_res'], x0_prev=None,
-                                    esm_embed=batch.get('esm_embed'),
-                                    template_coords_res=tmpl_coords,
-                                    template_mask=tmpl_mask,
-                                    template_frame_id=tmpl_frame,
-                                    msa_feats=msa_feats,
-                                    n_recycle=_n_rc,
+                            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=_amp):
+                                x0_prev = self_cond_rollout(
+                                    stage1_module, batch, x_t, sigma,
+                                    n_steps=args.self_cond_steps, is_onestep=is_onestep,
+                                    sigma_min=args.sigma_min, n_recycle=_n_rc,
+                                    template_kwargs={
+                                        'template_coords_res': tmpl_coords,
+                                        'template_mask': tmpl_mask,
+                                        'template_frame_id': tmpl_frame,
+                                        'msa_feats': msa_feats,
+                                    },
                                 )
-                                # OneStep returns (centroid, atoms, pred_lddt); self-conditioning only uses centroids.
-                                x0_prev = (sc_out[0] if is_onestep else sc_out).detach()
 
                         # Main forward pass (with or without self-conditioning)
                         atom_cond_tokens = None

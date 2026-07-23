@@ -95,6 +95,50 @@ def _template_kwargs(batch):
 
 
 @torch.no_grad()
+def self_cond_rollout(model, batch, x_t, sigma, n_steps, is_onestep,
+                      sigma_min=0.002, clamp_val=3.0, n_recycle=0,
+                      template_kwargs=None):
+    """AF3 detached mini-rollout for self-conditioning (C4).
+
+    Starting from the current noised state ``x_t`` at noise level ``sigma``, run
+    ``n_steps`` reverse-diffusion (Euler) steps down toward ``sigma_min`` and
+    return the DETACHED clean-coordinate estimate to feed back as ``x0_prev`` for
+    the single trained step. This is the AF3 recipe -- a short rollout from noise
+    at train time -- not the inference-time single forward that was here before.
+
+    Runs entirely under ``@torch.no_grad()``, and the return is detached, so the
+    rollout contributes no gradient to the trained step. The denoiser interface
+    and Euler update mirror :func:`sample_centroids_ve`, so train and inference
+    share one code path and cannot drift.
+
+    ``sigma`` is per-sample ``[B]``; the sub-schedule is log-linear from each
+    sample's ``sigma`` down to ``sigma_min``. ``n_steps=1`` is a single forward
+    at the current sigma.
+    """
+    tk = template_kwargs or {}
+    x = x_t
+    sig = sigma.clone()
+    smin = torch.full_like(sig, float(sigma_min))
+    log_lo = torch.log(smin)
+    log_start = torch.log(sig.clamp(min=float(sigma_min)))
+    x0 = None
+    for i in range(n_steps):
+        frac = (i + 1) / n_steps
+        sig_next = torch.exp(log_start * (1.0 - frac) + log_lo * frac)
+        out = model.forward_sigma(
+            x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
+            sig, batch['mask_res'], x0_prev=None,
+            esm_embed=batch.get('esm_embed'), n_recycle=n_recycle, **tk,
+        )
+        x0 = out[0] if is_onestep else out
+        x0 = torch.clamp(x0, -clamp_val, clamp_val)
+        d = (x - x0) / sig.view(-1, 1, 1)
+        x = x + d * (sig_next - sig).view(-1, 1, 1)
+        sig = sig_next
+    return x0.detach()
+
+
+@torch.no_grad()
 def sample_centroids(model, batch, noiser, device, clamp_val=3.0,
                      align_per_step=False, recenter=False):
     """DDPM sampling for Stage 1 centroids only.

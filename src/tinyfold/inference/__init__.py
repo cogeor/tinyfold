@@ -6,6 +6,7 @@ from tinyfold.inference.samplers import (
     sample_centroids_ve,
     sample_centroids_with_sampler,
     sample_k_centroids,
+    self_cond_rollout,
 )
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "sample_centroids_ve",
     "sample_centroids_with_sampler",
     "sample_k_centroids",
+    "self_cond_rollout",
 ]
