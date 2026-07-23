@@ -23,6 +23,94 @@ from .data_split import (
 )
 
 
+class SplitLeakageError(RuntimeError):
+    """Raised when a run's test set shares sequence clusters with training."""
+
+
+def audit_and_gate_split(
+    args,
+    table,
+    train_indices,
+    test_indices,
+    logger,
+) -> dict:
+    """Measure train/test cluster leakage and, by default, refuse to train on it.
+
+    Every headline number this project produced before 2026-07-23 came from a
+    ``test_strategy="random"`` split. On the le200 split that meant 183 of 200
+    test complexes shared a sequence cluster with training, and re-scoring the
+    same checkpoint by stratum gave DockQ 0.251 (leaked, n=183) versus 0.044
+    (clean, n=17) with 0% medium-quality. The cluster-aware machinery existed
+    the whole time and simply was not wired to the configs that produced the
+    results, and nothing in the run output recorded which kind of split was
+    used. This makes that impossible to repeat silently.
+
+    Returns the audit dict; it is merged into the run's split_info so every run
+    is self-describing.
+    """
+    from .cluster_split import audit_split_leakage, load_clusters
+
+    require_clean = getattr(args, "require_clean_split", True)
+    clusters_path = getattr(args, "clusters", None) or "data/processed/clusters.json"
+
+    if not os.path.exists(clusters_path):
+        msg = (
+            f"Cannot audit split leakage: no clusters file at {clusters_path}. "
+            "Generate one with scripts/data/cluster_interfaces.py, point "
+            "--clusters at it, or pass --no-require-clean-split to train "
+            "without the check (the run will be labelled UNAUDITED)."
+        )
+        if require_clean:
+            raise SplitLeakageError(msg)
+        logger.log(f"  WARNING: {msg}")
+        return {"split_audited": False, "reason": "clusters file missing"}
+
+    sample_ids = table["sample_id"]
+    train_ids = [sample_ids[i].as_py() for i in train_indices]
+    test_ids = [sample_ids[i].as_py() for i in test_indices]
+    audit = audit_split_leakage(train_ids, test_ids, load_clusters(clusters_path))
+    audit["split_audited"] = True
+
+    logger.log("  Split leakage audit:")
+    logger.log(f"    Train clusters: {audit['n_train_clusters']}")
+    logger.log(f"    Test clusters:  {audit['n_test_clusters']}"
+               f" (max share {100 * audit['max_test_cluster_share']:.1f}%)")
+    logger.log(f"    Test samples whose cluster is in train: "
+               f"{audit['n_test_leaked']}/{len(test_ids)} "
+               f"({100 * audit['frac_test_leaked']:.1f}%)")
+    if audit["n_test_unclustered"]:
+        logger.log(f"    WARNING: {audit['n_test_unclustered']} test samples are "
+                   "absent from clusters.json and could not be checked")
+
+    if audit["n_test_leaked"]:
+        msg = (
+            f"LEAKY SPLIT: {audit['n_test_leaked']}/{len(test_ids)} test samples "
+            f"({100 * audit['frac_test_leaked']:.1f}%) share a sequence cluster "
+            "with training. Any DockQ from this split measures memorisation, not "
+            "generalization. Build a clean split with "
+            "scripts/data/make_cluster_split.py --per-cluster-cap 1 and pass it "
+            "via --load_split, or set test_strategy=cluster."
+        )
+        if require_clean:
+            raise SplitLeakageError(msg)
+        logger.log("  " + "=" * 68)
+        logger.log(f"  {msg}")
+        logger.log("  Proceeding anyway because --no-require-clean-split was set.")
+        logger.log("  " + "=" * 68)
+
+    # A clean split whose test samples come from very few clusters is disjoint
+    # but not informative -- effective n is the cluster count, not the sample
+    # count (clean_le600 shipped 200 samples carrying 21 clusters).
+    if audit["n_test_clusters"] and audit["max_test_cluster_share"] > 0.1:
+        logger.log(
+            f"  WARNING: one cluster is {100 * audit['max_test_cluster_share']:.0f}% "
+            f"of the test set ({audit['n_test_clusters']} clusters for "
+            f"{len(test_ids)} samples). Effective n is the cluster count. "
+            "Rebuild with --per-cluster-cap 1."
+        )
+    return audit
+
+
 def get_or_create_split(
     args,
     table,
@@ -46,6 +134,13 @@ def get_or_create_split(
         logger.log("Data split (loaded from file):")
         logger.log(f"  Training: {len(train_indices)} samples")
         logger.log(f"  Test: {len(test_indices)} samples")
+        # A loaded split is audited exactly like a generated one -- the file
+        # may predate the cluster machinery or have been built with a random
+        # strategy, and its provenance is not otherwise recorded.
+        loaded_info["leakage_audit"] = audit_and_gate_split(
+            args, table, train_indices, test_indices, logger
+        )
+        loaded_info["split_source"] = args.load_split
         return train_indices, test_indices, loaded_info
 
     # Parse optional test_size_bins (CSV string from CLI, list from YAML).
@@ -65,17 +160,26 @@ def get_or_create_split(
         seed=getattr(args, 'seed', 42),
         test_strategy=getattr(args, 'test_strategy', 'random'),
         test_size_bins=bins_arg,
+        clusters_path=getattr(args, 'clusters', None),
+        per_cluster_cap=getattr(args, 'per_cluster_cap', 1),
+        n_test_clusters=getattr(args, 'n_test_clusters', None),
     )
     train_indices, test_indices = get_train_test_indices(table, split_config)
     split_info = get_split_info(table, split_config)
 
-    logger.log(f"Data split (seed={split_config.seed}):")
+    logger.log(f"Data split (seed={split_config.seed}, "
+               f"strategy={split_config.test_strategy}):")
     if getattr(args, 'select_smallest', False):
         logger.log(f"  Selected {split_info['eligible_samples']} smallest proteins")
     else:
         logger.log(f"  Eligible samples: {split_info['eligible_samples']}")
     logger.log(f"  Training: {len(train_indices)} samples")
     logger.log(f"  Test: {len(test_indices)} samples")
+
+    split_info["leakage_audit"] = audit_and_gate_split(
+        args, table, train_indices, test_indices, logger
+    )
+    split_info["split_source"] = "generated"
 
     # Save split for reuse
     save_dir = output_dir or getattr(args, 'output_dir', '.')

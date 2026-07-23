@@ -189,12 +189,35 @@ def parse_args():
     parser.add_argument("--select_smallest", action="store_true",
                         help="Select N smallest proteins instead of filtering by atom range")
     parser.add_argument("--test_strategy", type=str, default="random",
-                        choices=["random", "stratified"],
+                        choices=["random", "stratified", "cluster"],
                         help="Test-set sampling: 'random' (default) shuffles "
                              "eligible pool and takes n_test; 'stratified' bins by "
                              "LA+LB total residues and takes an equal share per bin "
                              "(so the headline number isn't dominated by small "
-                             "complexes in datasets with a long size tail).")
+                             "complexes in datasets with a long size tail); "
+                             "'cluster' holds out whole sequence clusters so the "
+                             "test set is leakage-free. NEITHER 'random' NOR "
+                             "'stratified' is leakage-safe -- on a random le200 "
+                             "split 183/200 test complexes shared a cluster with "
+                             "training (DockQ 0.251 leaked vs 0.044 clean).")
+    parser.add_argument("--clusters", type=str, default="data/processed/clusters.json",
+                        help="clusters.json used to audit train/test leakage on "
+                             "every run, and to build the split when "
+                             "--test_strategy cluster.")
+    parser.add_argument("--require_clean_split", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Refuse to train when any test sample shares a "
+                             "sequence cluster with training (default: on). Pass "
+                             "--no-require-clean-split to train on a leaky split "
+                             "anyway; the run is then labelled LEAKY in its log "
+                             "and split.json.")
+    parser.add_argument("--per_cluster_cap", type=int, default=1,
+                        help="With --test_strategy cluster: max test samples from "
+                             "any one cluster. 1 (default) means n_test samples "
+                             "carry n_test independent clusters.")
+    parser.add_argument("--n_test_clusters", type=int, default=None,
+                        help="With --test_strategy cluster: stop after this many "
+                             "test clusters instead of after --n_test samples.")
     parser.add_argument("--test_size_bins", type=str, default=None,
                         help="Comma-separated bin lower-edges (LA+LB residues) for "
                              "--test_strategy stratified. Default: '0,400,600,1000,1500' "

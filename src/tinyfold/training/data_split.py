@@ -64,7 +64,23 @@ class DataSplitConfig:
     #   "stratified" - bin eligible samples by total residue count, take an equal
     #                  share per bin so the headline number is not dominated by
     #                  the population mode (small complexes).
+    #   "cluster"    - leakage-clean holdout by sequence cluster. Requires
+    #                  clusters_path. NEITHER "random" NOR "stratified" is
+    #                  leakage-safe: on a random le200 split, 183 of 200 test
+    #                  complexes shared a cluster with training, and the same
+    #                  checkpoint scored DockQ 0.251 on those vs 0.044 on the
+    #                  17 clean ones. Prefer "cluster" for anything reportable.
     test_strategy: str = "random"
+
+    # --- test_strategy == "cluster" only ---------------------------------
+    # Path to a clusters.json ({sample_to_cluster: {sample_id: cluster_id}}).
+    clusters_path: str | None = None
+    # Max test samples drawn from any one cluster. 1 means n_test test samples
+    # carry n_test INDEPENDENT clusters. Uncapped holdout lets a single cluster
+    # supply most of the test set (clean_le600: 137 of 200 from one cluster).
+    per_cluster_cap: int | None = 1
+    # Alternative stopping rule: stop after this many test clusters.
+    n_test_clusters: int | None = None
 
     # Bin edges (inclusive lower, exclusive upper) for stratified mode.
     # Specified in TOTAL residues (LA + LB). Default partitions the full DIPS
@@ -75,9 +91,15 @@ class DataSplitConfig:
     def __post_init__(self):
         if self.n_test is None:
             self.n_test = max(10, self.n_train // 5)
-        if self.test_strategy not in {"random", "stratified"}:
+        if self.test_strategy not in {"random", "stratified", "cluster"}:
             raise ValueError(
-                f"test_strategy must be 'random' or 'stratified', got {self.test_strategy!r}"
+                "test_strategy must be 'random', 'stratified' or 'cluster', "
+                f"got {self.test_strategy!r}"
+            )
+        if self.test_strategy == "cluster" and not self.clusters_path:
+            raise ValueError(
+                "test_strategy='cluster' requires clusters_path "
+                "(e.g. data/processed/clusters.json)"
             )
         if self.test_size_bins is None:
             # Default bins: [0, 400), [400, 600), [600, 1000), [1000, 1500),
@@ -212,6 +234,26 @@ def get_train_test_indices(
     Raises:
         ValueError: If not enough samples available
     """
+    if config.test_strategy == "cluster":
+        # Leakage-clean holdout. cluster_holdout_indices does its own
+        # eligibility filtering and its own sizing (a capped test set may
+        # legitimately return fewer than n_test samples when the eligible pool
+        # has fewer clusters than that), so it bypasses the checks below.
+        from .cluster_split import cluster_holdout_indices, load_clusters
+
+        clusters = load_clusters(config.clusters_path)
+        train_indices, test_indices, _info = cluster_holdout_indices(
+            table, clusters,
+            n_train=config.n_train,
+            n_test=config.n_test,
+            min_atoms=config.min_atoms,
+            max_atoms=config.max_atoms,
+            seed=config.seed,
+            per_cluster_cap=config.per_cluster_cap,
+            n_test_clusters=config.n_test_clusters,
+        )
+        return train_indices, test_indices
+
     # Get eligible samples sorted by sample_id
     eligible = get_eligible_samples(table, config)
 
@@ -313,6 +355,12 @@ def save_split(info: dict, path: str):
         'test_atom_range': list(info['test_atom_range']),
         'config': asdict(info['config']),
     }
+    # Provenance: which strategy produced this split and how leaky it is. A
+    # split file that does not record this is exactly how six months of
+    # leakage-inflated numbers went unnoticed, so persist it whenever present.
+    for key in ('leakage_audit', 'split_source'):
+        if key in info:
+            save_data[key] = info[key]
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w') as f:

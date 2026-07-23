@@ -17,6 +17,8 @@ from .objective import LossComposer, LossRegistry, LossTerm
 from .registry_append import append_registry_row
 from .run_naming import generate_run_name
 from .setup import (
+    SplitLeakageError,
+    audit_and_gate_split,
     create_diffusion_components,
     create_train_sampler,
     get_or_create_split,
@@ -46,6 +48,8 @@ __all__ = [
     "apply_rigid_augment",
     "apply_rotation_augment",
     # Setup utilities
+    "SplitLeakageError",
+    "audit_and_gate_split",
     "get_or_create_split",
     "create_diffusion_components",
     "load_model_checkpoint",

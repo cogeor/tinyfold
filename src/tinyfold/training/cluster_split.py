@@ -191,6 +191,49 @@ def cluster_holdout_indices(
     return train_idx, test_idx, info
 
 
+def audit_split_leakage(
+    train_ids: list[str],
+    test_ids: list[str],
+    clusters: dict[str, int],
+) -> dict:
+    """Measure how much of ``test_ids`` is covered by ``train_ids``' clusters.
+
+    This is the instrument that made the le200 result interpretable. Scoring
+    `scale_6M_le200` per-target and splitting by this flag gave:
+
+        cluster-LEAKED (n=183): mean DockQ 0.251, 44.3% success, 25.1% medium
+        cluster-CLEAN  (n= 17): mean DockQ 0.044,  5.9% success,  0.0% medium
+
+    and DockQ rose monotonically with the number of same-cluster training
+    examples (0 -> 0.044; 1-4 -> 0.171; 5-19 -> 0.182; 20+ -> 0.353). Any run
+    reporting a headline number without this audit is not interpretable.
+
+    ``n_test_unclustered`` matters: samples absent from clusters.json cannot be
+    checked, so a large count silently weakens the guarantee.
+    """
+    train_clusters = {clusters[s] for s in train_ids if s in clusters}
+    test_cluster_of = {s: clusters.get(s) for s in test_ids}
+
+    leaked = [s for s, c in test_cluster_of.items() if c is not None and c in train_clusters]
+    unclustered = [s for s, c in test_cluster_of.items() if c is None]
+
+    sizes: dict[int, int] = {}
+    for c in test_cluster_of.values():
+        if c is not None:
+            sizes[c] = sizes.get(c, 0) + 1
+    n_test = len(test_ids)
+
+    return {
+        "n_train_clusters": len(train_clusters),
+        "n_test_clusters": len(sizes),
+        "n_test_leaked": len(leaked),
+        "frac_test_leaked": (len(leaked) / n_test) if n_test else 0.0,
+        "n_test_unclustered": len(unclustered),
+        "max_test_cluster_share": (max(sizes.values()) / n_test) if (sizes and n_test) else 0.0,
+        "leaked_test_ids": sorted(leaked)[:20],
+    }
+
+
 def save_cluster_split(table, train_idx, test_idx, info, path: str) -> None:
     """Write a cluster-holdout split JSON in the canonical data_split format.
 
