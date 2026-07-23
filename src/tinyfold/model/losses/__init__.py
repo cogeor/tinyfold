@@ -40,6 +40,11 @@ from .mse import (
     compute_rmse,
     kabsch_align,
 )
+from .permutation import (
+    apply_chain_swap,
+    choose_chain_permutation,
+    permutation_aligned_target,
+)
 
 __all__ = [
     # MSE
@@ -49,6 +54,10 @@ __all__ = [
     "compute_c_rmsd",
     "compute_relative_distance_loss",
     "compute_distance_consistency_loss",
+    # Chain permutation (C5)
+    "choose_chain_permutation",
+    "apply_chain_swap",
+    "permutation_aligned_target",
     # Geometry
     "GeometryLoss",
     "bond_length_loss",

@@ -15,6 +15,7 @@ from typing import Any
 import numpy as np
 import torch
 
+from tinyfold.model.metrics import chains_are_interchangeable
 from tinyfold.types import Batch
 
 
@@ -133,6 +134,11 @@ def load_sample(
         'n_atoms': n_atoms,
         'n_res': n_res,
         'sample_id': sample_id,
+        # C5: cache the homodimer predicate (chains A/B sequence-identical) so
+        # the chain-permutation loss and the DockQ metric agree on what counts
+        # as interchangeable. This is the full-complex label; the loss re-derives
+        # it on the (possibly cropped) batch for correctness.
+        'is_homomer': bool(chains_are_interchangeable(seq_res, chain_res)),
     }
 
     if esm_cache_dir is not None:
@@ -363,6 +369,10 @@ def collate_batch(
         'n_res': [s['n_res'] for s in samples],
         'n_atoms': [s['n_atoms'] for s in samples],
         'sample_ids': [s['sample_id'] for s in samples],
+        'is_homomer': torch.tensor(
+            [bool(s.get('is_homomer', False)) for s in samples],
+            dtype=torch.bool, device=device,
+        ),
     }
     if esm_embed_padded is not None:
         out['esm_embed'] = esm_embed_padded.to(device)

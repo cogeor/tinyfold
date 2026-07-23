@@ -56,6 +56,8 @@ from tinyfold.model.diffusion import (
 from tinyfold.model.losses import (
     ContactLoss,
     GeometryLoss,
+    apply_chain_swap,
+    choose_chain_permutation,
     compute_c_rmsd,
     compute_distance_consistency_loss,
     compute_lddt,
@@ -530,6 +532,14 @@ def parse_args():
                              "(0.0 = off, 0.999 typical). When on, eval and the "
                              "saved ema_state_dict use the smoothed weights; "
                              "model_state_dict stays the raw weights.")
+
+    # Chain-permutation-aware loss (C5) -- correctness fix, on by default.
+    parser.add_argument("--chain_perm_loss", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="For homodimers, score against whichever chain "
+                             "assignment (identity or A<->B swap) the prediction is "
+                             "closer to, applied consistently across all coordinate "
+                             "losses. On by default (correctness fix, not a tunable).")
 
     # Training augmentation
     parser.add_argument("--translate_aug", type=float, default=0.0,
@@ -1754,6 +1764,30 @@ def _run_training(args, progress):
                                 esm_embed=batch.get('esm_embed'),
                             )
                             atoms_pred = None
+
+                    # C5: chain-permutation-aware target. For sequence-identical
+                    # (homodimer) chains -- 34.5% of DIPS -- the GT "A"/"B"
+                    # labelling is arbitrary, so pick per sample the assignment
+                    # (identity vs A<->B swap) that minimises the centroid MSE and
+                    # apply that SAME swap to every coordinate target (centroids,
+                    # coords_res, atoms), so all loss terms stay consistent. Chosen
+                    # once, on the DETACHED prediction. Off -> targets unchanged
+                    # (bitwise). Heterodimers are never swapped.
+                    if getattr(args, "chain_perm_loss", True) and is_onestep:
+                        _swap = choose_chain_permutation(
+                            centroids_pred.detach(), centroids_target,
+                            batch['chain_ids'], batch['aa_seq'], batch['mask_res'],
+                        )
+                        if bool(_swap.any()):
+                            centroids_target = apply_chain_swap(
+                                centroids_target, batch['chain_ids'],
+                                batch['mask_res'], _swap)
+                            for _k in ('coords_res', 'centroids', 'atom14_gt'):
+                                if _k in batch and torch.is_tensor(batch[_k]):
+                                    batch[_k] = apply_chain_swap(
+                                        batch[_k], batch['chain_ids'],
+                                        batch['mask_res'], _swap)
+
                     # Loss: MSE on centroids + distance consistency
                     # Use centroids_target which may be rotated by augmentation
                     if loss_weight is not None:
