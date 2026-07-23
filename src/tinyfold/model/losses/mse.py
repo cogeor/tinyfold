@@ -286,10 +286,81 @@ def compute_relative_distance_loss(
     return loss
 
 
+def _backbone_frames(coords: Tensor, eps: float = 1e-8) -> tuple[Tensor, Tensor]:
+    """Per-residue rigid frames from backbone N/CA/C via Gram-Schmidt.
+
+    ``coords`` is ``[B, L, 4, 3]`` (N, CA, C, O). Returns ``(R, t)`` where
+    ``R`` is ``[B, L, 3, 3]`` with the local basis as COLUMNS and ``t`` is the
+    CA position ``[B, L, 3]`` -- so ``x_global = R @ x_local + t`` and the
+    inverse (global -> local) is ``R^T (x_global - t)``.
+    """
+    n = coords[..., 0, :]
+    ca = coords[..., 1, :]
+    c = coords[..., 2, :]
+    e1 = c - ca
+    e1 = e1 / (e1.norm(dim=-1, keepdim=True) + eps)
+    v2 = n - ca
+    u2 = v2 - (e1 * v2).sum(-1, keepdim=True) * e1
+    e2 = u2 / (u2.norm(dim=-1, keepdim=True) + eps)
+    e3 = torch.cross(e1, e2, dim=-1)
+    R = torch.stack([e1, e2, e3], dim=-1)  # columns are basis vectors
+    return R, ca
+
+
+def compute_fape_loss(
+    pred_coords: Tensor,       # [B, L, 4, 3] predicted backbone
+    target_coords: Tensor,     # [B, L, 4, 3] ground-truth backbone
+    chain_ids: Tensor,         # [B, L]
+    mask: Tensor | None = None,  # [B, L]
+    clamp: float = 10.0,
+    length_scale: float = 10.0,
+    eps: float = 1e-4,
+) -> Tensor:
+    """Frame-aligned point error with an inter-chain-unclamped tail (C6).
+
+    Builds a local frame per residue from its backbone, expresses every other
+    residue's CA in each frame (in pred and target separately), and takes the
+    per-pair distance error. Intra-chain pairs are clamped at ``clamp`` (AF2's
+    10 A); INTER-chain pairs are left UNCLAMPED, so a badly-docked interface
+    keeps producing gradient no matter how far off it is -- AF-Multimer's recipe
+    "to provide a better gradient signal for incorrect interfaces". Errors are
+    divided by ``length_scale`` (AF2 = 10 A). FAPE is invariant to a global rigid
+    transform of the inputs (everything is frame-relative).
+    """
+    B, L = chain_ids.shape
+    device = pred_coords.device
+    if mask is None:
+        mask = torch.ones(B, L, dtype=torch.bool, device=device)
+
+    Rp, tp = _backbone_frames(pred_coords)
+    Rt, tt = _backbone_frames(target_coords)
+    xp = pred_coords[..., 1, :]      # CA points [B, L, 3]
+    xt = target_coords[..., 1, :]
+
+    # Local coords of point j in frame i: R_i^T (x_j - t_i)  -> [B, i, j, 3]
+    diff_p = xp[:, None, :, :] - tp[:, :, None, :]
+    diff_t = xt[:, None, :, :] - tt[:, :, None, :]
+    loc_p = torch.einsum('bick,bijc->bijk', Rp, diff_p)
+    loc_t = torch.einsum('bick,bijc->bijk', Rt, diff_t)
+
+    d = torch.sqrt(((loc_p - loc_t) ** 2).sum(-1) + eps)  # [B, i, j]
+
+    inter = chain_ids.unsqueeze(-1) != chain_ids.unsqueeze(-2)  # [B, i, j]
+    # Intra-chain clamped; inter-chain unclamped.
+    d_used = torch.where(inter, d, d.clamp(max=clamp))
+
+    pair_mask = (mask.unsqueeze(-1) & mask.unsqueeze(-2)).float()
+    denom = pair_mask.sum(dim=(1, 2)).clamp(min=1)
+    per_sample = (d_used * pair_mask).sum(dim=(1, 2)) / denom  # [B]
+    return (per_sample / length_scale).mean()
+
+
 def compute_distance_consistency_loss(
     pred: Tensor,
     target: Tensor,
     mask: Tensor | None = None,
+    chain_ids: Tensor | None = None,
+    interchain_weight: float = 1.0,
 ) -> Tensor:
     """Loss for preserving pairwise distances.
 
@@ -303,6 +374,12 @@ def compute_distance_consistency_loss(
         pred: Predicted coordinates [B, N, 3] (e.g., centroids)
         target: Target coordinates [B, N, 3]
         mask: Optional mask for valid positions [B, N]
+        chain_ids: Optional [B, N] chain labels. Required to up-weight
+            inter-chain residue pairs (C6).
+        interchain_weight: Multiplier for pairs spanning the two chains
+            (default 1.0 = off; every pair weighted equally, bitwise-identical
+            to the pre-C6 loss). AF-Multimer gives interface pairs a stronger
+            gradient signal for wrong docking; this is the distance-loss analogue.
 
     Returns:
         loss: Scalar distance consistency loss (averaged per-sample, then across batch)
@@ -317,9 +394,19 @@ def compute_distance_consistency_loss(
     if mask is not None:
         # Create pairwise mask [B, N, N]
         pair_mask = mask.unsqueeze(-1) & mask.unsqueeze(-2)
-        # Per-sample loss: average over valid pairs within each sample
-        n_valid_pairs_per_sample = pair_mask.sum(dim=(1, 2)).clamp(min=1)  # [B]
-        per_sample_loss = (dist_diff * pair_mask.float()).sum(dim=(1, 2)) / n_valid_pairs_per_sample  # [B]
+        w = pair_mask.float()
+        if chain_ids is not None and interchain_weight != 1.0:
+            # Up-weight inter-chain pairs. interchain_weight==1.0 short-circuits
+            # above so the default path is byte-identical.
+            inter = chain_ids.unsqueeze(-1) != chain_ids.unsqueeze(-2)  # [B,N,N]
+            w = w * torch.where(
+                inter,
+                torch.as_tensor(interchain_weight, dtype=w.dtype, device=w.device),
+                torch.ones((), dtype=w.dtype, device=w.device),
+            )
+        # Per-sample loss: weighted average over valid pairs within each sample
+        denom = w.sum(dim=(1, 2)).clamp(min=1)  # [B]
+        per_sample_loss = (dist_diff * w).sum(dim=(1, 2)) / denom  # [B]
         # Average across samples
         loss = per_sample_loss.mean()
     else:

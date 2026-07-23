@@ -60,6 +60,7 @@ from tinyfold.model.losses import (
     choose_chain_permutation,
     compute_c_rmsd,
     compute_distance_consistency_loss,
+    compute_fape_loss,
     compute_lddt,
     compute_lddt_metrics,
     compute_mse_loss,
@@ -540,6 +541,17 @@ def parse_args():
                              "assignment (identity or A<->B swap) the prediction is "
                              "closer to, applied consistently across all coordinate "
                              "losses. On by default (correctness fix, not a tunable).")
+
+    # Unclamped inter-chain loss weighting (C6)
+    parser.add_argument("--interchain_weight", type=float, default=1.0,
+                        help="Multiplier for inter-chain residue pairs in the "
+                             "distance-consistency loss (1.0 = off, bitwise).")
+    parser.add_argument("--fape_weight", type=float, default=0.0,
+                        help="Weight for the FAPE term (0.0 = off). Intra-chain "
+                             "pairs clamped at --fape_clamp; inter-chain unclamped "
+                             "(AF-Multimer: stronger gradient for wrong interfaces).")
+    parser.add_argument("--fape_clamp", type=float, default=10.0,
+                        help="Intra-chain FAPE clamp in Angstroms (AF2 = 10).")
 
     # Training augmentation
     parser.add_argument("--translate_aug", type=float, default=0.0,
@@ -1803,9 +1815,12 @@ def _run_training(args, progress):
                             centroids_pred, centroids_target, batch['mask_res']
                         )
                     # dist loss is a geometric regularizer (not the EDM-preconditioned
-                    # objective), so we leave it unweighted by lambda(sigma).
+                    # objective), so we leave it unweighted by lambda(sigma). C6:
+                    # up-weight inter-chain pairs (interchain_weight=1.0 = off).
                     loss_dist = compute_distance_consistency_loss(
-                        centroids_pred, centroids_target, batch['mask_res']
+                        centroids_pred, centroids_target, batch['mask_res'],
+                        chain_ids=batch['chain_ids'],
+                        interchain_weight=args.interchain_weight,
                     )
                     loss = loss_mse + args.dist_weight * loss_dist
 
@@ -1816,6 +1831,7 @@ def _run_training(args, progress):
                     loss_bond = 0.0
                     loss_angle = 0.0
                     loss_omega = 0.0
+                    loss_fape = 0.0
                     alpha_atom = 0.0
                     if _atom_diff and atom_cond_tokens is not None:
                         # === ATOM-DIFFUSION loss ===
@@ -1879,6 +1895,17 @@ def _run_training(args, progress):
                             loss_angle = geom_losses['bond_angle'].item()
                             loss_omega = geom_losses['omega'].item()
 
+                        # C6: FAPE (inter-chain unclamped) on the atom-diff
+                        # predicted backbone vs the rotated GT (0.0 = off).
+                        if args.fape_weight > 0:
+                            fape = compute_fape_loss(
+                                atoms_pred_ad, coords_gt,
+                                batch['chain_ids'], batch['mask_res'],
+                                clamp=args.fape_clamp,
+                            )
+                            loss = loss + args.fape_weight * fape
+                            loss_fape = fape.item()
+
                         # === SIDECHAIN (third-stage) chi loss (C2) ===
                         # Co-trained on top of the atom-diff backbone. Denoise
                         # noised chi conditioned on the denoiser tokens + the
@@ -1941,6 +1968,17 @@ def _run_training(args, progress):
                             loss_bond = geom_losses['bond_length'].item()
                             loss_angle = geom_losses['bond_angle'].item()
                             loss_omega = geom_losses['omega'].item()
+
+                        # C6: FAPE with an inter-chain-unclamped tail on the
+                        # predicted backbone (0.0 weight = off).
+                        if args.fape_weight > 0:
+                            fape = compute_fape_loss(
+                                atoms_pred, batch['coords_res'],
+                                batch['chain_ids'], batch['mask_res'],
+                                clamp=args.fape_clamp,
+                            )
+                            loss = loss + args.fape_weight * fape
+                            loss_fape = fape.item()
 
                     # === Loop 06: confidence head auxiliary loss ===
                     # Regress predicted lDDT against GT lDDT of the EDM-blended

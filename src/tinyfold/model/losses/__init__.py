@@ -35,6 +35,7 @@ from .lddt import (
 from .mse import (
     compute_c_rmsd,
     compute_distance_consistency_loss,
+    compute_fape_loss,
     compute_mse_loss,
     compute_relative_distance_loss,
     compute_rmse,
@@ -54,6 +55,7 @@ __all__ = [
     "compute_c_rmsd",
     "compute_relative_distance_loss",
     "compute_distance_consistency_loss",
+    "compute_fape_loss",
     # Chain permutation (C5)
     "choose_chain_permutation",
     "apply_chain_swap",
