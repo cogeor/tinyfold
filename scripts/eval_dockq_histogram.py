@@ -28,26 +28,18 @@ import torch
 from tinyfold.inference import load_onestep_run, sample_k_centroids
 from tinyfold.model.diffusion import KarrasSchedule, VENoiser
 from tinyfold.model.losses import compute_c_rmsd
+from tinyfold.model.metrics import capri_band as band
 from tinyfold.model.metrics import compute_dockq
 from tinyfold.training import collate_batch, load_sample_raw
-
-
-def band(dq):
-    if dq is None:
-        return None
-    if dq < 0.23:
-        return "incorrect"
-    if dq < 0.49:
-        return "acceptable"
-    if dq < 0.80:
-        return "medium"
-    return "high"
+from tinyfold.training.cluster_split import load_clusters
+from tinyfold.training.leakage_report import annotate_leakage, format_report
 
 
 def eval_split(model, noiser, table, test_indices, device, esm_dir,
-               per_chain, K, seed, label, global_scale=None):
+               per_chain, K, seed, label, global_scale=None, sample_ids=None):
     bands = {"incorrect": 0, "acceptable": 0, "medium": 0, "high": 0}
     dockqs, c_rmsds = [], []
+    rows = []
     n_skip = 0
     for pos, idx in enumerate(test_indices):
         s = load_sample_raw(table, idx, normalize=True,
@@ -84,6 +76,9 @@ def eval_split(model, noiser, table, test_indices, device, esm_dir,
             mask=batch["mask_res"][:, :n_res],
         ).item() * s["std"]
         c_rmsds.append(c)
+        if sample_ids is not None:
+            rows.append({"sample_id": sample_ids[pos], "dockq": dq,
+                         "n_res": int(n_res), "c_rmsd_A": c})
     n = len(dockqs)
     mean_dq = float(np.mean(dockqs)) if n else float("nan")
     succ = 100.0 * sum(1 for d in dockqs if d >= 0.23) / n if n else float("nan")
@@ -95,7 +90,7 @@ def eval_split(model, noiser, table, test_indices, device, esm_dir,
           f"acceptable={bands['acceptable']}  medium={bands['medium']}  "
           f"high={bands['high']}")
     return {"label": label, "n": n, "mean_dockq": mean_dq, "success": succ,
-            "mean_c_rmsd": mean_c, "bands": bands}
+            "mean_c_rmsd": mean_c, "bands": bands, "rows": rows}
 
 
 def main():
@@ -107,6 +102,8 @@ def main():
                     help="run split.json (uses its test_indices as the small test set)")
     ap.add_argument("--K", type=int, default=5)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--clusters", default="data/processed/clusters.json",
+                    help="clusters.json for the leakage-stratified read-out")
     ap.add_argument("--out", default=None, help="optional JSON summary path")
     args = ap.parse_args()
 
@@ -140,18 +137,34 @@ def main():
         if os.path.exists(p):
             splits.append((f"OOD {b}", p))
 
+    # Leakage stratification needs the cluster map; without it an aggregate
+    # mean cannot distinguish generalization from memorization.
+    clusters = None
+    if os.path.exists(args.clusters):
+        clusters = load_clusters(args.clusters)
+    else:
+        print(f"WARNING: no clusters at {args.clusters}; "
+              "skipping the leakage-stratified read-out")
+
     results = []
     for label, path in splits:
         d = json.load(open(path))
         test_idx = d["test_indices"]
-        results.append(eval_split(
+        res = eval_split(
             model, noiser, table, test_idx, device, args.esm_dir,
             per_chain=True, K=args.K, seed=args.seed, label=label,
-            global_scale=global_scale,
-        ))
+            global_scale=global_scale, sample_ids=d.get("test_ids"),
+        )
+        if clusters is not None and res["rows"] and d.get("train_ids"):
+            annotate_leakage(res["rows"], d["train_ids"], clusters)
+            print(format_report(res["rows"]))
+        results.append(res)
 
     if args.out:
-        json.dump(results, open(args.out, "w"), indent=2)
+        # Per-target rows stay out of the aggregate JSON; use
+        # scripts/eval_leakage_split.py when the per-target CSV is wanted.
+        json.dump([{k: v for k, v in r.items() if k != "rows"} for r in results],
+                  open(args.out, "w"), indent=2)
         print(f"\nWrote summary to {args.out}")
 
 

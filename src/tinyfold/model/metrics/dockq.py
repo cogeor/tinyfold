@@ -18,6 +18,26 @@ AA_CODES = [
 # Backbone atom names in order: N, CA, C, O
 BACKBONE_ATOMS = ['N', 'CA', 'C', 'O']
 
+# CAPRI quality bands, keyed on DockQ. Read these, never C-RMSD: backbone
+# C-RMSD can sit at 6-7 A while the docking is structurally wrong.
+CAPRI_BANDS = ("incorrect", "acceptable", "medium", "high")
+
+
+def capri_band(dockq: float | None) -> str | None:
+    """CAPRI quality band for a DockQ score.
+
+    incorrect  < 0.23 <= acceptable < 0.49 <= medium < 0.80 <= high
+    """
+    if dockq is None:
+        return None
+    if dockq < 0.23:
+        return "incorrect"
+    if dockq < 0.49:
+        return "acceptable"
+    if dockq < 0.80:
+        return "medium"
+    return "high"
+
 
 def write_backbone_pdb(
     coords: Tensor,

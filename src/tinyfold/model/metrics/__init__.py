@@ -7,9 +7,11 @@ from .cluster import (
     score_geometric_energy,
     score_self_consistency,
 )
-from .dockq import chains_are_interchangeable, compute_dockq
+from .dockq import CAPRI_BANDS, capri_band, chains_are_interchangeable, compute_dockq
 
 __all__ = [
+    "CAPRI_BANDS",
+    "capri_band",
     "chains_are_interchangeable",
     "cluster_poses",
     "compute_dockq",
