@@ -22,9 +22,12 @@ from tinyfold.training.cluster_split import cluster_holdout_indices
 
 def _table(n: int) -> pa.Table:
     """Minimal parquet-shaped table: cluster_holdout_indices needs only
-    `sample_id` and `atom_type` (for the atom-count filter)."""
+    `sample_id` and the atom count, which comes from LA/LB (4 atoms per
+    residue). `atom_type` is kept consistent with them so the fixture still
+    matches the canonical schema."""
     return pa.Table.from_pylist([
-        {"sample_id": f"s{i:05d}", "atom_type": [0] * 100} for i in range(n)
+        {"sample_id": f"s{i:05d}", "LA": 13, "LB": 12, "atom_type": [0] * 100}
+        for i in range(n)
     ])
 
 

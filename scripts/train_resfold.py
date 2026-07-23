@@ -87,6 +87,7 @@ from tinyfold.training import (
     load_sample_raw,
     random_rotation_matrix,
 )
+from tinyfold.training.data_split import verify_atom_counts
 from tinyfold.training.eval import sample_centroids_continuous, summarize_eval_metrics
 from tinyfold.training.objective import atom_loss_ramp
 from tinyfold.training.registry_append import append_registry_row
@@ -218,6 +219,11 @@ def parse_args():
     parser.add_argument("--n_test_clusters", type=int, default=None,
                         help="With --test_strategy cluster: stop after this many "
                              "test clusters instead of after --n_test samples.")
+    parser.add_argument("--verify_atom_counts", action="store_true",
+                        help="Debug: re-check the 4*(LA+LB) atom-count invariant "
+                             "against the materialised atom_type lists before "
+                             "splitting. Costs a ~56 s full-table scan; use after "
+                             "rebuilding the parquet.")
     parser.add_argument("--test_size_bins", type=str, default=None,
                         help="Comma-separated bin lower-edges (LA+LB residues) for "
                              "--test_strategy stratified. Default: '0,400,600,1000,1500' "
@@ -1032,6 +1038,11 @@ def _run_training(args, progress):
     # Load data
     data_path = get_data_path()
     table = pq.read_table(data_path)
+
+    if getattr(args, "verify_atom_counts", False):
+        logger.log("Verifying atom-count invariant 4*(LA+LB) (slow full scan)...")
+        verify_atom_counts(table)
+        logger.log(f"  OK on all {len(table)} rows")
 
     # Deterministic split (either load from file or create new)
     train_indices, test_indices, split_info = get_or_create_split(args, table, logger, args.output_dir)

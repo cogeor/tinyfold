@@ -17,7 +17,10 @@ import json
 import random
 from pathlib import Path
 
+import numpy as np
 import pyarrow as pa
+
+from tinyfold.training.data_split import atom_counts
 
 
 def load_clusters(path: str) -> dict[str, int]:
@@ -29,17 +32,13 @@ def load_clusters(path: str) -> dict[str, int]:
 
 def _eligible_rows(table: pa.Table, min_atoms: int, max_atoms: int | None) -> list[tuple[int, str]]:
     """(row_idx, sample_id) for samples whose atom count is in range."""
-    out = []
-    atom_types = table["atom_type"]
-    sample_ids = table["sample_id"]
-    for i in range(len(table)):
-        n_atoms = len(atom_types[i].as_py())
-        if n_atoms < min_atoms:
-            continue
-        if max_atoms is not None and n_atoms > max_atoms:
-            continue
-        out.append((i, sample_ids[i].as_py()))
-    return out
+    n_atoms = atom_counts(table)
+    keep = n_atoms >= min_atoms
+    if max_atoms is not None:
+        keep &= n_atoms <= max_atoms
+    rows = np.nonzero(keep)[0]
+    sample_ids = table["sample_id"].take(pa.array(rows)).to_pylist()
+    return [(int(i), sid) for i, sid in zip(rows, sample_ids)]
 
 
 def cluster_holdout_indices(
@@ -242,8 +241,10 @@ def save_cluster_split(table, train_idx, test_idx, info, path: str) -> None:
     ``data_split.save_split`` (which has a different signature) to avoid the
     historical name collision.
     """
+    n_atoms_all = atom_counts(table)
+
     def atom_range(idxs):
-        counts = [len(table["atom_type"][i].as_py()) for i in idxs]
+        counts = [int(n_atoms_all[i]) for i in idxs]
         return [min(counts), max(counts)] if counts else [0, 0]
 
     data = {

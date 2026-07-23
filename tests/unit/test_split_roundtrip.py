@@ -34,9 +34,11 @@ def test_save_load_roundtrip(tmp_path):
 
 
 def test_cluster_split_writes_loadable_file(tmp_path):
-    # Minimal table: 4 samples, atom_type lists give the atom counts.
+    # Minimal table: 4 samples of 1 residue each (LA+LB=1 -> 4 atoms).
     table = pa.table({
         "sample_id": ["s0", "s1", "s2", "s3"],
+        "LA": [1, 1, 1, 1],
+        "LB": [0, 0, 0, 0],
         "atom_type": [[0, 1, 2, 3]] * 4,
     })
     path = str(tmp_path / "cluster_split.json")

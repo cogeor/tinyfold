@@ -6,10 +6,15 @@ from tinyfold.training.cluster_split import cluster_holdout_indices
 
 
 def _toy_table(n=60):
-    # n samples, 4 atoms each so they all pass the atom filter.
+    # n samples of 1 residue each -> 4 atoms, so they all pass the atom filter.
     sample_ids = [f"s{i}" for i in range(n)]
     atom_type = [[0, 1, 2, 3] for _ in range(n)]
-    return pa.table({"sample_id": sample_ids, "atom_type": atom_type})
+    return pa.table({
+        "sample_id": sample_ids,
+        "LA": [1] * n,
+        "LB": [0] * n,
+        "atom_type": atom_type,
+    })
 
 
 def test_zero_cluster_overlap():
