@@ -78,6 +78,7 @@ from tinyfold.sidechain_geometry import extract_chi
 
 # Training utilities from tinyfold.training
 from tinyfold.training import (
+    EMA,
     MergedSampleStore,
     SampleStore,
     collate_batch,
@@ -517,6 +518,13 @@ def parse_args():
                              "(default 1 = current behaviour). Multiplies the denoiser "
                              "gradient signal without growing the effective batch; "
                              "onestep + continuous-sigma only.")
+
+    # EMA of weights (C3)
+    parser.add_argument("--ema_decay", type=float, default=0.0,
+                        help="Exponential moving average decay for weights "
+                             "(0.0 = off, 0.999 typical). When on, eval and the "
+                             "saved ema_state_dict use the smoothed weights; "
+                             "model_state_dict stays the raw weights.")
 
     # Training augmentation
     parser.add_argument("--translate_aug", type=float, default=0.0,
@@ -1432,6 +1440,11 @@ def _run_training(args, progress):
     progress["training_started"] = True
     start_time = time.time()
 
+    # C3: EMA of weights. Off when --ema_decay <= 0 (the shadow is never built,
+    # so the training step is bitwise-unchanged). When on, the shadow updates
+    # after each optimizer step; eval and the saved ema_state_dict read it.
+    ema = EMA(model, args.ema_decay) if args.ema_decay > 0 else None
+
     model.train()
     for step in range(1, args.n_steps + 1):
         optimizer.zero_grad()
@@ -2085,6 +2098,8 @@ def _run_training(args, progress):
         torch.nn.utils.clip_grad_norm_(trainable_params, 1.0)
         optimizer.step()
         scheduler.step()
+        if ema is not None:
+            ema.update(model)
         loss = accum_loss
 
         # Log every 100 steps OR on the eval boundary (so short runs still
@@ -2120,6 +2135,12 @@ def _run_training(args, progress):
 
         if step % args.eval_every == 0:
             model.eval()
+            # C3: evaluate from the EMA weights when enabled (store the live
+            # weights first, swap the shadow in; restored to raw before saving so
+            # model_state_dict stays the raw weights).
+            if ema is not None:
+                ema.store(model)
+                ema.copy_to(model)
             # Release cached-but-unallocated blocks before eval. The pair track
             # is O(L^2); thousands of training steps fragment the caching
             # allocator, so eval's large contiguous allocation can fail
@@ -2284,6 +2305,13 @@ def _run_training(args, progress):
                 except Exception as e:
                     logger.log(f"         >>> Plot skipped ({type(e).__name__}: {e})")
 
+                # C3: restore raw (live) weights before saving, so
+                # model_state_dict is always the raw weights. The EMA weights
+                # ride along under 'ema_state_dict'.
+                if ema is not None:
+                    ema.restore(model)
+                _ema_sd = ema.state_dict(model) if ema is not None else None
+
                 # Save best model
                 if test_avg < best_rmse:
                     best_rmse = test_avg
@@ -2301,6 +2329,7 @@ def _run_training(args, progress):
                     torch.save({
                         'step': step,
                         'model_state_dict': model.state_dict(),
+                        'ema_state_dict': _ema_sd,
                         'train_rmse': train_avg,
                         'test_rmse': test_avg,
                         'args': vars(args),
@@ -2314,6 +2343,7 @@ def _run_training(args, progress):
                     torch.save({
                         'step': step,
                         'model_state_dict': model.state_dict(),
+                        'ema_state_dict': _ema_sd,
                         'train_rmse': train_avg,
                         'test_rmse': test_avg,
                         'args': vars(args),
@@ -2334,6 +2364,7 @@ def _run_training(args, progress):
     torch.save({
         'step': step,
         'model_state_dict': model.state_dict(),
+        'ema_state_dict': (ema.state_dict(model) if ema is not None else None),
         'train_rmse': progress.get("best_rmse", float('inf')),
         'args': vars(args),
     }, os.path.join(args.output_dir, 'final_model.pt'))

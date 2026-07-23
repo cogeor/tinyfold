@@ -26,11 +26,14 @@ def build_onestep_from_config(cfg: dict) -> ResFoldOneStep:
     return ResFoldOneStep(**ResFoldConfig.from_config(cfg).to_kwargs())
 
 
-def load_onestep_run(checkpoint_path, device) -> tuple[ResFoldOneStep, dict]:
+def load_onestep_run(checkpoint_path, device, ema: bool = False) -> tuple[ResFoldOneStep, dict]:
     """Load a trained ResFoldOneStep from a checkpoint + its sibling config.json.
 
     Returns ``(model_in_eval_mode, config_dict)``. Raises if the config.json is
     missing (older runs) or the run is not a onestep model.
+
+    ``ema=True`` selects the EMA weights (``ema_state_dict``, C3) when the
+    checkpoint carries them; raises if requested but absent.
     """
     ckpt_path = Path(checkpoint_path)
     cfg_path = ckpt_path.parent / "config.json"
@@ -48,7 +51,16 @@ def load_onestep_run(checkpoint_path, device) -> tuple[ResFoldOneStep, dict]:
     # weights_only=True: our checkpoints hold only tensors + plain dicts/numbers,
     # so this is safe and blocks arbitrary code execution from an untrusted .pt.
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
-    missing, unexpected = model.load_state_dict(ckpt["model_state_dict"], strict=False)
+    if ema:
+        if ckpt.get("ema_state_dict") is None:
+            raise ValueError(
+                f"ema=True but {ckpt_path} has no ema_state_dict (run trained "
+                f"without --ema_decay, or an older checkpoint)."
+            )
+        state = ckpt["ema_state_dict"]
+    else:
+        state = ckpt["model_state_dict"]
+    missing, unexpected = model.load_state_dict(state, strict=False)
     if missing or unexpected:
         raise RuntimeError(
             f"Checkpoint/architecture mismatch for {ckpt_path}: "

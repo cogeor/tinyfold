@@ -9,7 +9,7 @@ from .augmentation import (
     apply_rotation_augment,
     random_rotation_matrix,
 )
-from .checkpointing import CheckpointManager, load_checkpoint, save_checkpoint
+from .checkpointing import EMA, CheckpointManager, load_checkpoint, save_checkpoint
 from .data import (
     TRAIN_COLUMNS,
     MergedSampleStore,
@@ -47,6 +47,7 @@ __all__ = [
     "save_checkpoint",
     "load_checkpoint",
     "CheckpointManager",
+    "EMA",
     # Data
     "load_sample",
     "load_sample_raw",

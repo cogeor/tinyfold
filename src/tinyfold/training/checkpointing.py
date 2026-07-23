@@ -14,6 +14,68 @@ import torch.nn as nn
 logger = logging.getLogger(__name__)
 
 
+class EMA:
+    """Exponential moving average of model parameters (C3).
+
+    Keeps a shadow copy of the model's floating-point parameters, updated after
+    each optimizer step as ``shadow = decay*shadow + (1-decay)*param``. Eval and
+    checkpointing can then read the smoothed weights -- universal in AF2/AF3/Boltz
+    (Boltz-1 inits its confidence model from EMA trunk weights). Off when
+    ``decay <= 0``; the training loop simply never constructs one.
+
+    Only float params are averaged; integer buffers/params (if any) are tracked
+    by copy so a produced state dict still round-trips through
+    ``load_state_dict``. Buffers are not averaged by default -- this model uses
+    LayerNorm (no running stats), so there are none that matter.
+    """
+
+    def __init__(self, model: nn.Module, decay: float):
+        self.decay = float(decay)
+        self.shadow: dict[str, torch.Tensor] = {
+            n: p.detach().clone()
+            for n, p in model.named_parameters()
+        }
+        self._backup: dict[str, torch.Tensor] | None = None
+
+    @torch.no_grad()
+    def update(self, model: nn.Module) -> None:
+        d = self.decay
+        for n, p in model.named_parameters():
+            s = self.shadow[n]
+            if p.dtype.is_floating_point:
+                s.mul_(d).add_(p.detach(), alpha=1.0 - d)
+            else:
+                s.copy_(p.detach())
+
+    def state_dict(self, model: nn.Module) -> dict[str, torch.Tensor]:
+        """Full model state dict with EMA params overlaid (buffers kept as-is),
+        so it loads cleanly via ``model.load_state_dict``."""
+        sd = model.state_dict()
+        for n, v in self.shadow.items():
+            sd[n] = v.detach().clone()
+        return sd
+
+    @torch.no_grad()
+    def store(self, model: nn.Module) -> None:
+        """Snapshot the live params so they can be restored after eval."""
+        self._backup = {n: p.detach().clone() for n, p in model.named_parameters()}
+
+    @torch.no_grad()
+    def copy_to(self, model: nn.Module) -> None:
+        """Overwrite the live params with the EMA shadow (for eval/checkpoint)."""
+        for n, p in model.named_parameters():
+            p.data.copy_(self.shadow[n])
+
+    @torch.no_grad()
+    def restore(self, model: nn.Module) -> None:
+        """Undo :meth:`copy_to`, restoring the params snapshotted by :meth:`store`."""
+        if self._backup is None:
+            return
+        for n, p in model.named_parameters():
+            p.data.copy_(self._backup[n])
+        self._backup = None
+
+
 def save_checkpoint(
     path: str | Path,
     model: nn.Module,
@@ -23,6 +85,7 @@ def save_checkpoint(
     metrics: dict[str, float] | None = None,
     config: dict[str, Any] | None = None,
     extra: dict[str, Any] | None = None,
+    ema_state_dict: dict[str, torch.Tensor] | None = None,
 ):
     """Save training checkpoint.
 
@@ -35,11 +98,17 @@ def save_checkpoint(
         metrics: Optional metrics dict (e.g., {"train_rmse": 0.5, "test_rmse": 0.6})
         config: Optional training configuration
         extra: Optional extra data to save
+        ema_state_dict: Optional EMA weights, saved under ``ema_state_dict``.
+            ``model_state_dict`` always stays the raw weights so existing loaders
+            keep working.
     """
     checkpoint = {
         "step": step,
         "model_state_dict": model.state_dict(),
     }
+
+    if ema_state_dict is not None:
+        checkpoint["ema_state_dict"] = ema_state_dict
 
     if optimizer is not None:
         checkpoint["optimizer_state_dict"] = optimizer.state_dict()
@@ -168,6 +237,7 @@ class CheckpointManager:
         optimizer: torch.optim.Optimizer | None = None,
         scheduler: Any | None = None,
         config: dict[str, Any] | None = None,
+        ema_state_dict: dict[str, torch.Tensor] | None = None,
     ) -> tuple[bool, Path | None]:
         """Save checkpoint if it's a new best or meets recent criteria.
 
@@ -178,6 +248,7 @@ class CheckpointManager:
             optimizer: Optional optimizer
             scheduler: Optional scheduler
             config: Optional config
+            ema_state_dict: Optional EMA weights forwarded to save_checkpoint.
 
         Returns:
             (is_new_best, path) - whether this is a new best, and the saved path
@@ -194,7 +265,8 @@ class CheckpointManager:
         # Save best checkpoint
         if is_best:
             path = self.output_dir / "best_model.pt"
-            save_checkpoint(path, model, optimizer, scheduler, step, metrics, config)
+            save_checkpoint(path, model, optimizer, scheduler, step, metrics, config,
+                            ema_state_dict=ema_state_dict)
             is_new_best = True
 
             # Update best list
@@ -204,7 +276,8 @@ class CheckpointManager:
 
         # Save recent checkpoint
         recent_path = self.output_dir / f"checkpoint_step_{step:06d}.pt"
-        save_checkpoint(recent_path, model, optimizer, scheduler, step, metrics, config)
+        save_checkpoint(recent_path, model, optimizer, scheduler, step, metrics, config,
+                        ema_state_dict=ema_state_dict)
 
         # Update recent list and cleanup
         self.recent_checkpoints.append((step, recent_path))

@@ -52,13 +52,15 @@ def main() -> None:
     ap.add_argument("--K", type=int, default=5, help="samples to draw; confidence-best is kept")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--write_gt", action="store_true", help="also write <out>.gt.pdb")
+    ap.add_argument("--ema", action="store_true",
+                    help="load the EMA weights (ema_state_dict) instead of raw (C3)")
     args = ap.parse_args()
 
     if not args.sample_id and args.index is None:
         ap.error("provide --sample_id or --index")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model, _ = load_onestep_run(args.checkpoint, device)
+    model, _ = load_onestep_run(args.checkpoint, device, ema=args.ema)
     table = pq.read_table(args.parquet)
 
     if args.index is not None:
