@@ -511,6 +511,13 @@ def parse_args():
     parser.add_argument("--n_recycle_eval", type=int, default=0,
                         help="Fixed number of trunk recycling passes at eval time.")
 
+    # Diffusion multiplicity (C2)
+    parser.add_argument("--diffusion_multiplicity", type=int, default=1,
+                        help="Reuse one trunk pass across M noise draws per structure "
+                             "(default 1 = current behaviour). Multiplies the denoiser "
+                             "gradient signal without growing the effective batch; "
+                             "onestep + continuous-sigma only.")
+
     # Training augmentation
     parser.add_argument("--translate_aug", type=float, default=0.0,
                         help="Random translation augmentation scale (in normalized units, try 0.1-0.3)")
@@ -1449,6 +1456,30 @@ def _run_training(args, progress):
                 rng=crop_rng,
             )
 
+            # C2: diffusion multiplicity. Replicate each sample M times so the
+            # whole downstream pipeline (noise, sigma, augmentation, every loss)
+            # operates on B*M with no further changes. The trunk is coordinate-
+            # blind, so a sample's M copies share identical trunk inputs; the
+            # forward below computes the trunk ONCE and repeats its tokens, which
+            # is the point -- M noise draws share one (expensive) trunk pass. M=1
+            # replicates nothing and is bitwise-identical to the pre-C2 step.
+            _mult = getattr(args, "diffusion_multiplicity", 1)
+            if _mult > 1:
+                if not (args.continuous_sigma and is_onestep):
+                    raise ValueError(
+                        "--diffusion_multiplicity>1 requires --continuous_sigma and "
+                        "the onestep model (the forward_sigma_with_trunk seam)."
+                    )
+
+                def _rep(v, m=_mult):
+                    if torch.is_tensor(v):
+                        return v.repeat_interleave(m, dim=0)
+                    if isinstance(v, list):
+                        return [x for x in v for _ in range(m)]
+                    return v
+                batch = {k: _rep(v) for k, v in batch.items()}
+                current_batch_size = batch['centroids'].shape[0]
+
             # Sample noise levels and add noise to centroids (for Stage 1)
             noise = torch.randn_like(batch['centroids'])
 
@@ -1633,6 +1664,33 @@ def _run_training(args, progress):
                                     n_recycle=_n_rc,
                                 )
                                 atoms_pred = None
+                            elif (
+                                _mult > 1
+                                and tmpl_coords is None
+                                and msa_feats is None
+                            ):
+                                # C2 trunk-once: a sample's M copies share identical
+                                # trunk inputs (the trunk is coordinate-blind), so
+                                # run the trunk on copy 0 of each group and repeat
+                                # its tokens across the group. Exact -- the trunk is
+                                # a pure function of these (copy-invariant) inputs.
+                                # Only valid without templates/msa, whose per-copy
+                                # dropout would differ across copies; with those on
+                                # we fall through to forward_sigma (trunk runs M
+                                # times -- correct, just not memory-optimal).
+                                _esm = batch.get('esm_embed')
+                                trunk_tokens_1 = stage1_module.get_trunk_tokens(
+                                    batch['aa_seq'][::_mult], batch['chain_ids'][::_mult],
+                                    batch['res_idx'][::_mult], batch['mask_res'][::_mult],
+                                    esm_embed=(_esm[::_mult] if _esm is not None else None),
+                                    n_recycle=_n_rc,
+                                )
+                                trunk_tokens_m = trunk_tokens_1.repeat_interleave(_mult, dim=0)
+                                fwd_out = stage1_module.forward_sigma_with_trunk(
+                                    x_t, trunk_tokens_m, sigma, batch['mask_res'],
+                                    x0_prev=x0_prev,
+                                    res_idx=batch['res_idx'], chain_ids=batch['chain_ids'],
+                                )
                             else:
                                 fwd_out = stage1_module.forward_sigma(
                                     x_t, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
