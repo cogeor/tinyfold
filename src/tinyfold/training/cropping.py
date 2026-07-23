@@ -116,6 +116,34 @@ def _apply_residue_indices(sample: dict[str, Any], idx: Tensor) -> dict[str, Any
 
     # Trace where the crop came from, for debugging.
     out['crop_global_idx'] = idx
+
+    # C8 un-cropped-key guard. ``out = dict(sample)`` copied EVERY key, then only
+    # the explicit list above was re-sliced. Any per-residue key not on that list
+    # (e.g. a stray ``iface_mask``) would silently survive at the PARENT length
+    # and desync the batch. Assert that every output tensor whose parent first
+    # dimension was the parent residue count L now has first dimension L_crop.
+    # The allow-list names keys whose leading axis is legitimately not the
+    # residue axis (atom-level / already-recomputed), so a coincidental L match
+    # is not flagged.
+    L_parent = int(sample['n_res'])
+    _NON_PER_RESIDUE = {
+        'coords', 'atom_types', 'atom_to_res', 'crop_global_idx',
+    }
+    if L_crop != L_parent:
+        for key, val in out.items():
+            if key in _NON_PER_RESIDUE or not torch.is_tensor(val):
+                continue
+            parent = sample.get(key)
+            if (
+                torch.is_tensor(parent)
+                and parent.ndim > 0
+                and parent.shape[0] == L_parent
+            ):
+                assert val.shape[0] == L_crop, (
+                    f"_apply_residue_indices: per-residue key {key!r} was not "
+                    f"cropped (first dim {val.shape[0]} != L_crop {L_crop}); add "
+                    f"it to the slice list or the non-per-residue allow-list."
+                )
     return out
 
 
