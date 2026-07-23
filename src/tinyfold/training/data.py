@@ -3,8 +3,12 @@
 Provides:
 - load_sample: Load a single sample from parquet table
 - collate_batch: Collate samples into padded batches
+- SampleStore: bounded-memory indexed access to decoded samples
 """
 
+import random
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -377,3 +381,217 @@ def collate_batch(
 # Aliases for backward compatibility
 load_sample_raw = load_sample
 collate_batch_residue = collate_batch
+
+
+# Columns `load_sample` actually reads, plus LA/LB for the atom-count and
+# length paths. The canonical parquet also carries bonds_src/bonds_dst/
+# bond_type (4.29 GB of the 7.37 GB table -- 58%) for the retired atom-graph
+# EGNN model, and atom_mask/iface_mask; the residue-level training path touches
+# none of them. Projecting the read drops the resident table to ~3.1 GB.
+TRAIN_COLUMNS = [
+    "sample_id", "seq", "chain_id_res", "res_idx",
+    "atom_coords", "atom_to_res", "atom_type", "LA", "LB",
+]
+
+
+def read_train_table(path, columns: list[str] | None = None):
+    """Read samples.parquet with only the columns the training path needs.
+
+    ``pq.read_table`` with no projection pulls the bond columns into RAM on
+    every run even though the residue-level model never looks at them.
+    """
+    import pyarrow.parquet as pq
+    return pq.read_table(path, columns=columns if columns is not None else TRAIN_COLUMNS)
+
+
+def sample_nbytes(sample: dict) -> int:
+    """Resident bytes of a decoded sample (tensors + arrays)."""
+    total = 0
+    for v in sample.values():
+        if torch.is_tensor(v):
+            total += v.element_size() * v.nelement()
+        elif isinstance(v, np.ndarray):
+            total += v.nbytes
+    return total
+
+
+class SampleStore:
+    """Indexed access to decoded samples with a bounded memory footprint.
+
+    Replaces the ``{idx: load_sample_raw(...)}`` dict comprehension that
+    materialised every training sample before the first step. Measured on this
+    dataset:
+
+    * the in-memory parquet table is a **fixed** 7.37 GB (3.1 GB after column
+      projection) -- independent of split size;
+    * decoded samples cost ~2.1 KB/residue, so the eager dicts for the full
+      41,883-complex dataset (22.0 M residues) come to ~46 GB, of which ~42 GB
+      is the fp32 ESM-2 embeddings.
+
+    ``mode="eager"`` is the historical behaviour and stays the default so small
+    runs and every existing result are bit-for-bit reproducible.
+    ``mode="lru"`` decodes on access and evicts by **bytes** (not by entry
+    count, which would not bound anything on a dataset whose complexes span
+    8 to 3,106 residues -- a 388x spread).
+
+    Cropping is deliberately NOT applied here. Crops are drawn per step in
+    ``collate_batch`` from the training loop's own generator; caching a cropped
+    sample would freeze one crop per complex for the whole run and silently
+    destroy the augmentation. Because decoding is deterministic and the crop
+    generator is untouched, an ``lru`` run reproduces an ``eager`` run exactly.
+    """
+
+    def __init__(
+        self,
+        table,
+        indices,
+        *,
+        mode: str = "eager",
+        cache_mb: float = 8192.0,
+        loader_kwargs: dict | None = None,
+    ):
+        if mode not in ("eager", "lru"):
+            raise ValueError(f"mode must be 'eager' or 'lru', got {mode!r}")
+        self.table = table
+        self.indices = list(indices)
+        self._index_set = set(self.indices)
+        self.mode = mode
+        self.cache_bytes = int(cache_mb * 1e6)
+        self.loader_kwargs = dict(loader_kwargs or {})
+        self._lock = threading.RLock()
+        self._cache: OrderedDict[int, dict] = OrderedDict()
+        self._cache_bytes = 0
+        # Per-sample values injected after load (Stage 1 centroid predictions).
+        # Held apart from the cache so an eviction cannot discard them.
+        self._overlay: dict[int, dict] = {}
+        self.n_decodes = 0
+        self.n_evictions = 0
+
+        # Lengths come from LA/LB, so samplers and size diagnostics never force
+        # a decode.
+        la = table["LA"].to_numpy(zero_copy_only=False)
+        lb = table["LB"].to_numpy(zero_copy_only=False)
+        self._n_res = {i: int(la[i]) + int(lb[i]) for i in self.indices}
+
+        if mode == "eager":
+            for i in self.indices:
+                self._cache[i] = self._decode(i)
+            self._cache_bytes = sum(sample_nbytes(s) for s in self._cache.values())
+
+    # --- decoding ----------------------------------------------------------
+
+    def _decode(self, idx: int) -> dict:
+        sample = load_sample(self.table, idx, **self.loader_kwargs)
+        self.n_decodes += 1
+        extra = self._overlay.get(idx)
+        if extra:
+            sample.update(extra)
+        return sample
+
+    # --- mapping interface (matches the dict it replaces) ------------------
+
+    def __getitem__(self, idx: int) -> dict:
+        if idx not in self._index_set:
+            raise KeyError(idx)
+        with self._lock:
+            hit = self._cache.get(idx)
+            if hit is not None:
+                if self.mode == "lru":
+                    self._cache.move_to_end(idx)
+                return hit
+        # Decode outside the lock: load_sample does file I/O (ESM/template
+        # caches) and holding the lock across it would serialise workers.
+        sample = self._decode(idx)
+        if self.mode == "eager":
+            # Only reachable if an eager store was built before an index was
+            # added; keep it resident to preserve eager semantics.
+            with self._lock:
+                self._cache[idx] = sample
+                self._cache_bytes += sample_nbytes(sample)
+            return sample
+        nbytes = sample_nbytes(sample)
+        with self._lock:
+            if idx not in self._cache:
+                self._cache[idx] = sample
+                self._cache_bytes += nbytes
+                self._evict_locked()
+            else:
+                self._cache.move_to_end(idx)
+        return sample
+
+    def _evict_locked(self) -> None:
+        # Always keep the most recent entry, even if it alone exceeds the
+        # budget -- otherwise a single outsized complex would evict itself and
+        # every access would miss.
+        while self._cache_bytes > self.cache_bytes and len(self._cache) > 1:
+            _, victim = self._cache.popitem(last=False)
+            self._cache_bytes -= sample_nbytes(victim)
+            self.n_evictions += 1
+
+    def __contains__(self, idx: object) -> bool:
+        return idx in self._index_set
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+    def __iter__(self):
+        return iter(self.indices)
+
+    def keys(self):
+        return list(self.indices)
+
+    # --- decode-free metadata ----------------------------------------------
+
+    def n_res(self, idx: int) -> int:
+        """Residue count without decoding the sample."""
+        return self._n_res[idx]
+
+    def length_index(self) -> dict[int, dict]:
+        """``{idx: {'n_res': L}}`` for the length-bucketing samplers.
+
+        They read nothing but ``n_res``, so handing them this avoids
+        materialising the split just to bucket it.
+        """
+        return {i: {"n_res": L} for i, L in self._n_res.items()}
+
+    def set_overlay(self, idx: int, key: str, value) -> None:
+        """Attach a value that survives cache eviction (e.g. centroids_pred)."""
+        with self._lock:
+            self._overlay.setdefault(idx, {})[key] = value
+            cached = self._cache.get(idx)
+            if cached is not None:
+                cached[key] = value
+
+    def subset(self, k: int, seed: int = 0) -> list[dict]:
+        """Decode a deterministic sample of at most ``k`` entries.
+
+        For diagnostics (template/MSA coverage, plots). Iterating every value
+        for a mean would defeat the whole point of a bounded store.
+        """
+        picks = self.indices if len(self.indices) <= k else \
+            random.Random(seed).sample(self.indices, k)
+        return [self[i] for i in sorted(picks)]
+
+    @property
+    def resident_mb(self) -> float:
+        return self._cache_bytes / 1e6
+
+
+class MergedSampleStore:
+    """Read-only union of two stores, for the Stage-2 prediction pass.
+
+    Replaces ``{**train_samples, **test_samples}``, which would have forced
+    both splits fully resident.
+    """
+
+    def __init__(self, a, b):
+        self.a, self.b = a, b
+
+    def __getitem__(self, idx: int) -> dict:
+        return self.a[idx] if idx in self.a else self.b[idx]
+
+    def __contains__(self, idx: object) -> bool:
+        return idx in self.a or idx in self.b
+
+    def __len__(self) -> int:
+        return len(self.a) + len(self.b)

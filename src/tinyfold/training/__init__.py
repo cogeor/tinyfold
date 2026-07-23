@@ -10,7 +10,15 @@ from .augmentation import (
     random_rotation_matrix,
 )
 from .checkpointing import CheckpointManager, load_checkpoint, save_checkpoint
-from .data import collate_batch, load_sample, load_sample_raw
+from .data import (
+    TRAIN_COLUMNS,
+    MergedSampleStore,
+    SampleStore,
+    collate_batch,
+    load_sample,
+    load_sample_raw,
+    read_train_table,
+)
 from .logger import TrainingLogger
 from .metrics import LossComponents, MetricTracker
 from .objective import LossComposer, LossRegistry, LossTerm
@@ -43,6 +51,10 @@ __all__ = [
     "load_sample",
     "load_sample_raw",
     "collate_batch",
+    "SampleStore",
+    "MergedSampleStore",
+    "read_train_table",
+    "TRAIN_COLUMNS",
     # Augmentation
     "random_rotation_matrix",
     "apply_rigid_augment",

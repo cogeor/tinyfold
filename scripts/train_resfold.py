@@ -26,7 +26,6 @@ import time
 from datetime import datetime
 
 import numpy as np
-import pyarrow.parquet as pq
 import torch
 import yaml
 
@@ -79,13 +78,15 @@ from tinyfold.sidechain_geometry import extract_chi
 
 # Training utilities from tinyfold.training
 from tinyfold.training import (
+    MergedSampleStore,
+    SampleStore,
     collate_batch,
     create_diffusion_components,
     create_train_sampler,
     get_or_create_split,
     load_model_checkpoint,
-    load_sample_raw,
     random_rotation_matrix,
+    read_train_table,
 )
 from tinyfold.training.data_split import verify_atom_counts
 from tinyfold.training.eval import sample_centroids_continuous, summarize_eval_metrics
@@ -219,6 +220,26 @@ def parse_args():
     parser.add_argument("--n_test_clusters", type=int, default=None,
                         help="With --test_strategy cluster: stop after this many "
                              "test clusters instead of after --n_test samples.")
+    parser.add_argument("--sample_cache", type=str, default="eager",
+                        choices=["eager", "lru"],
+                        help="How training samples are held in RAM. 'eager' "
+                             "(default) decodes every sample before the first "
+                             "step -- fine up to a few thousand complexes, but "
+                             "the full 41,883-complex dataset costs ~46 GB that "
+                             "way (~42 GB of it fp32 ESM embeddings). 'lru' "
+                             "decodes on access and evicts by bytes, bounding "
+                             "residency at --sample_cache_mb. Results are "
+                             "identical either way: decoding is deterministic "
+                             "and crops are still drawn per step at collate.")
+    parser.add_argument("--sample_cache_mb", type=float, default=8192.0,
+                        help="Byte budget for --sample_cache lru (default 8 GB). "
+                             "Budgeting by bytes rather than entry count is "
+                             "deliberate: complexes span 8-3,106 residues, so a "
+                             "count-based bound would not bound memory.")
+    parser.add_argument("--no_registry", action="store_true",
+                        help="Do not append a row to experiments/REGISTRY.md. "
+                             "For smoke tests and throwaway runs that should "
+                             "not enter the experiment record.")
     parser.add_argument("--verify_atom_counts", action="store_true",
                         help="Debug: re-check the 4*(LA+LB) atom-count invariant "
                              "against the materialised atom_type lists before "
@@ -1037,7 +1058,9 @@ def _run_training(args, progress):
 
     # Load data
     data_path = get_data_path()
-    table = pq.read_table(data_path)
+    # Column-projected read: the bond columns are 4.29 GB of the 7.37 GB table
+    # and belong to the retired atom-graph model, which this script never uses.
+    table = read_train_table(data_path)
 
     if getattr(args, "verify_atom_counts", False):
         logger.log("Verifying atom-count invariant 4*(LA+LB) (slow full scan)...")
@@ -1065,16 +1088,36 @@ def _run_training(args, progress):
     _atom14_dir = getattr(args, "atom14_cache_dir", None)
     if getattr(args, "sidechain_diffusion", False) and _atom14_dir is None:
         raise ValueError("--sidechain_diffusion requires --atom14_cache_dir")
-    train_samples = {idx: load_sample_raw(table, idx, normalize=normalize, esm_cache_dir=_esm_dir, per_chain_res_idx=per_chain, global_scale=gscale, template_cache_dir=_tmpl_dir, msa_feats_cache_dir=_msa_dir, atom14_cache_dir=_atom14_dir) for idx in train_indices}
-    test_samples = {idx: load_sample_raw(table, idx, normalize=normalize, esm_cache_dir=_esm_dir, per_chain_res_idx=per_chain, global_scale=gscale, template_cache_dir=_tmpl_dir, msa_feats_cache_dir=_msa_dir, atom14_cache_dir=_atom14_dir) for idx in test_indices}
-    logger.log(f"  Loaded {len(train_samples)} train, {len(test_samples)} test samples")
+    _loader_kwargs = dict(normalize=normalize, esm_cache_dir=_esm_dir,
+                          per_chain_res_idx=per_chain, global_scale=gscale,
+                          template_cache_dir=_tmpl_dir, msa_feats_cache_dir=_msa_dir,
+                          atom14_cache_dir=_atom14_dir)
+    _cache_mode = getattr(args, "sample_cache", "eager")
+    _cache_mb = getattr(args, "sample_cache_mb", 8192.0)
+    # The test split stays eager regardless: it is small (hundreds), it is
+    # re-read every eval, and keeping it resident makes eval timing independent
+    # of the training cache policy.
+    train_samples = SampleStore(table, train_indices, mode=_cache_mode,
+                                cache_mb=_cache_mb, loader_kwargs=_loader_kwargs)
+    test_samples = SampleStore(table, test_indices, mode="eager",
+                               loader_kwargs=_loader_kwargs)
+    logger.log(f"  Loaded {len(train_samples)} train, {len(test_samples)} test samples "
+               f"(train cache={_cache_mode}"
+               + (f", budget {_cache_mb:.0f} MB" if _cache_mode == "lru" else "")
+               + f"; resident {train_samples.resident_mb + test_samples.resident_mb:.0f} MB)")
+    # Coverage diagnostics read a bounded sample: touching every entry for a
+    # mean would materialise the whole split and defeat the cache.
+    _diag = train_samples.subset(256, seed=args.seed) \
+        if (_tmpl_dir is not None or _msa_dir is not None) else []
     if _tmpl_dir is not None:
-        _cov = [float(s['template_mask'].float().mean()) for s in list(train_samples.values()) if 'template_mask' in s]
+        _cov = [float(s['template_mask'].float().mean()) for s in _diag if 'template_mask' in s]
         if _cov:
-            logger.log(f"  Template coverage (train): {100*sum(_cov)/len(_cov):.1f}% residues mean")
+            logger.log(f"  Template coverage (train, n={len(_diag)} sampled): "
+                       f"{100*sum(_cov)/len(_cov):.1f}% residues mean")
     if _msa_dir is not None:
-        _n_msa = sum(1 for s in train_samples.values() if 'msa_feats' in s)
-        logger.log(f"  Coevolution cache (train): {_n_msa}/{len(train_samples)} samples have msa_feats")
+        _n_msa = sum(1 for s in _diag if 'msa_feats' in s)
+        logger.log(f"  Coevolution cache (train, n={len(_diag)} sampled): "
+                   f"{_n_msa}/{len(_diag)} samples have msa_feats")
 
     # If not normalizing, warn about sigma values
     if args.no_normalize:
@@ -1131,7 +1174,7 @@ def _run_training(args, progress):
             s1_noiser = create_noiser("gaussian", schedule)
 
             # Generate predictions for train and test
-            all_samples = {**train_samples, **test_samples}
+            all_samples = MergedSampleStore(train_samples, test_samples)
             all_indices = train_indices + test_indices
             s1_predictions = generate_stage1_predictions(
                 s1_model, all_samples, all_indices, s1_noiser, device, logger=logger
@@ -1146,15 +1189,19 @@ def _run_training(args, progress):
             torch.cuda.empty_cache()
 
         # Inject predictions into samples
+        # set_overlay, not direct mutation: an lru store may evict the dict we
+        # would have written into, silently dropping the Stage 1 prediction.
         for idx, pred in s1_predictions.items():
             if idx in train_samples:
-                train_samples[idx]['centroids_pred'] = pred
+                train_samples.set_overlay(idx, 'centroids_pred', pred)
             if idx in test_samples:
-                test_samples[idx]['centroids_pred'] = pred
+                test_samples.set_overlay(idx, 'centroids_pred', pred)
         logger.log("  Injected Stage 1 predictions into samples")
 
     # Create sampler for efficient batching
-    train_sampler = create_train_sampler(args, train_samples, logger)
+    # length_index(): the samplers bucket by 'n_res' and read nothing else, so
+    # they get lengths from LA/LB rather than forcing every sample resident.
+    train_sampler = create_train_sampler(args, train_samples.length_index(), logger)
 
     # Create model. Two architectures share this script:
     #   resfold  -> ResFoldPipeline (Stage 1 + optional Stage 2)
@@ -1364,6 +1411,9 @@ def _run_training(args, progress):
 
     best_rmse = float('inf')
     progress["best_rmse"] = best_rmse
+    # Everything before this point is setup and validation. Only past here has
+    # a run earned a REGISTRY.md row -- see the finally: block in main().
+    progress["training_started"] = True
     start_time = time.time()
 
     model.train()
@@ -2242,23 +2292,34 @@ def main():
     finally:
         best = progress.get("best_rmse", float('inf'))
         final_metric = best if best != float('inf') else None
-        try:
-            registry_path = append_registry_row(
-                run_name=run_name,
-                model="resfold",
-                config_path=getattr(args, "config", None),
-                final_metric=final_metric,
-                outcome=outcome,
-                output_dir=getattr(args, "output_dir", None),
-                dockq_avg=progress.get("dockq_avg"),
-                dockq_success_pct=progress.get("dockq_success_pct"),
-                c_rmsd=progress.get("c_rmsd"),
-                extra_tokens=progress.get("extra_tokens"),
-            )
-            print(f"[registry] appended row to {registry_path}")
-        except Exception as reg_err:
-            # Registry write must never mask the real failure.
-            print(f"[registry] WARNING: failed to append row: {reg_err}")
+        # A run that never reached the training loop is a rejected
+        # configuration, not an experiment. Appending it anyway filled the
+        # registry with rows like "crashed: SplitLeakageError" for runs that
+        # never trained a step -- noise in the one file that is supposed to be
+        # the experiment record.
+        if not progress.get("training_started"):
+            print(f"[registry] no row: run ended before training started "
+                  f"({outcome})")
+        elif getattr(args, "no_registry", False):
+            print("[registry] no row: --no_registry")
+        else:
+            try:
+                registry_path = append_registry_row(
+                    run_name=run_name,
+                    model="resfold",
+                    config_path=getattr(args, "config", None),
+                    final_metric=final_metric,
+                    outcome=outcome,
+                    output_dir=getattr(args, "output_dir", None),
+                    dockq_avg=progress.get("dockq_avg"),
+                    dockq_success_pct=progress.get("dockq_success_pct"),
+                    c_rmsd=progress.get("c_rmsd"),
+                    extra_tokens=progress.get("extra_tokens"),
+                )
+                print(f"[registry] appended row to {registry_path}")
+            except Exception as reg_err:
+                # Registry write must never mask the real failure.
+                print(f"[registry] WARNING: failed to append row: {reg_err}")
 
 
 if __name__ == "__main__":
