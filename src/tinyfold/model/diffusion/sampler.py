@@ -447,6 +447,11 @@ _SAMPLERS = {
     "ddim_stochastic": lambda **kw: DeterministicDDIMSampler(eta=1.0, align_per_step=True, recenter=True, **kw),
     "edm": lambda **kw: EDMSampler(use_heun=True, align_per_step=True, recenter=True, **kw),
     "edm_euler": lambda **kw: EDMSampler(use_heun=False, align_per_step=True, recenter=True, **kw),
+    # C7: deterministic probability-flow ODE (Euler, no churn) for the
+    # sample_centroids_with_sampler seam. Few-step control on the onestep path
+    # lives in inference.samplers.sample_centroids_ode (ode_steps/gamma0/eta);
+    # step count here comes from the noiser's schedule length.
+    "ode": lambda **kw: EDMSampler(use_heun=False, s_churn=0.0, align_per_step=True, recenter=True, **kw),
 }
 
 

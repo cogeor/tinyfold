@@ -414,6 +414,97 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
 
 
 @torch.no_grad()
+def sample_centroids_ode(model, batch, noiser, device, n_steps=2, gamma0=0.0,
+                         eta=1.0, clamp_val=3.0, align_per_step=True,
+                         recenter=True, is_onestep=False, generator=None,
+                         n_recycle=0):
+    """Few-step probability-flow ODE sampler (Protenix-Mini recipe, C7).
+
+    AF3-class models tolerate 2-step ODE sampling with NO retraining, but only
+    with ``gamma0=0`` (no noise re-injection) and step scale ``eta=1.0`` -- AF3's
+    default eta=1.5 collapses below ~10 steps. Protenix reports 2-step interface
+    lDDT 0.645 vs 0.65 at 200 steps; ~100x cheaper sampling is what makes
+    large-K sample-and-rank affordable on one GPU.
+
+    Builds its OWN Karras schedule of ``n_steps`` (independent of the noiser's
+    length) and runs deterministic Euler, with optional ``gamma0`` churn. With
+    ``gamma0=0, eta=1.0`` and the noiser's own step count this reduces exactly to
+    the VE Euler trajectory (``sample_centroids_ve`` with self-conditioning off).
+    Trunk is cached for onestep. Returns centroids, or ``(centroids, atoms)`` when
+    ``is_onestep``.
+    """
+    from tinyfold.model.diffusion import KarrasSchedule
+    B, L = batch['aa_seq'].shape
+    mask = batch['mask_res']
+    sched = KarrasSchedule(
+        n_steps=n_steps,
+        sigma_min=noiser.schedule.sigma_min,
+        sigma_max=noiser.schedule.sigma_max,
+        rho=noiser.schedule.rho,
+    )
+    sigmas = sched.sigmas.to(device)
+    x = sigmas[0] * torch.randn(B, L, 3, device=device, generator=generator)
+
+    trunk_tokens = None
+    if is_onestep:
+        trunk_tokens = model.get_trunk_tokens(
+            batch['aa_seq'], batch['chain_ids'], batch['res_idx'], mask,
+            esm_embed=batch.get('esm_embed'), n_recycle=n_recycle,
+            **_template_kwargs(batch),
+        )
+
+    for i in range(len(sigmas) - 1):
+        sigma = sigmas[i]
+        sigma_next = sigmas[i + 1]
+        # gamma0 noise re-injection (churn); 0.0 = pure ODE.
+        if gamma0 > 0:
+            sigma_hat = sigma * (1.0 + gamma0)
+            x = x + (sigma_hat ** 2 - sigma ** 2).clamp(min=0).sqrt() * torch.randn(
+                x.shape, device=device, generator=generator
+            )
+        else:
+            sigma_hat = sigma
+        sigma_batch = sigma_hat.expand(B)
+
+        if is_onestep:
+            out = model.forward_sigma_with_trunk(
+                x, trunk_tokens, sigma_batch, mask, x0_prev=None,
+                res_idx=batch['res_idx'], chain_ids=batch['chain_ids'],
+            )
+        else:
+            out = model.stage1.forward_sigma(
+                x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
+                sigma_batch, mask, x0_prev=None,
+                esm_embed=batch.get('esm_embed'), **_template_kwargs(batch),
+            )
+        x0_pred = out[0] if is_onestep else out
+        x0_pred = torch.clamp(x0_pred, -clamp_val, clamp_val)
+        if align_per_step:
+            x0_pred = kabsch_align_to_target(x0_pred, x, mask)
+
+        d = (x - x0_pred) / sigma_hat
+        x = x + eta * d * (sigma_next - sigma_hat)
+
+        if recenter:
+            if mask is not None:
+                mask_exp = mask.unsqueeze(-1).float()
+                n_valid = mask.sum(dim=1, keepdim=True).unsqueeze(-1).clamp(min=1)
+                centroid = (x * mask_exp).sum(dim=1, keepdim=True) / n_valid
+            else:
+                centroid = x.mean(dim=1, keepdim=True)
+            x = x - centroid
+
+    if is_onestep:
+        sigma_min_batch = sigmas[-1].expand(B)
+        sigma_out = model.forward_sigma_with_trunk(
+            x, trunk_tokens, sigma_min_batch, mask, x0_prev=None,
+            res_idx=batch['res_idx'], chain_ids=batch['chain_ids'],
+        )
+        return x, sigma_out[1]
+    return x
+
+
+@torch.no_grad()
 def sample_k_centroids(
     model,
     batch,
@@ -429,8 +520,16 @@ def sample_k_centroids(
     kabsch_interp: bool = False,
     self_cond: bool = True,
     n_recycle: int = 0,
+    sampler: str = "ve",
+    ode_steps: int = 2,
+    ode_gamma0: float = 0.0,
+    ode_eta: float = 1.0,
 ):
     """Draw K reproducible centroid samples for one target.
+
+    ``sampler="ode"`` (C7) routes every draw through the few-step ODE sampler
+    (``ode_steps`` / ``ode_gamma0`` / ``ode_eta``) instead of VE / one-shot, so
+    K-sample eval picks up cheap few-step sampling unchanged.
 
     For the (is_onestep, one_shot) path the trunk is run ONCE and only the
     denoiser runs K times via ``forward_sigma_with_trunk``. For the VE path
@@ -483,6 +582,28 @@ def sample_k_centroids(
         and getattr(model, "confidence_head", None) is not None
     )
     pred_lddt_list: list = []
+
+    # C7: few-step ODE path. Each of the K draws runs the deterministic ODE
+    # sampler from its own seeded noise -> K distinct samples, ~100x cheaper.
+    if sampler == "ode":
+        for i in range(K):
+            seed_i = base_seed * 100003 + target_idx * 1009 + i
+            gen = torch.Generator(device=device).manual_seed(seed_i)
+            out = sample_centroids_ode(
+                model, batch, noiser, device,
+                n_steps=ode_steps, gamma0=ode_gamma0, eta=ode_eta,
+                align_per_step=align_per_step, recenter=recenter,
+                is_onestep=is_onestep, generator=gen, n_recycle=n_recycle,
+            )
+            if is_onestep:
+                centroid_pred, atoms_pred = out
+                centroid_list.append(centroid_pred)
+                atom_list.append(atoms_pred)
+            else:
+                centroid_list.append(out)
+        centroids = torch.stack(centroid_list, dim=0)
+        atoms = torch.stack(atom_list, dim=0) if is_onestep else None
+        return centroids, atoms, None
 
     # Fast path: reuse the trunk across K denoiser calls.
     if is_onestep and one_shot:

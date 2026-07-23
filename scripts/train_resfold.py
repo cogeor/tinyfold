@@ -597,8 +597,15 @@ def parse_args():
 
     # Sampling (evaluation)
     parser.add_argument("--sampler", type=str, default=None,
-                        choices=["ddpm", "ddpm_kabsch", "ddpm_kabsch_recenter", "heun", "ddim", "edm"],
+                        choices=["ddpm", "ddpm_kabsch", "ddpm_kabsch_recenter", "heun", "ddim", "edm", "ode"],
                         help="Sampler for evaluation (default: use --align_per_step/--recenter flags)")
+    # Few-step ODE sampler (C7)
+    parser.add_argument("--ode_steps", type=int, default=2,
+                        help="Steps for the few-step ODE sampler (--sampler ode).")
+    parser.add_argument("--ode_gamma0", type=float, default=0.0,
+                        help="ODE noise re-injection (0.0 = pure ODE; Protenix recipe).")
+    parser.add_argument("--ode_eta", type=float, default=1.0,
+                        help="ODE step scale (1.0; AF3's 1.5 collapses below ~10 steps).")
     parser.add_argument("--one_shot_sample", action="store_true",
                         help="Eval with single-forward EDM inference instead of multi-step VE sampling. Useful for overfit checks where the multi-step trajectory accumulates drift but a high-sigma one-shot recovers the memorized structure.")
     parser.add_argument("--align_per_step", action="store_true",
@@ -761,6 +768,9 @@ def _run_test_eval(
                         align_per_step=args.align_per_step, recenter=args.recenter,
                         kabsch_interp=args.kabsch_interp,
                         n_recycle=args.n_recycle_eval,
+                        sampler=("ode" if args.sampler == "ode" else "ve"),
+                        ode_steps=args.ode_steps, ode_gamma0=args.ode_gamma0,
+                        ode_eta=args.ode_eta,
                     )
                     n_res = s['n_res']
                     # Per-sample RMSE vs GT (Kabsch-aligned by compute_rmse).
