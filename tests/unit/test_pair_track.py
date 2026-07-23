@@ -28,7 +28,7 @@ class TestPairTrack:
         B, L = 2, 7
         s = torch.randn(B, L, 32)
         _, chain, res_idx, mask = _toy_inputs(B, L)
-        bias, _ = pt(s, res_idx, chain, mask)
+        bias, _, _ = pt(s, res_idx, chain, mask)
         assert bias.shape == (B, n_heads, L, L)
 
     def test_zero_at_init(self):
@@ -37,7 +37,7 @@ class TestPairTrack:
         B, L = 2, 7
         s = torch.randn(B, L, 32)
         _, chain, res_idx, mask = _toy_inputs(B, L)
-        bias, _ = pt(s, res_idx, chain, mask)
+        bias, _, _ = pt(s, res_idx, chain, mask)
         assert torch.allclose(bias, torch.zeros_like(bias))
 
     def test_padding_does_not_leak(self):
@@ -52,12 +52,12 @@ class TestPairTrack:
         mask = torch.ones(B, L, dtype=torch.bool)
         mask[0, -2:] = False  # last two residues are padding
 
-        bias_full, _ = pt(s, res_idx, chain, mask)
+        bias_full, _, _ = pt(s, res_idx, chain, mask)
         # Changing the *padded* single-rep entries must not change the bias on
         # the valid block — i.e. padding does not leak into the pair update.
         s2 = s.clone()
         s2[0, -2:] = torch.randn(2, 16)
-        bias_pert, _ = pt(s2, res_idx, chain, mask)
+        bias_pert, _, _ = pt(s2, res_idx, chain, mask)
         valid = mask[0]
         vb_full = bias_full[0, :, valid][:, :, valid]
         vb_pert = bias_pert[0, :, valid][:, :, valid]

@@ -503,6 +503,14 @@ def parse_args():
     parser.add_argument("--self_cond_prob", type=float, default=0.5,
                         help="Probability of using self-conditioning during training (0 to disable)")
 
+    # Recycling (C1)
+    parser.add_argument("--n_recycle", type=int, default=0,
+                        help="Max trunk recycling passes during training. Per step "
+                             "the count is drawn uniformly from {0..n_recycle} "
+                             "(0 = recycling off, bitwise-identical to pre-C1).")
+    parser.add_argument("--n_recycle_eval", type=int, default=0,
+                        help="Fixed number of trunk recycling passes at eval time.")
+
     # Training augmentation
     parser.add_argument("--translate_aug", type=float, default=0.0,
                         help="Random translation augmentation scale (in normalized units, try 0.1-0.3)")
@@ -710,6 +718,7 @@ def _run_test_eval(
                         is_onestep=is_onestep, one_shot=args.one_shot_sample,
                         align_per_step=args.align_per_step, recenter=args.recenter,
                         kabsch_interp=args.kabsch_interp,
+                        n_recycle=args.n_recycle_eval,
                     )
                     n_res = s['n_res']
                     # Per-sample RMSE vs GT (Kabsch-aligned by compute_rmse).
@@ -1581,6 +1590,13 @@ def _run_training(args, progress):
                         msa_feats = msa_feats * keep.view(-1, 1, 1, 1).to(msa_feats.dtype)
                     if args.continuous_sigma:
                         # AF3-style with continuous sigma
+                        # Recycling (C1): draw the pass count uniformly from
+                        # {0..n_recycle} per step (PairMixer/Boltz recipe). 0 when
+                        # --n_recycle is 0, so the trunk runs exactly once as before.
+                        _n_rc = (
+                            int(torch.randint(0, args.n_recycle + 1, (1,)).item())
+                            if args.n_recycle > 0 else 0
+                        )
                         # Self-conditioning: with probability p, first run model to get x0_prev
                         x0_prev = None
                         _amp = getattr(args, "amp", False) and torch.cuda.is_available()
@@ -1594,6 +1610,7 @@ def _run_training(args, progress):
                                     template_mask=tmpl_mask,
                                     template_frame_id=tmpl_frame,
                                     msa_feats=msa_feats,
+                                    n_recycle=_n_rc,
                                 )
                                 # OneStep returns (centroid, atoms, pred_lddt); self-conditioning only uses centroids.
                                 x0_prev = (sc_out[0] if is_onestep else sc_out).detach()
@@ -1613,6 +1630,7 @@ def _run_training(args, progress):
                                     template_mask=tmpl_mask,
                                     template_frame_id=tmpl_frame,
                                     msa_feats=msa_feats,
+                                    n_recycle=_n_rc,
                                 )
                                 atoms_pred = None
                             else:
@@ -1624,6 +1642,7 @@ def _run_training(args, progress):
                                     template_mask=tmpl_mask,
                                     template_frame_id=tmpl_frame,
                                     msa_feats=msa_feats,
+                                    n_recycle=_n_rc,
                                 )
                         # Cast predictions back to fp32 for the loss (stable).
                         if _atom_diff:

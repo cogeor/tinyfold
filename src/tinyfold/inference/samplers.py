@@ -165,7 +165,7 @@ def sample_centroids(model, batch, noiser, device, clamp_val=3.0,
 
 @torch.no_grad()
 def sample_centroids_one_shot(model, batch, noiser, device, is_onestep=False,
-                              sigma_init=None, generator=None):
+                              sigma_init=None, generator=None, n_recycle=0):
     """Single-forward inference for EDM-preconditioned models.
 
     At high sigma the EDM model's output is dominated by F (the learned prior).
@@ -193,6 +193,7 @@ def sample_centroids_one_shot(model, batch, noiser, device, is_onestep=False,
         centroid_pred, tokens, _ = model.centroid_tokens(
             x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
             sigma_init, mask, x0_prev=None, esm_embed=batch.get('esm_embed'),
+            n_recycle=n_recycle,
             **_template_kwargs(batch),
         )
         atoms_pred = sample_atoms_diffusion(
@@ -202,10 +203,13 @@ def sample_centroids_one_shot(model, batch, noiser, device, is_onestep=False,
             generator=generator,
         )
         return centroid_pred, atoms_pred
+    # Only the OneStep trunk supports recycling; the pipeline stage1 does not.
+    _rc = {'n_recycle': n_recycle} if is_onestep else {}
     out = denoiser.forward_sigma(
         x, batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
         sigma_init, mask, x0_prev=None,
         esm_embed=batch.get('esm_embed'),
+        **_rc,
         **_template_kwargs(batch),
     )
     if is_onestep:
@@ -221,7 +225,8 @@ def sample_centroids_one_shot(model, batch, noiser, device, is_onestep=False,
 @torch.no_grad()
 def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
                         align_per_step=True, recenter=True, kabsch_interp=False,
-                        self_cond=True, is_onestep=False, generator=None):
+                        self_cond=True, is_onestep=False, generator=None,
+                        n_recycle=0):
     """VE (variance-exploding) sampling for continuous sigma models.
 
     Uses AF3-style Euler sampling with the Karras sigma schedule.
@@ -276,7 +281,8 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
     if is_onestep:
         trunk_tokens = model.get_trunk_tokens(
             batch['aa_seq'], batch['chain_ids'], batch['res_idx'], mask,
-            esm_embed=batch.get('esm_embed'), **_template_kwargs(batch),
+            esm_embed=batch.get('esm_embed'), n_recycle=n_recycle,
+            **_template_kwargs(batch),
         )
 
     # Euler sampling loop
@@ -378,6 +384,7 @@ def sample_k_centroids(
     recenter: bool = False,
     kabsch_interp: bool = False,
     self_cond: bool = True,
+    n_recycle: int = 0,
 ):
     """Draw K reproducible centroid samples for one target.
 
@@ -437,7 +444,7 @@ def sample_k_centroids(
     if is_onestep and one_shot:
         trunk_tokens = model.get_trunk_tokens(
             batch['aa_seq'], batch['chain_ids'], batch['res_idx'], mask,
-            esm_embed=batch.get('esm_embed'),
+            esm_embed=batch.get('esm_embed'), n_recycle=n_recycle,
             **_template_kwargs(batch),
         )
         sigmas = noiser.sigmas.to(device)
@@ -480,6 +487,7 @@ def sample_k_centroids(
                 # Non-onestep one_shot: trunk lives inside model.stage1; just rerun it.
                 out = sample_centroids_one_shot(
                     model, batch, noiser, device, is_onestep=is_onestep, generator=gen,
+                    n_recycle=n_recycle,
                 )
             else:
                 out = sample_centroids_ve(
@@ -487,6 +495,7 @@ def sample_k_centroids(
                     align_per_step=align_per_step, recenter=recenter,
                     kabsch_interp=kabsch_interp,
                     self_cond=self_cond, is_onestep=is_onestep, generator=gen,
+                    n_recycle=n_recycle,
                 )
             if is_onestep:
                 centroid_pred, atoms_pred = out
@@ -502,6 +511,7 @@ def sample_k_centroids(
                         batch['aa_seq'], batch['chain_ids'], batch['res_idx'],
                         sigma_min_batch, mask, x0_prev=None,
                         esm_embed=batch.get('esm_embed'),
+                        n_recycle=n_recycle,
                         **_template_kwargs(batch),
                     )
                     if pred_lddt is not None:

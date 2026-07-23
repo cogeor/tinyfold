@@ -319,6 +319,30 @@ class ResidueEncoder(nn.Module):
 
         self.output_norm = nn.LayerNorm(c_token)
 
+        # === Recycling (C1) ===
+        # The previous trunk pass's token (and, with the pair track, pair) rep is
+        # LayerNorm'd, projected, and added into the next pass's rep. The
+        # projection is zero-initialised so a fresh model starts with recycling as
+        # a literal no-op -- n_recycle=0 is bitwise-identical to the pre-recycling
+        # forward. Construction is wrapped in a save/restore of the global RNG
+        # state so adding these parameters does not perturb the initialisation of
+        # any weight created after the trunk: an existing from-scratch run stays
+        # byte-identical with recycling left off.
+        _rng_state = torch.random.get_rng_state()
+        self.recycle_norm = nn.LayerNorm(c_token)
+        self.recycle_proj = nn.Linear(c_token, c_token)
+        nn.init.zeros_(self.recycle_proj.weight)
+        nn.init.zeros_(self.recycle_proj.bias)
+        if self.pair_repr_enabled:
+            self.recycle_pair_norm = nn.LayerNorm(c_pair)
+            self.recycle_pair_proj = nn.Linear(c_pair, c_pair)
+            nn.init.zeros_(self.recycle_pair_proj.weight)
+            nn.init.zeros_(self.recycle_pair_proj.bias)
+        else:
+            self.recycle_pair_norm = None
+            self.recycle_pair_proj = None
+        torch.random.set_rng_state(_rng_state)
+
     def forward(
         self,
         aa_seq: Tensor,          # [B, L]
@@ -330,7 +354,10 @@ class ResidueEncoder(nn.Module):
         template_mask: Tensor | None = None,        # [B, L]
         template_frame_id: Tensor | None = None,    # [B, L]
         msa_feats: Tensor | None = None,            # [B, L, L, F_msa]
-    ) -> Tensor:
+        recycle_tokens: Tensor | None = None,       # [B, L, c_token] prev pass
+        recycle_pair: Tensor | None = None,         # [B, L, L, c_pair] prev pass
+        return_pair: bool = False,
+    ) -> Tensor | tuple[Tensor, Tensor | None]:
         """Encode residue-level sequence features (NO coordinates).
 
         When ``aa_embed_mode == "learned"`` the original lookup is used (and
@@ -340,8 +367,15 @@ class ResidueEncoder(nn.Module):
         The integer ``aa_seq`` is still accepted (it determines the [B, L]
         shape) but its values are ignored in ESM mode.
 
+        Recycling (C1): when ``recycle_tokens`` (and, with the pair track,
+        ``recycle_pair``) from a previous trunk pass is supplied, it is fed back
+        in through a zero-initialised projection. ``return_pair=True`` additionally
+        returns the pair rep (or ``None`` when the pair track is off) so the caller
+        can feed it into the next pass.
+
         Returns:
-            tokens: [B, L, c_token] conditioning for denoiser
+            tokens: [B, L, c_token] conditioning for denoiser, or
+            (tokens, pair_rep) when ``return_pair=True``.
         """
         B, L = aa_seq.shape
 
@@ -363,6 +397,12 @@ class ResidueEncoder(nn.Module):
         h = torch.cat([aa_emb, chain_emb, res_emb], dim=-1)
         h = self.input_proj(h)  # [B, L, c_token]
 
+        # Recycling: add the previous pass's token rep (zero-init proj -> no-op
+        # until trained; recycle_tokens is None on the first/only pass).
+        if recycle_tokens is not None:
+            h = h + self.recycle_proj(self.recycle_norm(recycle_tokens))
+        pair_rep: Tensor | None = None
+
         # Apply transformer
         attn_mask = ~mask if mask is not None else None
         if self.bias_backend:
@@ -373,12 +413,17 @@ class ResidueEncoder(nn.Module):
                 valid = mask if mask is not None else torch.ones(
                     B, L, dtype=torch.bool, device=h.device
                 )
-                pair_bias, single_update = self.pair_track(
+                pair_recycle_add = (
+                    self.recycle_pair_proj(self.recycle_pair_norm(recycle_pair))
+                    if recycle_pair is not None else None
+                )
+                pair_bias, single_update, pair_rep = self.pair_track(
                     h, res_idx, chain_ids, valid,
                     template_coords_res=template_coords_res,
                     template_mask=template_mask,
                     template_frame_id=template_frame_id,
                     msa_feats=msa_feats,
+                    recycle_pair=pair_recycle_add,
                 )
                 attn_bias = pair_bias if attn_bias is None else attn_bias + pair_bias
                 # Higher-bandwidth pair->single injection (zero-init -> no-op at
@@ -390,7 +435,10 @@ class ResidueEncoder(nn.Module):
         else:
             h = self.transformer(h, src_key_padding_mask=attn_mask)
 
-        return self.output_norm(h)
+        tokens = self.output_norm(h)
+        if return_pair:
+            return tokens, pair_rep
+        return tokens
 
 
 # =============================================================================

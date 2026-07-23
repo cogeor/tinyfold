@@ -257,8 +257,16 @@ class PairTrack(nn.Module):
         template_mask: Tensor = None,        # [B, L] bool coverage
         template_frame_id: Tensor = None,    # [B, L] long rigid-group id
         msa_feats: Tensor = None,            # [B, L, L, F_msa] coevolution pair features
+        recycle_pair: Tensor = None,         # [B, L, L, c_pair] normed+projected prev-pass pair rep
     ):
-        """Return ``(attn_bias [B, n_heads, L, L], single_update or None)``.
+        """Return ``(attn_bias [B, n_heads, L, L], single_update or None, z)``.
+
+        ``z`` is the final pair representation ``[B, L, L, c_pair]``, returned so
+        the trunk can feed it back into the next recycling pass (C1).
+
+        ``recycle_pair`` is the previous pass's pair rep, already LayerNorm'd and
+        projected by the trunk; it is added into the freshly built pair channel.
+        ``None`` (the first/only pass) makes this a no-op.
 
         ``single_update`` is ``[B, L, c_token]`` when ``pair_to_single`` is
         enabled (the pair rep projected back into the token content), else None.
@@ -300,6 +308,11 @@ class PairTrack(nn.Module):
         if self.msa_proj is not None and msa_feats is not None:
             z = z + self.msa_proj(msa_feats.to(z.dtype))
 
+        # Recycling term (C1): the previous pass's pair rep, already normed and
+        # zero-init-projected by the trunk. None on the first/only pass -> no-op.
+        if recycle_pair is not None:
+            z = z + recycle_pair.to(z.dtype)
+
         z = z * pair_mask.unsqueeze(-1).to(z.dtype)
 
         for block in self.blocks:
@@ -321,4 +334,4 @@ class PairTrack(nn.Module):
             denom = m.sum(2).clamp(min=1.0)             # [B, L, 1]
             single_update = (zf * m).sum(2) / denom     # [B, L, c_token]
 
-        return bias, single_update
+        return bias, single_update, z

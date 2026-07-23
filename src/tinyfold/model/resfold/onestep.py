@@ -455,6 +455,34 @@ class ResFoldOneStep(BaseDecoder):
             return None
         return self.confidence_head(denoiser_tokens, mask)
 
+    def _run_trunk_recycled(self, n_recycle: int, **trunk_kwargs) -> Tensor:
+        """Run the sequence trunk with ``n_recycle`` recycling passes (C1).
+
+        Each pass feeds the previous pass's token (and pair, when the pair track
+        is on) representation back in. Only the FINAL pass is differentiated --
+        all earlier passes run under ``torch.no_grad()`` -- so peak memory does
+        not grow with ``n_recycle``. ``n_recycle=0`` runs the trunk exactly once
+        with no fed-back state, which is bitwise-identical to the pre-recycling
+        path (the recycle projection is zero-init and never even invoked).
+        """
+        recycle_tokens: Tensor | None = None
+        recycle_pair: Tensor | None = None
+        for i in range(n_recycle + 1):
+            if i < n_recycle:
+                with torch.no_grad():
+                    tokens, pair_rep = self.trunk(
+                        **trunk_kwargs, recycle_tokens=recycle_tokens,
+                        recycle_pair=recycle_pair, return_pair=True,
+                    )
+                recycle_tokens = tokens.detach()
+                recycle_pair = pair_rep.detach() if pair_rep is not None else None
+            else:
+                tokens, _ = self.trunk(
+                    **trunk_kwargs, recycle_tokens=recycle_tokens,
+                    recycle_pair=recycle_pair, return_pair=True,
+                )
+        return tokens
+
     def forward_sigma(
         self,
         x_t: Tensor,
@@ -469,6 +497,7 @@ class ResFoldOneStep(BaseDecoder):
         template_mask: Tensor | None = None,
         template_frame_id: Tensor | None = None,
         msa_feats: Tensor | None = None,
+        n_recycle: int = 0,
     ) -> ModelOutput:
         """Continuous-sigma forward (EDM-preconditioned).
 
@@ -483,8 +512,10 @@ class ResFoldOneStep(BaseDecoder):
         B, L, _ = x_t.shape
         if mask is None:
             mask = torch.ones(B, L, dtype=torch.bool, device=x_t.device)
-        trunk_tokens = self.trunk(
-            aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed,
+        trunk_tokens = self._run_trunk_recycled(
+            n_recycle,
+            aa_seq=aa_seq, chain_ids=chain_ids, res_idx=res_idx, mask=mask,
+            esm_embed=esm_embed,
             template_coords_res=template_coords_res,
             template_mask=template_mask,
             template_frame_id=template_frame_id,
@@ -511,6 +542,7 @@ class ResFoldOneStep(BaseDecoder):
         template_mask: Tensor | None = None,
         template_frame_id: Tensor | None = None,
         msa_feats: Tensor | None = None,
+        n_recycle: int = 0,
     ) -> tuple[Tensor, Tensor, Tensor | None]:
         """Centroid forward that also returns the denoiser tokens.
 
@@ -521,8 +553,10 @@ class ResFoldOneStep(BaseDecoder):
         B, L, _ = x_t.shape
         if mask is None:
             mask = torch.ones(B, L, dtype=torch.bool, device=x_t.device)
-        trunk_tokens = self.trunk(
-            aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed,
+        trunk_tokens = self._run_trunk_recycled(
+            n_recycle,
+            aa_seq=aa_seq, chain_ids=chain_ids, res_idx=res_idx, mask=mask,
+            esm_embed=esm_embed,
             template_coords_res=template_coords_res,
             template_mask=template_mask,
             template_frame_id=template_frame_id,
@@ -695,9 +729,12 @@ class ResFoldOneStep(BaseDecoder):
         template_mask: Tensor | None = None,
         template_frame_id: Tensor | None = None,
         msa_feats: Tensor | None = None,
+        n_recycle: int = 0,
     ) -> Tensor:
-        return self.trunk(
-            aa_seq, chain_ids, res_idx, mask, esm_embed=esm_embed,
+        return self._run_trunk_recycled(
+            n_recycle,
+            aa_seq=aa_seq, chain_ids=chain_ids, res_idx=res_idx, mask=mask,
+            esm_embed=esm_embed,
             template_coords_res=template_coords_res,
             template_mask=template_mask,
             template_frame_id=template_frame_id,
