@@ -4,11 +4,9 @@ Provides:
 - Schedules: CosineSchedule, LinearSchedule, DiffusionSchedule
 - Noise types: GaussianNoise, LinearChainNoise, LinearChainFlow
 - Samplers: DeterministicDDIMSampler, DDPMSampler
-- Curriculum: TimestepCurriculum
 - Factory functions: create_schedule, create_noiser
 """
 
-from tinyfold.model.diffusion.curriculum import TimestepCurriculum
 from tinyfold.model.diffusion.noise import (
     GaussianNoise,
     LinearChainFlow,
@@ -109,8 +107,6 @@ __all__ = [
     "EDMSampler",
     "create_sampler",
     "list_samplers",
-    # Curriculum
-    "TimestepCurriculum",
     # Utils
     "kabsch_align_to_target",
     # Factory functions

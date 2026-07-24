@@ -1,8 +1,7 @@
 """TinyFold model components.
 
 Provides:
-- Model registry for creating models by name
-- Diffusion components (schedules, noise types, samplers)
+- Diffusion components (schedules, noise types, samplers, factory functions)
 - Loss functions (MSE, geometry, contact, lDDT)
 """
 
@@ -18,8 +17,11 @@ from tinyfold.model.diffusion import (
     LinearChainFlow,
     LinearChainNoise,
     LinearSchedule,
-    TimestepCurriculum,
+    create_noiser,
+    create_schedule,
     generate_extended_chain,
+    list_noise_types,
+    list_schedules,
 )
 
 # Loss functions
@@ -35,30 +37,14 @@ from tinyfold.model.losses import (
     kabsch_align,
 )
 
-# Registry (factory functions)
-from tinyfold.model.registry import (
-    create_model,
-    create_noiser,
-    create_schedule,
-    get_model_class,
-    list_models,
-    list_noise_types,
-    list_schedules,
-    register_model,
-)
-
 __all__ = [
     # Core
     "ModelConfig",
-    # Registry
-    "create_model",
+    # Diffusion - factory functions
     "create_schedule",
     "create_noiser",
-    "list_models",
     "list_schedules",
     "list_noise_types",
-    "get_model_class",
-    "register_model",
     # Diffusion - schedules
     "DiffusionSchedule",
     "CosineSchedule",
@@ -71,8 +57,6 @@ __all__ = [
     # Diffusion - samplers
     "DeterministicDDIMSampler",
     "DDPMSampler",
-    # Diffusion - curriculum
-    "TimestepCurriculum",
     # Losses
     "kabsch_align",
     "compute_mse_loss",
