@@ -47,9 +47,7 @@ from tinyfold.inference import (
 
 # Model imports
 from tinyfold.model.diffusion import (
-    create_noiser,
     create_sampler,
-    create_schedule,
 )
 
 # Loss imports
@@ -75,7 +73,6 @@ from tinyfold.model.metrics import (
     score_geometric_energy,
     score_self_consistency,
 )
-from tinyfold.model.resfold import ResFoldPipeline
 from tinyfold.model.resfold.sidechain_torsion_head import wrap_angle
 from tinyfold.retrieval import make_template_inputs
 from tinyfold.sidechain_geometry import extract_chi
@@ -83,7 +80,6 @@ from tinyfold.sidechain_geometry import extract_chi
 # Training utilities from tinyfold.training
 from tinyfold.training import (
     EMA,
-    MergedSampleStore,
     SampleStore,
     collate_batch,
     create_diffusion_components,
@@ -100,67 +96,6 @@ from tinyfold.training.registry_append import append_registry_row
 from tinyfold.training.run_naming import generate_run_name
 from tinyfold.training.utils import edm_loss_weight
 
-
-@torch.no_grad()
-def generate_stage1_predictions(
-    model, samples, indices, noiser, device, batch_size=1, logger=None,
-    align_per_step=False, recenter=False, sampler=None
-):
-    """Generate Stage 1 centroid predictions for all samples.
-
-    Args:
-        model: ResFoldPipeline model with trained Stage 1
-        samples: dict of sample_idx -> sample dict
-        indices: list of sample indices to process
-        noiser: DiffusionNoiser
-        device: torch device
-        batch_size: batch size for inference (1 for variable lengths)
-        logger: optional logger
-        align_per_step: Kabsch-align x0_pred each step (fixes drift)
-        recenter: Re-center each step (avoids translation drift)
-
-    Returns:
-        dict of sample_idx -> predicted centroids tensor [L, 3] (normalized)
-    """
-    model.eval()
-    predictions = {}
-
-    total = len(indices)
-    for i, idx in enumerate(indices):
-        s = samples[idx]
-        batch = collate_batch([s], device)
-
-        # Run Stage 1 diffusion sampling
-        if sampler is not None:
-            centroids_pred = sample_centroids_with_sampler(model, batch, noiser, device, sampler)
-        else:
-            centroids_pred = sample_centroids(
-                model, batch, noiser, device,
-                align_per_step=align_per_step, recenter=recenter
-            )
-
-        # Store prediction (trim to actual length)
-        n_res = s['n_res']
-        predictions[idx] = centroids_pred[0, :n_res].cpu()
-
-        if logger and (i + 1) % 500 == 0:
-            logger.log(f"    Generated {i + 1}/{total} predictions...")
-
-    return predictions
-
-
-def save_stage1_predictions(predictions, path):
-    """Save Stage 1 predictions to file."""
-    torch.save(predictions, path)
-
-
-def load_stage1_predictions(path):
-    """Load Stage 1 predictions from file."""
-    return torch.load(path)
-
-
-
-
 # =============================================================================
 # Main
 # =============================================================================
@@ -175,7 +110,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="ResFold training")
 
     # Training mode
-    parser.add_argument("--mode", type=str, default="end_to_end",
+    parser.add_argument("--mode", type=str, default="stage1_only",
                         choices=["stage1_only", "stage2_only", "end_to_end"],
                         help="Training mode")
 
@@ -431,11 +366,14 @@ def parse_args():
     parser.add_argument("--min_lr", type=float, default=1e-5, help="Minimum LR for cosine schedule")
     parser.add_argument("--grad_accum", type=int, default=1)
 
-    # Model selection (resfold = original two-stage pipeline; onestep = single
-    # network with parallel centroid + atom heads, trained end-to-end)
-    parser.add_argument("--model_kind", type=str, default="resfold",
-                        choices=["resfold", "onestep"],
-                        help="Model architecture: 'resfold' (ResFoldPipeline) or 'onestep' (ResFoldOneStep)")
+    # Model selection. Only ResFoldOneStep remains (single network with parallel
+    # centroid + atom heads, trained end-to-end). The legacy two-stage pipeline
+    # (ResFoldPipeline) was removed: every recorded run and every config is
+    # onestep. Kept as a one-value flag so existing configs that set it still
+    # parse.
+    parser.add_argument("--model_kind", type=str, default="onestep",
+                        choices=["onestep"],
+                        help="Model architecture: only 'onestep' (ResFoldOneStep) is supported")
 
     # Model - Stage 1
     parser.add_argument("--c_token_s1", type=int, default=256)
@@ -485,7 +423,8 @@ def parse_args():
                              ">0 requires --confidence_head. Default 0 keeps the head "
                              "frozen out of the loss even when instantiated.")
 
-    # Model - Stage 2 (AtomRefinerV2: ~15M params with defaults)
+    # Vestigial Stage-2 args. The two-stage refiner (AtomRefinerV2) was removed;
+    # these are kept as no-op flags so configs that still carry them keep parsing.
     parser.add_argument("--c_token_s2", type=int, default=256)
     parser.add_argument("--s2_layers", type=int, default=18)
     parser.add_argument("--s2_heads", type=int, default=8)
@@ -1195,78 +1134,14 @@ def _run_training(args, progress):
         if args.sigma_max < avg_std * 5:
             logger.log(f"  WARNING: sigma_max={args.sigma_max} may be too small for Angstrom space!")
 
-    # For Stage 2: load or generate Stage 1 predictions
-    if args.mode == "stage2_only" and args.load_split:
-        stage1_dir = os.path.dirname(args.load_split)
-        predictions_path = os.path.join(stage1_dir, "stage1_predictions.pt")
-
-        if os.path.exists(predictions_path):
-            logger.log(f"  Loading Stage 1 predictions from: {predictions_path}")
-            s1_predictions = load_stage1_predictions(predictions_path)
-            logger.log(f"    Loaded {len(s1_predictions)} predictions")
-        else:
-            # Generate predictions using Stage 1 checkpoint
-            s1_checkpoint = os.path.join(stage1_dir, "best_model.pt")
-            if not os.path.exists(s1_checkpoint):
-                raise FileNotFoundError(f"Stage 1 checkpoint not found: {s1_checkpoint}")
-
-            logger.log("  Generating Stage 1 predictions (this may take a while)...")
-            logger.log(f"    Loading Stage 1 checkpoint: {s1_checkpoint}")
-
-            # Create temporary model for Stage 1
-            s1_model = ResFoldPipeline(
-                c_token_s1=args.c_token_s1,
-                trunk_layers=args.trunk_layers,
-                denoiser_blocks=args.denoiser_blocks,
-                c_token_s2=args.c_token_s2,
-                s2_layers=args.s2_layers,
-                s2_heads=args.s2_heads,
-                n_timesteps=args.T,
-                dropout=0.0,
-                aa_embed=args.aa_embed,
-                esm_dim=args._esm_dim,
-            ).to(device)
-
-            ckpt = torch.load(s1_checkpoint, map_location=device)
-            s1_model.load_state_dict(ckpt['model_state_dict'], strict=False)
-
-            # Create noiser for sampling
-            schedule = create_schedule("linear", T=args.T)
-            s1_noiser = create_noiser("gaussian", schedule)
-
-            # Generate predictions for train and test
-            all_samples = MergedSampleStore(train_samples, test_samples)
-            all_indices = train_indices + test_indices
-            s1_predictions = generate_stage1_predictions(
-                s1_model, all_samples, all_indices, s1_noiser, device, logger=logger
-            )
-
-            # Save predictions
-            save_stage1_predictions(s1_predictions, predictions_path)
-            logger.log(f"    Saved predictions to: {predictions_path}")
-
-            # Clean up
-            del s1_model
-            torch.cuda.empty_cache()
-
-        # Inject predictions into samples
-        # set_overlay, not direct mutation: an lru store may evict the dict we
-        # would have written into, silently dropping the Stage 1 prediction.
-        for idx, pred in s1_predictions.items():
-            if idx in train_samples:
-                train_samples.set_overlay(idx, 'centroids_pred', pred)
-            if idx in test_samples:
-                test_samples.set_overlay(idx, 'centroids_pred', pred)
-        logger.log("  Injected Stage 1 predictions into samples")
-
     # Create sampler for efficient batching
     # length_index(): the samplers bucket by 'n_res' and read nothing else, so
     # they get lengths from LA/LB rather than forcing every sample resident.
     train_sampler = create_train_sampler(args, train_samples.length_index(), logger)
 
-    # Create model. Two architectures share this script:
-    #   resfold  -> ResFoldPipeline (Stage 1 + optional Stage 2)
-    #   onestep  -> ResFoldOneStep  (centroid diffusion + parallel atom head)
+    # Create model. Only ResFoldOneStep remains (centroid diffusion + parallel
+    # atom head). is_onestep is retained as a flag (always True) because the
+    # downstream train/eval branches read it; the legacy two-stage path is gone.
     is_onestep = (args.model_kind == "onestep")
     if is_onestep:
         from tinyfold.model.resfold.onestep import ResFoldOneStep
@@ -1344,36 +1219,6 @@ def _run_training(args, progress):
                 f"({pc['sc_head_pct']:.1f}%)"
             )
         logger.log(f"  Total params:     {pc['total']:,}")
-        logger.log("")
-    else:
-        # Original two-stage path.
-        model = ResFoldPipeline(
-            c_token_s1=args.c_token_s1,
-            trunk_layers=args.trunk_layers,
-            denoiser_blocks=args.denoiser_blocks,
-            c_token_s2=args.c_token_s2,
-            s2_layers=args.s2_layers,
-            s2_heads=args.s2_heads,
-            n_timesteps=args.T,
-            dropout=0.0,
-            stage1_only=(args.mode == "stage1_only"),
-            aa_embed=args.aa_embed,
-            esm_dim=args._esm_dim,
-        ).to(device)
-        stage1_module = model.stage1
-
-        # Load checkpoint if provided
-        if args.checkpoint:
-            load_model_checkpoint(model, args.checkpoint, args.mode, device, logger)
-
-        # Set training mode (freeze/unfreeze stages)
-        model.set_training_mode(args.mode)
-
-        param_counts = model.count_parameters()
-        logger.log(f"Model: ResFold ({args.mode})")
-        logger.log(f"  Stage 1 params: {param_counts['stage1']:,} ({param_counts['stage1_pct']:.1f}%)")
-        logger.log(f"  Stage 2 params: {param_counts['stage2']:,} ({param_counts['stage2_pct']:.1f}%)")
-        logger.log(f"  Total params:   {param_counts['total']:,}")
         logger.log("")
 
     # Create diffusion components (for Stage 1)

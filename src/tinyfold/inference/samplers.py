@@ -144,7 +144,7 @@ def sample_centroids(model, batch, noiser, device, clamp_val=3.0,
     """DDPM sampling for Stage 1 centroids only.
 
     Args:
-        model: ResFoldPipeline model
+        model: ResFoldOneStep model
         batch: Batch dict with aa_seq, chain_ids, res_idx, mask_res
         noiser: Diffusion noiser with schedule
         device: torch device
@@ -282,7 +282,7 @@ def sample_centroids_ve(model, batch, noiser, device, clamp_val=3.0,
     is run to read the atom-head output for downstream visualization.
 
     Args:
-        model: ResFoldPipeline (or ResFoldOneStep when is_onestep=True)
+        model: ResFoldOneStep model
         batch: Batch dict with aa_seq, chain_ids, res_idx, mask_res
         noiser: VENoiser with KarrasSchedule (has .sigmas attribute)
         device: torch device
@@ -542,7 +542,7 @@ def sample_k_centroids(
     target are independent across targets.
 
     Args:
-        model: ResFoldOneStep or ResFoldPipeline.
+        model: ResFoldOneStep.
         batch: collated batch dict (B=1 expected).
         noiser: VENoiser (continuous-sigma path).
         device: torch device.
@@ -695,7 +695,7 @@ def sample_centroids_with_sampler(model, batch, noiser, device, sampler):
     """Sample centroids using a sampler from the registry.
 
     Args:
-        model: ResFoldPipeline model
+        model: ResFoldOneStep model
         batch: Batch dict with aa_seq, chain_ids, res_idx, mask_res
         noiser: Diffusion noiser with schedule
         device: torch device
