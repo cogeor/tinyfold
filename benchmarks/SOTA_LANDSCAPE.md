@@ -11,6 +11,24 @@
 4. **PINDER** (2.3M dimers, leakage-controlled splits) is the new expected benchmark. DIPS/DB5 are increasingly considered leaky.
 5. Architectural consensus: Pairformer trunk + token-then-atom diffusion + recycling. MSAs de-emphasized; single-sequence mode supported by Boltz/Chai.
 
+## Correction (2026-07-25): the honest floor — do not quote the leaked number
+
+Any TinyFold DockQ figure derived from a **random** DIPS split is leakage-inflated
+and must not be cited as a fair result. 91.5% of our le200 test complexes share a
+sequence cluster with training. Re-scoring the two le200 checkpoints on their own
+splits under permutation-aware DockQ, stratified by cluster leakage (E0.a):
+
+| checkpoint | leaked (n=183) | clean, cluster-held-out (n=17) |
+|---|---|---|
+| scale_6M_le200 | DockQ 0.256, 45% succ, 25% medium+ | **DockQ 0.048, 6% succ, 0% medium+** |
+| small_specialist_le200 | DockQ 0.283, 50% succ, 29% medium+ | **DockQ 0.058, 6% succ, 0% medium+** |
+
+Redundancy is monotone (meanDockQ by #same-cluster train complexes, scale_6M):
+0 → 0.048, 1–4 → 0.174, 5–19 → 0.195, 20+ → 0.354. The "~0.23–0.28" headline is
+the *leaked* stratum; the fair number on genuinely held-out complexes is
+**DockQ ≈ 0.05 with 0% medium+**. No regime generalizes yet. Always report the
+clean stratum and read DockQ/CAPRI, not C-RMSD.
+
 ## Categories
 
 ### Joint fold+dock (AF3-class) — our category
@@ -144,6 +162,14 @@ This means the question is **not** "should we strip Pairformer to make it lighte
 - Whether the cliff we observe is *caused* by the missing pair rep, or by other factors (data, sampler, ranker, denoiser depth, ESM size).
 - Whether adding a small pair track at our scale closes the cliff, leaves it open, or hurts (by burning trainable capacity).
 - Whether a Pairmixer-style minimal pair track (triangle multiplication only) is enough, or if the cliff requires the full Pairformer machinery.
+
+**External update (record, do not re-derive):** the PairMixer matched-budget study
+reports that a **sequence-only trunk caps at DockQ>0.23 ≈ 0.51 and does not improve
+with scale** (0.51 → 0.50 → 0.51 across a 4× depth increase), while adding a pair
+track reaches ≈ 0.58 at matched budget. That is the strongest external evidence
+that the cliff is architectural (missing pair rep) rather than depth-limited — but
+it is at their scale, not ours, so our own matched-param A/B is still the
+deciding experiment.
 
 Both "pair rep is harmful at our scale" and "pair rep is necessary for PPI at our scale" are hypotheses. The cleanest experiment is an A/B at matched parameter count, with the PINDER-style cliff metric as the readout, and accept whichever way it lands. The result is informative either direction:
 - If pair rep closes the cliff: we know the bottleneck.

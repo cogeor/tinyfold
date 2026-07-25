@@ -1,6 +1,14 @@
-> ⚠️ STALE — see `notes/NEXT_STEPS.md` for the current plan; this doc will be rewritten in Phase E.
+> ⚠️ **SUPERSEDED / historical design.** The two-stage generation described below
+> — `ResFoldPipeline` (Stage 1 `ResidueDenoiser` → Stage 2 `AtomRefiner`), plus
+> `ResFoldE2E` and `ResFoldAssembler` — was **removed from the codebase** (D2):
+> every recorded run and every config is `model_kind: onestep`, so the pipeline
+> branch was never trained. The only model now is **`ResFoldOneStep`** — a single
+> network with parallel centroid + atom heads trained end-to-end
+> (`src/tinyfold/model/resfold/onestep.py`). This document is kept for design
+> history only; the class names and file paths in it (`pipeline.py`, `refiner.py`,
+> `assembler.py`, `e2e.py`) no longer exist.
 
-# ResFold: Two-Stage PPI Structure Prediction
+# ResFold: Two-Stage PPI Structure Prediction  *(historical — see note above)*
 
 A hierarchical architecture that decouples residue-level diffusion from atomic refinement.
 
