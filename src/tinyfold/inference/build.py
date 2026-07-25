@@ -16,6 +16,18 @@ import torch
 from tinyfold.model.resfold.config import ResFoldConfig
 from tinyfold.model.resfold.onestep import ResFoldOneStep
 
+# Params introduced by off-by-default capabilities (zero-init, unused at eval)
+# that a pre-capability checkpoint may legitimately lack. Matched as substrings of
+# the state-dict key. Keep this list tight: only additive, eval-inert modules.
+_OFFDEFAULT_PARAM_TOKENS = (
+    "recycle_norm", "recycle_proj",            # C1 recycling (single track)
+    "recycle_pair_norm", "recycle_pair_proj",  # C1 recycling (pair track)
+)
+
+
+def _is_offdefault_param(key: str) -> bool:
+    return any(tok in key for tok in _OFFDEFAULT_PARAM_TOKENS)
+
 
 def build_onestep_from_config(cfg: dict) -> ResFoldOneStep:
     """Instantiate ResFoldOneStep with the architecture recorded in ``cfg``.
@@ -61,11 +73,20 @@ def load_onestep_run(checkpoint_path, device, ema: bool = False) -> tuple[ResFol
     else:
         state = ckpt["model_state_dict"]
     missing, unexpected = model.load_state_dict(state, strict=False)
-    if missing or unexpected:
+    # Off-by-default capabilities added after a checkpoint was trained introduce
+    # zero-init params that are unused at eval, so a pre-capability checkpoint
+    # legitimately lacks them and they stay at their (no-op) constructed values.
+    # C1 recycling is the case: recycle_proj is zero-init and the recycle path is
+    # only taken when n_recycle>0, which eval never does by default. Tolerate
+    # exactly those missing keys; any other missing key, or ANY unexpected key,
+    # is a real architecture mismatch and still raises.
+    hard_missing = [k for k in missing if not _is_offdefault_param(k)]
+    if hard_missing or unexpected:
         raise RuntimeError(
             f"Checkpoint/architecture mismatch for {ckpt_path}: "
-            f"{len(missing)} missing, {len(unexpected)} unexpected keys. "
-            f"config.json does not describe this checkpoint."
+            f"{len(hard_missing)} missing, {len(unexpected)} unexpected keys "
+            f"(ignoring {len(missing) - len(hard_missing)} benign off-by-default "
+            f"params). config.json does not describe this checkpoint."
         )
     model.eval()
     return model, cfg
