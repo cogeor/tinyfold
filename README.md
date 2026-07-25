@@ -10,13 +10,21 @@ A lightweight diffusion-based model for binary protein-protein interaction (PPI)
 
 ## Overview
 
-TinyFold predicts the 3D structure of two interacting protein chains using a **two-stage approach**:
+TinyFold predicts the 3D structure of two interacting protein chains with a **single
+network** (`ResFoldOneStep`) that runs a diffusion process on **residue centroids**
+(L tokens, one per residue, instead of 4L atoms) and emits backbone atoms
+(N, CA, C, O) from a **parallel atom head** in the same forward pass:
 
-1. **Stage 1 (Residue Diffusion)**: Predict residue centroid positions using a diffusion model operating on L tokens (one per residue) instead of 4L atoms.
+1. **Residue-centroid diffusion**: a coordinate-blind Transformer trunk conditions
+   on sequence + ESM-2 embeddings; an AdaLN denoiser predicts clean centroids from
+   noisy ones.
 
-2. **Stage 2 (Atom Refinement)**: Refine centroid predictions to full backbone atom coordinates (N, CA, C, O) using local attention.
+2. **Parallel atom head**: from the same trunk tokens, emit the 4 backbone atoms per
+   residue — not a separate second stage, but a parallel head trained end-to-end.
 
-This hierarchical design is motivated by the observation that **backbone topology is the hard problem**—local bond geometry is well-constrained by chemistry.
+The design is motivated by the observation that **backbone topology is the hard
+problem** — local bond geometry is well-constrained by chemistry, so the diffusion
+degrees of freedom are spent on residue-level global arrangement.
 
 ### Key Features
 
@@ -25,15 +33,17 @@ This hierarchical design is motivated by the observation that **backbone topolog
 - **AF3-shaped**: continuous-σ (EDM) diffusion, ESM conditioning, multi-sample inference with a confidence ranker, few-step ODE sampling.
 - **Efficient core**: the diffusion target is residue centroids (L tokens), not 4L atoms; a parallel atom head emits backbone (N, CA, C, O).
 
-> Two model families live in this repo: the original **two-stage** `ResFoldPipeline` (~28M) and the **single-network** `ResFoldOneStep` (11.8M) used for the headline result below. New work should use `onestep`.
+> The only model is **`ResFoldOneStep`** (11.8M, `--model_kind onestep`). An earlier
+> two-stage `ResFoldPipeline` was removed — every recorded run and every config is
+> onestep.
 
 ### Rationale
 
-Complex folding couples global arrangement (chain–chain positioning) with local atomic detail (side-chain packing, interface chemistry). We decouple these by predicting structure at two resolutions:
+Complex folding couples global arrangement (chain–chain positioning) with local atomic detail. We separate these by resolution:
 
 1. **Residue-level diffusion (global scaffold)**: sample residue anchors for each chain to capture fold topology and relative orientation in the complex.
 
-2. **All-atom refinement (local consistency)**: condition on the residue scaffold to generate full atomic coordinates, resolving side chains and interface packing.
+2. **Parallel backbone atom head (local consistency)**: from the same trunk tokens, emit the 4 backbone atoms (N, CA, C, O) per residue in the same forward pass, with geometry losses enforcing chemically valid bonds. (Backbone only; an optional torsion side-chain head exists but is off by default.)
 
 Why this helps:
 
@@ -51,62 +61,62 @@ Why this helps:
 
 ## Results — what works, and what doesn't
 
-The honest headline: **the pipeline genuinely works on *small* complexes and breaks
-down on large ones.** This was established by the Small-Specialist Confirmation
-(SSC) experiment — an `onestep` model trained *only* on small complexes
-(≤200 total residues), evaluated on a held-out test set, then run out-of-distribution
-on larger complexes with the *same* weights.
+> **Correction (2026-07): the earlier "small complexes work" headline was split
+> leakage, not generalization.** 91.5% of the ≤200-res test complexes share a
+> sequence cluster with training. Re-scoring the same checkpoints under
+> permutation-aware DockQ, stratified by cluster leakage, tells the honest story
+> below. All splits are now cluster-held-out by default (`--require_clean_split`);
+> always read the *clean* stratum.
 
-**In-distribution (small ≤200 res, n=200 held-out test, K=5 + confidence rank):**
+**The honest floor (≤200 res, small-specialist checkpoint, cluster-leakage strata):**
 
-| metric | value |
-|---|---|
-| mean DockQ | **0.258** |
-| success (DockQ ≥ 0.23, CAPRI acceptable) | **43.5%** |
-| CAPRI bands (incorrect / acceptable / **medium** / high) | 113 / 34 / **53** / 0 |
-| centroid RMSE · C-RMSD · oracle@5 | 6.30 Å · 10.28 Å · 5.80 Å |
+| stratum | n | mean DockQ | success (≥0.23) | medium+ (≥0.49) |
+|---|---:|---:|---:|---:|
+| leaked (shares a train cluster) | 183 | 0.283 | 50% | 29% |
+| **clean (cluster-held-out)** | 17 | **0.058** | **6%** | **0%** |
 
-**53 / 200 predictions are CAPRI medium-quality** (DockQ ≥ 0.49 — topologically
-correct interfaces) on complexes the model never saw. It generalizes rather than
-memorizes: test DockQ rose monotonically through training (0.139 → 0.258) with a
-moderate train/test gap (train 0.357 / 66%). The best held-out predictions reach
-DockQ ~0.73 at ~1 Å C-RMSD (see the showcase).
+The ~0.26 mean that used to be quoted is the *leaked* stratum. On complexes that
+are genuinely held out at the sequence-cluster level, the model scores **DockQ ≈
+0.05 with 0% medium-quality** — it does not yet generalize in any regime. The
+redundancy profile is monotone (mean DockQ by #same-cluster train complexes:
+0 → 0.06, 1–4 → 0.21, 5–19 → 0.21, 20+ → 0.39): score tracks how close the nearest
+training neighbour is, which is the signature of memorization, not folding.
 
-**Out-of-distribution (same checkpoint, larger complexes):**
+**Out-of-distribution (same checkpoint, larger complexes):** a clean monotone
+collapse to ~0 DockQ by 400 res — but note this is measured off the leaked-inflated
+baseline, so it conflates the size wall with the leakage the small bin enjoyed.
 
 | bin (total residues) | 200–400 | 400–600 | 600–1000 | ≥1000 |
 |---|---|---|---|---|
 | mean DockQ | 0.018 | 0.013 | 0.012 | 0.007 |
-| success | 0% | 0% | 0% | 0% |
 
-A clean, monotone collapse — the wall is input **size**, not training-set breadth
-(same weights, only the inputs grew). This is a small model's honest operating
-envelope, not a bug.
-
-See [`scripts/eval_dockq_histogram.py`](scripts/eval_dockq_histogram.py) for the
-per-complex CAPRI breakdown and [the reproduce section](#reproduce-the-headline-experiment).
+See [`scripts/eval_leakage_split.py`](scripts/eval_leakage_split.py) for the
+leakage-stratified per-target read-out and
+[the reproduce section](#reproduce-the-headline-experiment).
 
 ## Architecture
 
-### Stage 1: Residue Diffusion
+`ResFoldOneStep` is a single network with three parts, trained end-to-end.
+
+### Trunk + residue-centroid denoiser
 
 The diffusion model predicts clean residue centroids from noisy inputs:
 
-- **ResidueEncoder (Trunk)**: Processes sequence, chain IDs, and positions through a 9-layer Transformer. Runs once per sample to produce conditioning tokens.
-- **DiffusionTransformer (Denoiser)**: Iteratively denoises centroid positions over T=50 steps using Adaptive LayerNorm conditioning.
+- **ResidueEncoder (Trunk)**: Processes sequence, chain IDs, positions, and frozen ESM-2 embeddings through a 9-layer Transformer. Coordinate-blind, so it runs **once per sample** to produce conditioning tokens (this is also what recycling and diffusion-multiplicity exploit).
+- **DiffusionTransformer (Denoiser)**: Denoises centroid positions under continuous-σ (EDM) diffusion using Adaptive LayerNorm conditioning.
 - **Output**: Predicted centroid positions [L, 3]
 
-### Stage 2: Atom Refinement
+### Parallel backbone atom head
 
-One-shot prediction of 4 backbone atoms per residue:
+From the same trunk tokens, in the same forward pass (not a separate stage):
 
-- **GlobalTransformer**: 6-layer Transformer captures inter-residue context
-- **LocalAtomAttention**: Attention within each residue's 4 atoms predicts offsets from centroid
+- **GlobalTransformer**: captures inter-residue context
+- **LocalAtomAttention**: attention within each residue's 4 atoms predicts offsets from the centroid
 - **Output**: Backbone atom positions [L, 4, 3] (N, CA, C, O)
 
-### Auxiliary Losses (Stage 2)
+### Auxiliary Losses (atom head)
 
-Beyond the primary MSE loss on coordinates, Stage 2 (atom refinement) uses geometry-based auxiliary losses to enforce chemically valid backbone structures. These losses operate on the predicted [L, 4, 3] atom coordinates and are not applied during Stage 1 (residue diffusion), which uses only MSE + distance consistency.
+Beyond the primary MSE loss on coordinates, the atom head uses geometry-based auxiliary losses to enforce chemically valid backbone structures. These operate on the predicted [L, 4, 3] atom coordinates; the centroid diffusion target uses MSE + distance consistency.
 
 #### Bond Length Loss
 Penalizes deviations from ideal backbone bond lengths:
@@ -161,8 +171,9 @@ where $C$ is the set of contact pairs. Inter-chain contacts are weighted 2× hig
 | Training hardware | **1 consumer GPU, from scratch** | TPU pod | GPU cluster | GPU cluster (pruned/distilled) |
 | Scope | Backbone PPI, small complexes | All biomolecules | All biomolecules | All biomolecules |
 
-TinyFold is **not** AF3-accurate or general — it is the same *shape* of pipeline shrunk
-~50× to fit one consumer GPU, as a testbed for "how far can a tiny model get."
+TinyFold is **not** AF3-accurate or general — it is the same *shape* of model shrunk
+~50× to fit one consumer GPU, as a testbed for "how far can a tiny model get." On
+cluster-clean splits the honest answer so far is "not far yet" (see Results).
 
 
 ### Requirements
@@ -257,8 +268,9 @@ python scripts/data/prepare_data.py --output-dir data/processed
 - [x] Boltz-2 style per-step Kabsch alignment (available in all samplers)
 - [x] Proper benchmarking (DockQ, lDDT, interface metrics)
 - [x] Web frontend for visualization (static `web-light/` viewer)
-- [x] Confirm the pipeline generalizes on small complexes (SSC experiment)
-- [ ] Move the size cliff: interface cropping + relpos at scale, or the pair track (Phase H)
+- [x] ~~Confirm the model generalizes on small complexes (SSC)~~ — **retracted**: the SSC result was 91.5% split leakage; on cluster-held-out complexes DockQ ≈ 0.05, 0% medium+ (see Results)
+- [x] Cluster-leakage gate on every split (`--require_clean_split`) + leakage-stratified eval
+- [ ] Reach a genuinely generalizing regime: interface cropping at scale (crop auditor greenlit crop_size=256), or a pair track
 - [x] Single-sample predict/export CLI (`scripts/predict.py`, dataset samples)
 - [ ] Raw FASTA/PDB-pair inference (live ESM-2 + de-novo coordinate scale)
 - [ ] Energy-based auxiliary losses (Lennard-Jones, electrostatics)
