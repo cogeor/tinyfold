@@ -334,19 +334,10 @@ def parse_args():
                         help="Directory of per-sample retrieved-template npz "
                              "(prepare_templates.py). Required for "
                              "--template_source retrieved.")
-    # --- Coevolution conditioning (MSA pair prior; mirror of templates) ---
-    parser.add_argument("--msa_cond", action="store_true",
-                        help="Enable coevolution conditioning: cached APC-corrected "
-                             "MSA pair features [L,L,F] are injected into the pair "
-                             "track (additive with templates). Requires --pair_repr.")
-    parser.add_argument("--msa_cache_dir", type=str, default=None,
-                        help="Directory of per-sample coevolution npz "
-                             "(prepare_msa_features.py, key 'msa_feats'). Required "
-                             "for --msa_cond.")
-    parser.add_argument("--msa_dropout", type=float, default=0.0,
-                        help="Per-complex Bernoulli dropout of the whole coev "
-                             "signal at train time (graceful degradation on "
-                             "shallow-/no-MSA targets; 0 = always full MSA).")
+    # Coevolution (paired-MSA pair prior) conditioning was removed from this
+    # entry point: the M0/M1 A/B was null (M1-M0 = +0.0006 at 3k, +0.0055 at 6k).
+    # The tinyfold.msa library and the PairTrack msa_cond plumbing are kept as a
+    # verified artifact; see src/tinyfold/msa/__init__.py for the full rationale.
     parser.add_argument("--load_split", type=str, default=None,
                         help="Load train/test split from JSON (for Stage 2 to reuse Stage 1 split)")
     parser.add_argument("--batch_size", type=int, default=64)
@@ -1082,15 +1073,12 @@ def _run_training(args, progress):
     _tmpl_dir = getattr(args, "template_cache_dir", None)
     if getattr(args, "template_source", "none") == "retrieved" and _tmpl_dir is None:
         raise ValueError("--template_source retrieved requires --template_cache_dir")
-    _msa_dir = getattr(args, "msa_cache_dir", None)
-    if getattr(args, "msa_cond", False) and _msa_dir is None:
-        raise ValueError("--msa_cond requires --msa_cache_dir")
     _atom14_dir = getattr(args, "atom14_cache_dir", None)
     if getattr(args, "sidechain_diffusion", False) and _atom14_dir is None:
         raise ValueError("--sidechain_diffusion requires --atom14_cache_dir")
     _loader_kwargs = dict(normalize=normalize, esm_cache_dir=_esm_dir,
                           per_chain_res_idx=per_chain, global_scale=gscale,
-                          template_cache_dir=_tmpl_dir, msa_feats_cache_dir=_msa_dir,
+                          template_cache_dir=_tmpl_dir, msa_feats_cache_dir=None,
                           atom14_cache_dir=_atom14_dir)
     _cache_mode = getattr(args, "sample_cache", "eager")
     _cache_mb = getattr(args, "sample_cache_mb", 8192.0)
@@ -1108,16 +1096,12 @@ def _run_training(args, progress):
     # Coverage diagnostics read a bounded sample: touching every entry for a
     # mean would materialise the whole split and defeat the cache.
     _diag = train_samples.subset(256, seed=args.seed) \
-        if (_tmpl_dir is not None or _msa_dir is not None) else []
+        if _tmpl_dir is not None else []
     if _tmpl_dir is not None:
         _cov = [float(s['template_mask'].float().mean()) for s in _diag if 'template_mask' in s]
         if _cov:
             logger.log(f"  Template coverage (train, n={len(_diag)} sampled): "
                        f"{100*sum(_cov)/len(_cov):.1f}% residues mean")
-    if _msa_dir is not None:
-        _n_msa = sum(1 for s in _diag if 'msa_feats' in s)
-        logger.log(f"  Coevolution cache (train, n={len(_diag)} sampled): "
-                   f"{_n_msa}/{len(_diag)} samples have msa_feats")
 
     # If not normalizing, warn about sigma values
     if args.no_normalize:
@@ -1170,7 +1154,6 @@ def _run_training(args, progress):
             template_cond=getattr(args, "template_cond", False),
             template_rbf=getattr(args, "template_rbf", 32),
             template_d_max=getattr(args, "template_d_max", 4.0),
-            msa_cond=getattr(args, "msa_cond", False),
             grad_checkpoint=getattr(args, "grad_checkpoint", False),
             pair_to_single=getattr(args, "pair_to_single", False),
             frame_atom_head=getattr(args, "frame_atom_head", False),
@@ -1504,16 +1487,6 @@ def _run_training(args, progress):
                         source=getattr(args, "template_source", "none"),
                         dropout=getattr(args, "template_dropout", 0.0),
                     )
-                    # Coevolution: cached [B,L,L,F] already in the batch (via
-                    # collate). Per-complex dropout zeros the whole signal for a
-                    # sampled subset so the model degrades gracefully on targets
-                    # with no MSA. Mirrors template_dropout but per-complex (the
-                    # feature is O(L^2), not per-residue).
-                    msa_feats = batch.get('msa_feats')
-                    _msa_p = getattr(args, "msa_dropout", 0.0)
-                    if msa_feats is not None and _msa_p > 0.0:
-                        keep = (torch.rand(msa_feats.shape[0], device=msa_feats.device) >= _msa_p)
-                        msa_feats = msa_feats * keep.view(-1, 1, 1, 1).to(msa_feats.dtype)
                     if args.continuous_sigma:
                         # AF3-style with continuous sigma
                         # Recycling (C1): draw the pass count uniformly from
@@ -1542,7 +1515,6 @@ def _run_training(args, progress):
                                         'template_coords_res': tmpl_coords,
                                         'template_mask': tmpl_mask,
                                         'template_frame_id': tmpl_frame,
-                                        'msa_feats': msa_feats,
                                     },
                                 )
 
@@ -1560,21 +1532,19 @@ def _run_training(args, progress):
                                     template_coords_res=tmpl_coords,
                                     template_mask=tmpl_mask,
                                     template_frame_id=tmpl_frame,
-                                    msa_feats=msa_feats,
                                     n_recycle=_n_rc,
                                 )
                                 atoms_pred = None
                             elif (
                                 _mult > 1
                                 and tmpl_coords is None
-                                and msa_feats is None
                             ):
                                 # C2 trunk-once: a sample's M copies share identical
                                 # trunk inputs (the trunk is coordinate-blind), so
                                 # run the trunk on copy 0 of each group and repeat
                                 # its tokens across the group. Exact -- the trunk is
                                 # a pure function of these (copy-invariant) inputs.
-                                # Only valid without templates/msa, whose per-copy
+                                # Only valid without templates, whose per-copy
                                 # dropout would differ across copies; with those on
                                 # we fall through to forward_sigma (trunk runs M
                                 # times -- correct, just not memory-optimal).
@@ -1599,7 +1569,6 @@ def _run_training(args, progress):
                                     template_coords_res=tmpl_coords,
                                     template_mask=tmpl_mask,
                                     template_frame_id=tmpl_frame,
-                                    msa_feats=msa_feats,
                                     n_recycle=_n_rc,
                                 )
                         # Cast predictions back to fp32 for the loss (stable).
@@ -1622,7 +1591,6 @@ def _run_training(args, progress):
                                 template_coords_res=tmpl_coords,
                                 template_mask=tmpl_mask,
                                 template_frame_id=tmpl_frame,
-                                msa_feats=msa_feats,
                             )
                         else:
                             centroids_pred = model.forward_stage1(
